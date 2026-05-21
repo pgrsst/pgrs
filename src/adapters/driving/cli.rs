@@ -31,6 +31,7 @@ where
             Some("delete") => self.delete_connection(&args[1..]),
             Some("connect") => self.connect_to(&args[1..]),
             Some("completions") => self.print_completions(&args[1..]),
+            // "shell" is intercepted in app.rs before cli.run() is called
             _ => Err(usage().to_string()),
         }
     }

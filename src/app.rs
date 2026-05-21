@@ -27,5 +27,5 @@ pub fn run() -> Result<(), String> {
         return repl::run(Box::new(db), &db_name);
     }
 
-    cli.run(args.into_iter())
+    cli.run(args)
 }

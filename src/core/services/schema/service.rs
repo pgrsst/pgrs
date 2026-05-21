@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::core::ports::db_connection::{DbConnection, QueryResult};
+use crate::core::ports::db_connection::DbConnection;
 
 pub struct SchemaService {
     pub tables: Vec<String>,
@@ -25,6 +25,7 @@ impl SchemaService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ports::db_connection::QueryResult;
 
     struct MockDb {
         tables: Vec<String>,
