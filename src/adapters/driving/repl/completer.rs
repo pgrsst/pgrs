@@ -136,9 +136,16 @@ impl Completer for SqlCompleter {
         let candidates = self.complete_input(line, pos);
         let pairs = candidates
             .into_iter()
-            .map(|(c, _)| Pair {
-                display: c.clone(),
-                replacement: c,
+            .map(|(c, kind)| {
+                let label = match kind {
+                    CompletionKind::Keyword => "[keyword]",
+                    CompletionKind::Table   => "[table]",
+                    CompletionKind::Column  => "[column]",
+                };
+                Pair {
+                    display:     format!("{:<20} {}", c, label),
+                    replacement: c,
+                }
             })
             .collect();
 

@@ -4,6 +4,7 @@ pub mod executor;
 use rustyline::error::ReadlineError;
 use rustyline::history::DefaultHistory;
 use rustyline::Editor;
+use rustyline::config::{Builder, CompletionType};
 
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::services::schema::service::SchemaService;
@@ -15,8 +16,11 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
     let schema = SchemaService::load(conn.as_ref())?;
     let completer = SqlCompleter::new(schema);
 
+    let config = Builder::new()
+        .completion_type(CompletionType::List)
+        .build();
     let mut rl: Editor<SqlCompleter, DefaultHistory> =
-        Editor::new().map_err(|e| e.to_string())?;
+        Editor::with_config(config).map_err(|e| e.to_string())?;
     rl.set_helper(Some(completer));
 
     println!(
