@@ -38,6 +38,14 @@ where
             return Err("database is required".to_string());
         }
 
+        if input.username.trim().is_empty() {
+            return Err("username is required".to_string());
+        }
+
+        if input.password.trim().is_empty() {
+            return Err("password is required".to_string());
+        }
+
         let connection = Connection {
             name: input.name,
             host: input.host,

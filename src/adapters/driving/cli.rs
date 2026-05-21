@@ -25,12 +25,14 @@ where
                 Ok(())
             }
             Some("add") => self.add_connection(&args[1..]),
-            _ => Err(usage()),
+            Some("list") => self.list_connections(),
+            Some("delete") => self.delete_connection(&args[1..]),
+            _ => Err(usage().to_string()),
         }
     }
 
     fn add_connection(&self, args: &[String]) -> Result<(), String> {
-        let name = args.first().ok_or_else(usage)?.trim().to_string();
+        let name = args.first().ok_or_else(|| usage().to_string())?.trim().to_string();
 
         let host = required_option(args, "--host")?;
         let username = required_option(args, "--username")?;
@@ -57,6 +59,46 @@ where
         println!("connection '{name}' added");
         Ok(())
     }
+
+    fn list_connections(&self) -> Result<(), String> {
+        let connections = self.connection_service.list_connections()?;
+
+        if connections.is_empty() {
+            println!("no connections saved");
+            return Ok(());
+        }
+
+        let name_w = connections.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
+        let host_w = connections.iter().map(|c| c.host.len()).max().unwrap_or(4).max(4);
+        let db_w = connections.iter().map(|c| c.database.len()).max().unwrap_or(8).max(8);
+        let user_w = connections.iter().map(|c| c.username.len()).max().unwrap_or(8).max(8);
+
+        println!(
+            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  {}",
+            "NAME", "HOST", "PORT", "DATABASE", "USERNAME", "PASSWORD",
+        );
+
+        for c in &connections {
+            println!(
+                "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  ****",
+                c.name, c.host, c.port, c.database, c.username,
+            );
+        }
+
+        Ok(())
+    }
+
+    fn delete_connection(&self, args: &[String]) -> Result<(), String> {
+        let name = args
+            .first()
+            .ok_or("usage: pgrs delete <connection-name>")?
+            .trim()
+            .to_string();
+
+        self.connection_service.delete_connection(&name)?;
+        println!("connection '{name}' deleted");
+        Ok(())
+    }
 }
 
 fn required_option(args: &[String], key: &str) -> Result<String, String> {
@@ -70,10 +112,10 @@ fn optional_option(args: &[String], key: &str) -> Option<String> {
         .find_map(|arg| arg.strip_prefix(&prefix).map(ToString::to_string))
 }
 
-fn welcome() -> String {
-    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>]\n             Add a new named connection\n\nRun `pgrs <command> --help` for more info on a specific command.".to_string()
+fn welcome() -> &'static str {
+    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>]\n             Add a new named connection\n  list         List all saved connections\n  delete <name>\n             Delete a named connection\n\nRun `pgrs <command> --help` for more info on a specific command."
 }
 
-fn usage() -> String {
-    "usage: pgrs add <connection-name> --host=<host> --username=<username> --password=<password> --database=<database> [--port=<port>]".to_string()
+fn usage() -> &'static str {
+    "usage: pgrs add <connection-name> --host=<host> --username=<username> --password=<password> --database=<database> [--port=<port>]"
 }

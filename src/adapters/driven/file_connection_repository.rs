@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::core::domain::connection::Connection;
@@ -31,7 +32,9 @@ impl FileConnectionRepository {
         let content =
             serde_json::to_string_pretty(connections).map_err(|error| error.to_string())?;
 
-        fs::write(&self.path, content).map_err(|error| error.to_string())
+        fs::write(&self.path, content).map_err(|error| error.to_string())?;
+        fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| error.to_string())
     }
 }
 
