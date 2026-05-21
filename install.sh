@@ -44,7 +44,6 @@ trap 'rm -f "$TMP_FILE"' EXIT
 
 echo "  Downloading binary..."
 if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"; then
-  rm -f "$TMP_FILE"
   error "Failed to download binary from: $DOWNLOAD_URL"
 fi
 
@@ -65,8 +64,10 @@ add_to_path() {
       echo "# pgrs" >> "$rc_file"
       echo "$EXPORT_LINE" >> "$rc_file"
       echo "  Adding ~/.pgrs/bin to PATH in $(basename "$rc_file")"
+      return 0
     fi
   fi
+  return 1
 }
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then

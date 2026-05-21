@@ -19,6 +19,8 @@ Setelah install, restart terminal atau jalankan:
 source ~/.bashrc  # atau ~/.zshrc jika menggunakan zsh
 ```
 
+> **Catatan keamanan:** Script mendownload binary langsung dari [GitHub Releases](https://github.com/pgrsst/pgrs/releases). Pastikan Anda mempercayai konten release sebelum menjalankan perintah di atas.
+
 ## Usage
 
 ```bash
