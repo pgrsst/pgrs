@@ -69,6 +69,14 @@ where
 
         self.repository.delete(name)
     }
+
+    pub fn get_connection(&self, name: &str) -> Result<Connection, String> {
+        if name.trim().is_empty() {
+            return Err("connection name is required".to_string());
+        }
+
+        self.repository.get_connection(name)
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +222,28 @@ mod tests {
     fn delete_connection_rejects_empty_name() {
         let svc = service();
         let result = svc.delete_connection("  ");
+        assert_eq!(result, Err("connection name is required".to_string()));
+    }
+
+    #[test]
+    fn get_connection_returns_existing_connection() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        let conn = svc.get_connection("prod").unwrap();
+        assert_eq!(conn.name, "prod");
+    }
+
+    #[test]
+    fn get_connection_returns_error_when_not_found() {
+        let svc = service();
+        let result = svc.get_connection("missing");
+        assert_eq!(result, Err("connection 'missing' not found".to_string()));
+    }
+
+    #[test]
+    fn get_connection_rejects_empty_name() {
+        let svc = service();
+        let result = svc.get_connection("  ");
         assert_eq!(result, Err("connection name is required".to_string()));
     }
 }
