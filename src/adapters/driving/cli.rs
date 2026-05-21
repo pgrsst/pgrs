@@ -75,8 +75,8 @@ where
         let user_w = connections.iter().map(|c| c.username.len()).max().unwrap_or(8).max(8);
 
         println!(
-            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  {}",
-            "NAME", "HOST", "PORT", "DATABASE", "USERNAME", "PASSWORD",
+            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  PASSWORD",
+            "NAME", "HOST", "PORT", "DATABASE", "USERNAME",
         );
 
         for c in &connections {
