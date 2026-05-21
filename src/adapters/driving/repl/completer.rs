@@ -14,6 +14,7 @@ const SQL_KEYWORDS: &[&str] = &[
     "BEGIN", "COMMIT", "ROLLBACK",
 ];
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum CompletionKind {
     Keyword,
     Table,
@@ -101,7 +102,7 @@ impl SqlCompleter {
             .collect();
 
         results.sort_by(|a, b| a.0.cmp(&b.0));
-        results.dedup_by_key(|item| item.0.clone());
+        results.dedup_by(|a, b| a.0 == b.0);
         results
     }
 
