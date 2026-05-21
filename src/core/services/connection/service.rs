@@ -109,6 +109,15 @@ mod tests {
             }
             Ok(())
         }
+
+        fn get_connection(&self, name: &str) -> Result<Connection, String> {
+            self.connections
+                .borrow()
+                .iter()
+                .find(|c| c.name == name)
+                .cloned()
+                .ok_or_else(|| format!("connection '{}' not found", name))
+        }
     }
 
     fn valid_input(name: &str) -> AddConnectionInput {

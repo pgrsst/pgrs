@@ -69,6 +69,14 @@ impl ConnectionRepository for FileConnectionRepository {
 
         self.write_connections(&connections)
     }
+
+    fn get_connection(&self, name: &str) -> Result<Connection, String> {
+        let connections = self.read_connections()?;
+        connections
+            .into_iter()
+            .find(|c| c.name == name)
+            .ok_or_else(|| format!("connection '{}' not found", name))
+    }
 }
 
 #[cfg(test)]
@@ -150,5 +158,21 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn get_connection_returns_connection_by_name() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        let conn = repo.get_connection("prod").unwrap();
+        assert_eq!(conn.name, "prod");
+        assert_eq!(conn.host, "localhost");
+    }
+
+    #[test]
+    fn get_connection_returns_error_when_not_found() {
+        let (repo, _dir) = repo();
+        let result = repo.get_connection("nonexistent");
+        assert_eq!(result, Err("connection 'nonexistent' not found".to_string()));
     }
 }
