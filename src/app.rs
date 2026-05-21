@@ -1,7 +1,9 @@
 use std::env;
 
 use crate::adapters::driven::file_connection_repository::FileConnectionRepository;
+use crate::adapters::driven::postgres_db::PostgresDb;
 use crate::adapters::driving::cli::Cli;
+use crate::adapters::driving::repl;
 use crate::core::services::connection::service::ConnectionService;
 
 pub fn run() -> Result<(), String> {
@@ -15,5 +17,15 @@ pub fn run() -> Result<(), String> {
     let connection_service = ConnectionService::new(repository);
     let cli = Cli::new(connection_service);
 
-    cli.run(env::args().skip(1))
+    let args: Vec<String> = env::args().skip(1).collect();
+
+    if args.first().map(String::as_str) == Some("shell") {
+        let name = args.get(1).ok_or("usage: pgrs shell <connection-name>")?;
+        let conn = cli.get_connection(name)?;
+        let db_name = conn.database.clone();
+        let db = PostgresDb::new(&conn)?;
+        return repl::run(Box::new(db), &db_name);
+    }
+
+    cli.run(args.into_iter())
 }
