@@ -14,6 +14,12 @@ const SQL_KEYWORDS: &[&str] = &[
     "BEGIN", "COMMIT", "ROLLBACK",
 ];
 
+pub enum CompletionKind {
+    Keyword,
+    Table,
+    Column,
+}
+
 pub struct SqlCompleter {
     schema: SchemaService,
 }
@@ -27,21 +33,17 @@ impl SqlCompleter {
         &self.schema
     }
 
-    pub fn complete_input(&self, line: &str, pos: usize) -> Vec<String> {
+    pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
         let input = &line[..pos];
         let upper = input.to_uppercase();
         let tokens: Vec<&str> = upper.split_whitespace().collect();
 
-        // Ambil kata yang sedang diketik (mungkin kosong jika diakhiri spasi)
         let current_word = if input.ends_with(char::is_whitespace) || input.is_empty() {
             ""
         } else {
             tokens.last().copied().unwrap_or("")
         };
 
-        // Tentukan context berdasarkan token sebelum current word.
-        // Special case: if the current word itself is a trigger keyword (e.g. cursor is right
-        // at the end of "FROM"), treat that keyword as the context so we can suggest completions.
         let table_triggers = ["FROM", "JOIN", "INTO", "UPDATE"];
         let col_triggers = ["SELECT", "WHERE", "ON", "SET", "BY"];
 
@@ -55,42 +57,51 @@ impl SqlCompleter {
             ""
         };
 
-        // For table-ref extraction, use the full line (table refs may appear after cursor)
         let full_upper = line.to_uppercase();
 
-        let candidates: Vec<String> = match effective_trigger {
-            "FROM" | "JOIN" | "INTO" | "UPDATE" => {
-                self.schema.tables().iter().map(|t| t.to_string()).collect()
-            }
+        let candidates: Vec<(String, CompletionKind)> = match effective_trigger {
+            "FROM" | "JOIN" | "INTO" | "UPDATE" => self
+                .schema
+                .tables()
+                .iter()
+                .map(|t| (t.to_string(), CompletionKind::Table))
+                .collect(),
             "SELECT" | "WHERE" | "ON" | "SET" | "BY" => {
-                // cari table names yang sudah disebut di query (scan full line)
                 let table_refs = self.extract_table_refs(&full_upper);
                 if table_refs.is_empty() {
-                    SQL_KEYWORDS.iter().map(|k| k.to_string()).collect()
+                    SQL_KEYWORDS
+                        .iter()
+                        .map(|k| (k.to_string(), CompletionKind::Keyword))
+                        .collect()
                 } else {
                     table_refs
                         .iter()
                         .flat_map(|t| {
                             let t_lower = t.to_lowercase();
-                            self.schema.columns_for(&t_lower).iter().map(|c| c.to_string())
+                            self.schema
+                                .columns_for(&t_lower)
+                                .iter()
+                                .map(|c| (c.to_string(), CompletionKind::Column))
                         })
                         .collect()
                 }
             }
-            _ => SQL_KEYWORDS.iter().map(|k| k.to_string()).collect(),
+            _ => SQL_KEYWORDS
+                .iter()
+                .map(|k| (k.to_string(), CompletionKind::Keyword))
+                .collect(),
         };
 
-        // Filter berdasarkan prefix (case-insensitive).
-        // When the current word IS the trigger keyword itself, don't filter by it
-        // (the trigger drove candidate selection; the prefix for matching should be empty).
         let is_trigger = table_triggers.contains(&current_word) || col_triggers.contains(&current_word);
         let prefix_upper = if is_trigger { "".to_string() } else { current_word.to_uppercase() };
-        let mut results: Vec<String> = candidates
+
+        let mut results: Vec<(String, CompletionKind)> = candidates
             .into_iter()
-            .filter(|c| c.to_uppercase().starts_with(&prefix_upper))
+            .filter(|(c, _)| c.to_uppercase().starts_with(&prefix_upper))
             .collect();
-        results.sort();
-        results.dedup();
+
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        results.dedup_by_key(|item| item.0.clone());
         results
     }
 
@@ -124,7 +135,7 @@ impl Completer for SqlCompleter {
         let candidates = self.complete_input(line, pos);
         let pairs = candidates
             .into_iter()
-            .map(|c| Pair {
+            .map(|(c, _)| Pair {
                 display: c.clone(),
                 replacement: c,
             })
@@ -169,7 +180,10 @@ mod tests {
         let schema = schema_with(&[], &[]);
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SEL", 3);
-        assert!(results.iter().any(|r| r == "SELECT"), "expected SELECT in {:?}", results);
+        assert!(
+            results.iter().any(|(r, _)| r == "SELECT"),
+            "expected SELECT in {:?}", results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -177,8 +191,8 @@ mod tests {
         let schema = schema_with(&["users", "orders"], &[]);
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT * FROM ", 13);
-        assert!(results.contains(&"users".to_string()));
-        assert!(results.contains(&"orders".to_string()));
+        assert!(results.iter().any(|(r, _)| r == "users"));
+        assert!(results.iter().any(|(r, _)| r == "orders"));
     }
 
     #[test]
@@ -186,7 +200,7 @@ mod tests {
         let schema = schema_with(&["users", "orders"], &[]);
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT * FROM users JOIN ", 24);
-        assert!(results.contains(&"orders".to_string()));
+        assert!(results.iter().any(|(r, _)| r == "orders"));
     }
 
     #[test]
@@ -197,8 +211,8 @@ mod tests {
         );
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT  FROM users", 7);
-        assert!(results.contains(&"id".to_string()), "expected id in {:?}", results);
-        assert!(results.contains(&"email".to_string()));
+        assert!(results.iter().any(|(r, _)| r == "id"), "expected id in {:?}", results.iter().map(|(r, _)| r).collect::<Vec<_>>());
+        assert!(results.iter().any(|(r, _)| r == "email"));
     }
 
     #[test]
@@ -206,9 +220,9 @@ mod tests {
         let schema = schema_with(&["users", "user_sessions"], &[]);
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT * FROM user", 18);
-        assert!(results.contains(&"users".to_string()));
-        assert!(results.contains(&"user_sessions".to_string()));
-        assert!(!results.iter().any(|r| r == "orders"));
+        assert!(results.iter().any(|(r, _)| r == "users"));
+        assert!(results.iter().any(|(r, _)| r == "user_sessions"));
+        assert!(!results.iter().any(|(r, _)| r == "orders"));
     }
 
     #[test]
@@ -216,7 +230,44 @@ mod tests {
         let schema = schema_with(&["users"], &[]);
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT * FROM ", 14);
-        let unique: std::collections::HashSet<_> = results.iter().collect();
-        assert_eq!(results.len(), unique.len(), "duplicates found: {:?}", results);
+        let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
+        let unique: std::collections::HashSet<_> = names.iter().collect();
+        assert_eq!(names.len(), unique.len(), "duplicates found: {:?}", names);
+    }
+
+    #[test]
+    fn tags_keywords_with_keyword_kind() {
+        let schema = schema_with(&[], &[]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SEL", 3);
+        assert!(
+            results.iter().any(|(r, k)| r == "SELECT" && matches!(k, CompletionKind::Keyword)),
+            "expected SELECT [keyword] in {:?}", results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn tags_tables_with_table_kind() {
+        let schema = schema_with(&["users", "orders"], &[]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT * FROM ", 13);
+        assert!(
+            results.iter().any(|(r, k)| r == "users" && matches!(k, CompletionKind::Table)),
+            "expected users [table]"
+        );
+    }
+
+    #[test]
+    fn tags_columns_with_column_kind() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["id", "email"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT  FROM users", 7);
+        assert!(
+            results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
+            "expected id [column]"
+        );
     }
 }
