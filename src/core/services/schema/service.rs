@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::core::ports::db_connection::DbConnection;
+use crate::core::ports::db_connection::{DbConnection, QueryResult};
 
 pub struct SchemaService {
     pub tables: Vec<String>,
