@@ -70,3 +70,85 @@ impl ConnectionRepository for FileConnectionRepository {
         self.write_connections(&connections)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::ports::connection_repository::ConnectionRepository;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn sample_connection(name: &str) -> Connection {
+        Connection {
+            name: name.to_string(),
+            host: "localhost".to_string(),
+            port: 5432,
+            username: "admin".to_string(),
+            password: "secret".to_string(),
+            database: "mydb".to_string(),
+        }
+    }
+
+    fn repo() -> (FileConnectionRepository, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = FileConnectionRepository::new(dir.path().join("connections.json"));
+        (repo, dir)
+    }
+
+    #[test]
+    fn list_returns_empty_when_file_does_not_exist() {
+        let (repo, _dir) = repo();
+        assert!(repo.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn add_persists_connection() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        let list = repo.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "prod");
+    }
+
+    #[test]
+    fn add_returns_error_on_duplicate_name() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        let result = repo.add(sample_connection("prod"));
+        assert_eq!(result, Err("connection 'prod' already exists".to_string()));
+    }
+
+    #[test]
+    fn list_returns_all_connections() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        repo.add(sample_connection("staging")).unwrap();
+        let list = repo.list().unwrap();
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn delete_removes_connection() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        repo.delete("prod").unwrap();
+        assert!(repo.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_returns_error_when_not_found() {
+        let (repo, _dir) = repo();
+        let result = repo.delete("nonexistent");
+        assert_eq!(result, Err("connection 'nonexistent' not found".to_string()));
+    }
+
+    #[test]
+    fn write_sets_file_permissions_to_0600() {
+        let (repo, dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        let mode = std::fs::metadata(dir.path().join("connections.json"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+}
