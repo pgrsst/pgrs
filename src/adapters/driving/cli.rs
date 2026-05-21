@@ -20,6 +20,10 @@ where
         let args: Vec<String> = args.into_iter().collect();
 
         match args.first().map(String::as_str) {
+            None => {
+                println!("{}", welcome());
+                Ok(())
+            }
             Some("add") => self.add_connection(&args[1..]),
             _ => Err(usage()),
         }
@@ -64,6 +68,10 @@ fn optional_option(args: &[String], key: &str) -> Option<String> {
 
     args.iter()
         .find_map(|arg| arg.strip_prefix(&prefix).map(ToString::to_string))
+}
+
+fn welcome() -> String {
+    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>]\n             Add a new named connection\n\nRun `pgrs <command> --help` for more info on a specific command.".to_string()
 }
 
 fn usage() -> String {
