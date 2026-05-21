@@ -27,6 +27,7 @@ where
             Some("add") => self.add_connection(&args[1..]),
             Some("list") => self.list_connections(),
             Some("delete") => self.delete_connection(&args[1..]),
+            Some("connect") => self.connect_to(&args[1..]),
             _ => Err(usage().to_string()),
         }
     }
@@ -88,6 +89,36 @@ where
         Ok(())
     }
 
+    fn connect_to(&self, args: &[String]) -> Result<(), String> {
+        use std::os::unix::process::CommandExt;
+
+        let name = args
+            .first()
+            .ok_or("usage: pgrs connect <connection-name>")?
+            .trim()
+            .to_string();
+
+        let connection = self.connection_service.get_connection(&name)?;
+
+        let error = std::process::Command::new("psql")
+            .env("PGPASSWORD", &connection.password)
+            .arg("-h")
+            .arg(&connection.host)
+            .arg("-p")
+            .arg(connection.port.to_string())
+            .arg("-U")
+            .arg(&connection.username)
+            .arg("-d")
+            .arg(&connection.database)
+            .exec();
+
+        Err(if error.kind() == std::io::ErrorKind::NotFound {
+            "psql not found — is it installed?".to_string()
+        } else {
+            error.to_string()
+        })
+    }
+
     fn delete_connection(&self, args: &[String]) -> Result<(), String> {
         let name = args
             .first()
@@ -113,7 +144,7 @@ fn optional_option(args: &[String], key: &str) -> Option<String> {
 }
 
 fn welcome() -> &'static str {
-    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>]\n             Add a new named connection\n  list         List all saved connections\n  delete <name>\n             Delete a named connection\n\nRun `pgrs <command> --help` for more info on a specific command."
+    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>]\n             Add a new named connection\n  list         List all saved connections\n  delete <name>\n             Delete a named connection\n  connect <name>\n             Open an interactive psql session using a saved connection\n\nRun `pgrs <command> --help` for more info on a specific command."
 }
 
 fn usage() -> &'static str {
