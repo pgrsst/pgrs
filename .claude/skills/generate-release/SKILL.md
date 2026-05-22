@@ -116,14 +116,28 @@ Lanjutkan publish? (ok / minta revisi)
 
 ---
 
-### Step 5 — Git tag
+### Step 6 — Publish release
 
-Provide the commands to create the tag:
+Before publishing, verify `gh` is authenticated:
+
+```bash
+gh auth status
+```
+
+If not authenticated, stop and ask the user to run `gh auth login` before continuing.
+
+Then create the tag and publish the release in one sequence:
 
 ```bash
 git tag -a vX.Y.Z -m "Release vX.Y.Z"
 git push origin vX.Y.Z
+gh release create vX.Y.Z \
+  --title "vX.Y.Z" \
+  --notes "<approved release notes from Step 5>" \
+  --target main
 ```
+
+After the command succeeds, display the GitHub release URL that `gh` returns so the user can verify.
 
 ---
 
