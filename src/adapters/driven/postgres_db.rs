@@ -59,10 +59,9 @@ impl DbConnection for PostgresDb {
         // Zero-row SELECT: simple_query sends no Row messages, so column names
         // are lost. Use PREPARE to retrieve them from the server's plan.
         // DML/DDL also land here but return no columns from prepare — fine.
-        if columns.is_empty() && rows.is_empty() {
-            if let Ok(stmt) = client.prepare(query) {
-                columns = stmt.columns().iter().map(|c| c.name().to_string()).collect();
-            }
+        if columns.is_empty() && rows.is_empty()
+            && let Ok(stmt) = client.prepare(query) {
+            columns = stmt.columns().iter().map(|c| c.name().to_string()).collect();
         }
 
         Ok(QueryResult { columns, rows, rows_affected })

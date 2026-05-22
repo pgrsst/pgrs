@@ -78,7 +78,7 @@ pub fn format_result(result: &QueryResult) -> String {
             .enumerate()
             .map(|(i, val)| {
                 let colored = colorize_cell(val);
-                let padding = col_widths[i].saturating_sub(visible_len(val));
+                let padding = col_widths[i].saturating_sub(visible_len(normalize_val(val)));
                 format!("{}{}", colored, " ".repeat(padding))
             })
             .collect();
