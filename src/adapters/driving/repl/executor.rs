@@ -67,8 +67,39 @@ pub fn format_result(result: &QueryResult, expanded: bool) -> String {
         };
     }
 
-    let _ = expanded; // expanded rendering added in a later task
+    if expanded {
+        return format_expanded(result);
+    }
+
     format_minimal(result)
+}
+
+fn format_expanded(result: &QueryResult) -> String {
+    let label_width = result.columns.iter().map(|c| c.len()).max().unwrap_or(0);
+    let mut out = String::new();
+
+    for (idx, row) in result.rows.iter().enumerate() {
+        let title = format!("-[ RECORD {} ]", idx + 1);
+        let pad = (label_width + 3).saturating_sub(visible_len(&title));
+        out.push_str(&title);
+        out.push_str(&"-".repeat(pad));
+        out.push('\n');
+
+        for (i, col) in result.columns.iter().enumerate() {
+            let val = normalize_val(&row[i]);
+            let colored = colorize_cell(val);
+            out.push_str(&format!("{:<width$} | {}\n", col, colored, width = label_width));
+        }
+    }
+
+    let count = result.rows.len();
+    out.push_str(&format!(
+        "({} {})\n",
+        count,
+        if count == 1 { "row" } else { "rows" }
+    ));
+
+    out
 }
 
 fn format_minimal(result: &QueryResult) -> String {
@@ -350,5 +381,47 @@ mod tests {
         let out = format_result(&result, false);
         assert!(out.contains("..."), "expected truncated cell, got:\n{out}");
         assert!(!out.contains(&long), "full value should not appear, got:\n{out}");
+    }
+
+    #[test]
+    fn expanded_uses_record_header_and_labels() {
+        let result = QueryResult {
+            columns: vec!["id".to_string(), "email".to_string()],
+            rows: vec![
+                vec!["1".to_string(), "alice@example.com".to_string()],
+                vec!["2".to_string(), "bob@example.com".to_string()],
+            ],
+            rows_affected: None,
+        };
+        let out = format_result(&result, true);
+        assert!(out.contains("-[ RECORD 1 ]"), "missing record 1 header:\n{out}");
+        assert!(out.contains("-[ RECORD 2 ]"), "missing record 2 header:\n{out}");
+        assert!(out.contains("email | alice@example.com"), "label padding wrong:\n{out}");
+        assert!(out.contains("id    | 1"), "label padding wrong:\n{out}");
+    }
+
+    #[test]
+    fn expanded_does_not_truncate() {
+        let long = "y".repeat(60);
+        let result = QueryResult {
+            columns: vec!["v".to_string()],
+            rows: vec![vec![long.clone()]],
+            rows_affected: None,
+        };
+        let out = format_result(&result, true);
+        assert!(out.contains(&long), "expanded mode must show full value:\n{out}");
+        assert!(!out.contains("..."), "expanded mode must not truncate:\n{out}");
+    }
+
+    #[test]
+    fn expanded_empty_columns_shows_footer_only() {
+        let result = QueryResult {
+            columns: vec![],
+            rows: vec![],
+            rows_affected: Some(3),
+        };
+        let out = format_result(&result, true);
+        assert!(out.contains("(3 rows affected)"), "expected footer:\n{out}");
+        assert!(!out.contains("RECORD"), "no records expected:\n{out}");
     }
 }
