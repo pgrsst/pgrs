@@ -243,6 +243,10 @@ fn fuzzy_match(candidate: &str, query: &str) -> bool {
         return true;
     }
     let mut chars = candidate.chars();
+    // `chars` is a shared mutable iterator: each call to `chars.any(...)` advances
+    // its position, so the next outer `.all()` iteration resumes from where the
+    // previous one left off.  This enforces that query characters are matched as a
+    // subsequence (in order) rather than as an unordered set.
     query
         .chars()
         .all(|q| chars.any(|c| c.eq_ignore_ascii_case(&q)))
@@ -325,7 +329,7 @@ impl SqlCompleter {
         let cols = self.schema.columns_for(resolved);
         if !cols.is_empty() {
             cols.iter()
-                .filter(|c| c.to_uppercase().starts_with(col_prefix))
+                .filter(|c| fuzzy_match(c, col_prefix))
                 .map(|c| (c.to_string(), CompletionKind::Column))
                 .collect()
         } else {
@@ -334,7 +338,7 @@ impl SqlCompleter {
                 .tables()
                 .iter()
                 .flat_map(|t| self.schema.columns_for(t).iter().cloned())
-                .filter(|c| c.to_uppercase().starts_with(col_prefix))
+                .filter(|c| fuzzy_match(&c, col_prefix))
                 .map(|c| (c, CompletionKind::Column))
                 .collect()
         }
@@ -1015,6 +1019,22 @@ mod tests {
         assert!(
             results.iter().any(|(r, _)| r == "created_at"),
             "expected 'created_at' via fuzzy 'crat', got: {:?}",
+            results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn complete_qualified_fuzzy_matches_column_by_subsequence() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["created_at", "email"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let input = "SELECT users.crat";
+        let results = c.complete_input(input, input.len());
+        assert!(
+            results.iter().any(|(r, _)| r == "created_at"),
+            "expected 'created_at' via fuzzy 'crat' in dot-completion, got: {:?}",
             results.iter().map(|(r, _)| r).collect::<Vec<_>>()
         );
     }
