@@ -146,3 +146,6 @@ gh release create vX.Y.Z \
 - For Rust workspaces (multiple crates), ask whether all crates should be bumped or only the ones that changed
 - If `version.workspace = true` is used in `Cargo.toml`, only update the root workspace version
 - For breaking changes, always highlight them at the top of the release notes
+- `gh` CLI must be installed and authenticated (`gh auth status`) before Step 6 runs
+- Release notes passed to `gh release create --notes` are the approved text from Step 5 — never auto-generate from `--generate-notes` flag
+- The `--target main` flag ensures the release points to the main branch; change if the default branch differs
