@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::core::ports::db_connection::DbConnection;
 
+#[derive(Clone)]
 pub struct SchemaService {
     pub tables: Vec<String>,
     pub columns: HashMap<String, Vec<String>>,
