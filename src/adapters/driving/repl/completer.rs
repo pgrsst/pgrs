@@ -9,7 +9,7 @@ struct AliasMap {
 }
 
 impl AliasMap {
-    fn resolve<'a>(&self, name: &'a str) -> Option<&str> {
+    fn resolve(&self, name: &str) -> Option<&str> {
         self.map.get(name).and_then(|v| v.as_deref())
     }
 }
@@ -27,6 +27,8 @@ enum AliasState {
 }
 
 fn build_alias_map(line: &str) -> AliasMap {
+    // NOTE: schema-qualified table names (e.g. FROM public.users u) are not handled —
+    // the dot is parsed as Other('.') which disrupts the alias extraction for that table.
     let mut map: HashMap<String, Option<String>> = HashMap::new();
     let mut state = AliasState::Idle;
 
@@ -370,7 +372,7 @@ impl SqlCompleter {
             .filter_map(|w| trigger.contains(&w[0]).then_some(w[1].to_lowercase()))
             .collect();
         for real_table in alias_map.map.values().filter_map(|v| v.as_deref()) {
-            if !refs.contains(&real_table.to_string()) {
+            if !refs.iter().any(|r| r == real_table) {
                 refs.push(real_table.to_string());
             }
         }
