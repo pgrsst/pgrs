@@ -597,10 +597,17 @@ impl Hinter for SqlHinter {
         _cwd: &str,
     ) -> String {
         let candidates = self.completer.complete_input(line, pos);
-        let prefix = common_prefix(&candidates);
 
         let start = word_start(line, pos);
         let current_word = &line[start..pos];
+
+        // Ghost text needs prefix-matching, not fuzzy/subsequence matching.
+        // Fuzzy matching yields too many unrelated candidates whose common prefix collapses to "".
+        let prefix_candidates: Vec<_> = candidates
+            .into_iter()
+            .filter(|(c, _)| c.to_lowercase().starts_with(&current_word.to_lowercase()))
+            .collect();
+        let prefix = common_prefix(&prefix_candidates);
 
         self.current_hint = if !prefix.is_empty()
             && prefix.chars().count() > current_word.chars().count()
