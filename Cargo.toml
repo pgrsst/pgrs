@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 dirs = "6"
 postgres = "0.19"
-reedline = "0"
+reedline = "0.47"
 nu-ansi-term = "0.50"
 unicode-width = "0.2"
 serde = { version = "1.0.228", features = ["derive"] }

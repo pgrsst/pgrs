@@ -141,7 +141,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                     Err(e) => eprintln!("ERROR:  {}", e),
                 }
             }
-            Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => break,
+            Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
             Ok(_) => {}
             Err(e) => return Err(e.to_string()),
         }
