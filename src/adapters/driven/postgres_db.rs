@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::core::domain::connection::Connection;
+use crate::core::domain::connection::{Connection, TlsMode};
 use crate::core::ports::db_connection::{DbConnection, QueryResult};
 
 pub struct PostgresDb {
@@ -10,16 +10,28 @@ pub struct PostgresDb {
 
 impl PostgresDb {
     pub fn new(connection: &Connection) -> Result<Self, String> {
-        let conn_str = format!(
-            "host={} port={} user={} password={} dbname={}",
-            connection.host,
-            connection.port,
-            connection.username,
-            connection.password,
-            connection.database
-        );
-        let client = postgres::Client::connect(&conn_str, postgres::NoTls)
-            .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?;
+        let mut config = postgres::Config::new();
+        config
+            .host(&connection.host)
+            .port(connection.port)
+            .user(&connection.username)
+            .password(connection.password.as_bytes())
+            .dbname(&connection.database);
+
+        let client = match connection.tls {
+            TlsMode::Disable => config
+                .connect(postgres::NoTls)
+                .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?,
+            TlsMode::Require => {
+                let tls = native_tls::TlsConnector::new()
+                    .map_err(|e| format!("failed to build TLS connector: {}", e))?;
+                let tls = postgres_native_tls::MakeTlsConnector::new(tls);
+                config
+                    .connect(tls)
+                    .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?
+            }
+        };
+
         Ok(Self {
             client: RefCell::new(client),
         })

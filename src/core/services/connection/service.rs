@@ -1,4 +1,4 @@
-use crate::core::domain::connection::Connection;
+use crate::core::domain::connection::{Connection, TlsMode};
 use crate::core::ports::connection_repository::ConnectionRepository;
 
 pub struct ConnectionService<R>
@@ -15,6 +15,7 @@ pub struct AddConnectionInput {
     pub username: String,
     pub password: String,
     pub database: String,
+    pub tls: TlsMode,
 }
 
 impl<R> ConnectionService<R>
@@ -53,6 +54,7 @@ where
             username: input.username,
             password: input.password,
             database: input.database,
+            tls: input.tls,
         };
 
         self.repository.add(connection)
@@ -82,7 +84,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::domain::connection::Connection;
+    use crate::core::domain::connection::{Connection, TlsMode};
     use crate::core::ports::connection_repository::ConnectionRepository;
     use std::cell::RefCell;
 
@@ -136,6 +138,7 @@ mod tests {
             username: "admin".to_string(),
             password: "secret".to_string(),
             database: "mydb".to_string(),
+            tls: TlsMode::Disable,
         }
     }
 

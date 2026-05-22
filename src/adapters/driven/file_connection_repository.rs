@@ -5,6 +5,16 @@ use std::path::PathBuf;
 use crate::core::domain::connection::Connection;
 use crate::core::ports::connection_repository::ConnectionRepository;
 
+struct LockGuard {
+    path: PathBuf,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 pub struct FileConnectionRepository {
     path: PathBuf,
 }
@@ -32,13 +42,16 @@ impl FileConnectionRepository {
         let content =
             serde_json::to_string_pretty(connections).map_err(|error| error.to_string())?;
 
-        fs::write(&self.path, content).map_err(|error| error.to_string())?;
-        fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| error.to_string())
+        let tmp_path = self.path.with_extension("tmp");
+        fs::write(&tmp_path, &content).map_err(|error| error.to_string())?;
+        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))
+            .map_err(|error| error.to_string())?;
+        fs::rename(&tmp_path, &self.path).map_err(|error| error.to_string())
     }
 
     // Acquires an exclusive lock file before calling f(), releases it after.
     // create_new is atomic on POSIX — only one process succeeds.
+    // LockGuard ensures the lock file is removed even if f() panics.
     fn with_lock<F, T>(&self, f: F) -> Result<T, String>
     where
         F: FnOnce() -> Result<T, String>,
@@ -51,12 +64,11 @@ impl FileConnectionRepository {
             .map_err(|_| {
                 format!(
                     "connections file is locked by another process (remove {:?} if stale)",
-                    lock_path
+                    lock_path.clone()
                 )
             })?;
-        let result = f();
-        let _ = fs::remove_file(&lock_path);
-        result
+        let _guard = LockGuard { path: lock_path };
+        f()
     }
 }
 
@@ -119,6 +131,7 @@ mod tests {
             username: "admin".to_string(),
             password: "secret".to_string(),
             database: "mydb".to_string(),
+            tls: crate::core::domain::connection::TlsMode::Disable,
         }
     }
 
@@ -200,5 +213,33 @@ mod tests {
         let (repo, _dir) = repo();
         let result = repo.get_connection("nonexistent");
         assert_eq!(result, Err("connection 'nonexistent' not found".to_string()));
+    }
+
+    #[test]
+    fn lock_file_is_removed_even_when_closure_panics() {
+        use std::panic;
+        let (repo, dir) = repo();
+        let lock_path = dir.path().join("connections.lock");
+
+        let _ = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let _ = repo.with_lock(|| -> Result<(), String> {
+                panic!("deliberate panic inside lock");
+            });
+        }));
+
+        assert!(
+            !lock_path.exists(),
+            "lock file must be cleaned up after panic so future operations can proceed"
+        );
+    }
+
+    #[test]
+    fn no_leftover_tmp_file_after_successful_write() {
+        let (repo, dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        repo.add(sample_connection("staging")).unwrap();
+
+        let tmp_path = dir.path().join("connections.tmp");
+        assert!(!tmp_path.exists(), "tmp file should not remain after write completes");
     }
 }

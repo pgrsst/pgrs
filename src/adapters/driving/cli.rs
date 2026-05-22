@@ -1,5 +1,5 @@
 use crate::adapters::driving::completions;
-use crate::core::domain::connection::Connection;
+use crate::core::domain::connection::{Connection, TlsMode};
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::services::connection::service::{AddConnectionInput, ConnectionService};
 
@@ -52,6 +52,12 @@ where
             .transpose()?
             .unwrap_or(5432);
 
+        let tls = match optional_option(args, "--tls").as_deref() {
+            None | Some("disable") => TlsMode::Disable,
+            Some("require") => TlsMode::Require,
+            Some(other) => return Err(format!("unknown tls mode '{other}' — supported: disable, require")),
+        };
+
         self.connection_service.add_connection(AddConnectionInput {
             name: name.clone(),
             host,
@@ -59,6 +65,7 @@ where
             username,
             password,
             database,
+            tls,
         })?;
 
         println!("connection '{name}' added");
@@ -172,7 +179,7 @@ fn optional_option(args: &[String], key: &str) -> Option<String> {
 }
 
 fn welcome() -> &'static str {
-    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>]\n             Add a new named connection\n  list         List all saved connections\n  list --names-only\n             Print connection names only, one per line\n  delete <name>\n             Delete a named connection\n  connect <name>\n             Open an interactive psql session using a saved connection\n  shell <name>\n             Open pgrs interactive SQL REPL with auto-completion\n  completions <bash|zsh|fish>\n             Print shell completion script\n\nRun `pgrs <command> --help` for more info on a specific command."
+    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require]\n             Add a new named connection\n  list         List all saved connections\n  list --names-only\n             Print connection names only, one per line\n  delete <name>\n             Delete a named connection\n  connect <name>\n             Open an interactive psql session using a saved connection\n  shell <name>\n             Open pgrs interactive SQL REPL with auto-completion\n  completions <bash|zsh|fish>\n             Print shell completion script\n\nRun `pgrs <command> --help` for more info on a specific command."
 }
 
 fn usage() -> &'static str {
@@ -201,6 +208,7 @@ mod tests {
                     username: "user".to_string(),
                     password: "pass".to_string(),
                     database: "db".to_string(),
+                    tls: crate::core::domain::connection::TlsMode::Disable,
                 })
                 .collect();
             Self {
@@ -261,5 +269,35 @@ mod tests {
         let cli = cli_with(&["prod"]);
         let conn = cli.get_connection("prod").unwrap();
         assert_eq!(conn.name, "prod");
+    }
+
+    fn add_args(name: &str, extra: &[&str]) -> impl Iterator<Item = String> {
+        let mut args = vec![
+            "add".to_string(), name.to_string(),
+            "--host=localhost".to_string(),
+            "--username=user".to_string(),
+            "--password=pass".to_string(),
+            "--database=db".to_string(),
+        ];
+        args.extend(extra.iter().map(|s| s.to_string()));
+        args.into_iter()
+    }
+
+    #[test]
+    fn add_without_tls_flag_defaults_to_disable() {
+        use crate::core::domain::connection::TlsMode;
+        let cli = cli_with(&[]);
+        cli.run(add_args("prod", &[])).unwrap();
+        let conn = cli.get_connection("prod").unwrap();
+        assert_eq!(conn.tls, TlsMode::Disable);
+    }
+
+    #[test]
+    fn add_with_tls_require_saves_require_mode() {
+        use crate::core::domain::connection::TlsMode;
+        let cli = cli_with(&[]);
+        cli.run(add_args("prod", &["--tls=require"])).unwrap();
+        let conn = cli.get_connection("prod").unwrap();
+        assert_eq!(conn.tls, TlsMode::Require);
     }
 }
