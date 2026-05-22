@@ -587,4 +587,110 @@ mod tests {
         // "SELECT public.users." — word_start at pos=20 should be 20
         assert_eq!(word_start("SELECT public.users.", 20), 20);
     }
+
+    #[test]
+    fn completion_kind_label_keyword() {
+        assert_eq!(CompletionKind::Keyword.label(), "[keyword]");
+    }
+
+    #[test]
+    fn completion_kind_label_table() {
+        assert_eq!(CompletionKind::Table.label(), "[table]");
+    }
+
+    #[test]
+    fn completion_kind_label_column() {
+        assert_eq!(CompletionKind::Column.label(), "[column]");
+    }
+
+    #[test]
+    fn completion_kind_style_returns_distinct_styles() {
+        let kw = CompletionKind::Keyword.style();
+        let tbl = CompletionKind::Table.style();
+        let col = CompletionKind::Column.style();
+        assert_ne!(format!("{kw:?}"), format!("{tbl:?}"));
+        assert_ne!(format!("{tbl:?}"), format!("{col:?}"));
+    }
+
+    #[test]
+    fn completer_trait_complete_returns_suggestions() {
+        use reedline::Completer;
+        let schema = schema_with(&["users", "orders"], &[]);
+        let mut c = SqlCompleter::new(schema);
+        let suggestions = c.complete("SELECT * FROM ", 13);
+        assert!(suggestions.iter().any(|s| s.value == "users"));
+        assert!(suggestions.iter().any(|s| s.value == "orders"));
+    }
+
+    #[test]
+    fn completer_trait_complete_includes_description_and_span() {
+        use reedline::Completer;
+        let schema = schema_with(&[], &[]);
+        let mut c = SqlCompleter::new(schema);
+        let suggestions = c.complete("SEL", 3);
+        let sel = suggestions.iter().find(|s| s.value == "SELECT").unwrap();
+        assert_eq!(sel.description.as_deref(), Some("[keyword]"));
+        assert_eq!(sel.span.start, 0);
+        assert_eq!(sel.span.end, 3);
+    }
+
+    #[test]
+    fn highlighter_new_collects_all_columns() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["id", "email"])],
+        );
+        let h = SqlHighlighter::new(schema);
+        assert!(h.tables.contains(&"users".to_string()));
+        assert!(h.columns.contains(&"id".to_string()));
+        assert!(h.columns.contains(&"email".to_string()));
+    }
+
+    #[test]
+    fn highlighter_highlight_returns_styled_text() {
+        use reedline::Highlighter;
+        let schema = schema_with(&["users"], &[("users", &["id"])]);
+        let h = SqlHighlighter::new(schema);
+        let styled = h.highlight("SELECT id FROM users", 0);
+        let combined: String = styled.buffer.iter().map(|(_, s)| s.as_str()).collect();
+        assert!(combined.contains("SELECT"));
+        assert!(combined.contains("users"));
+    }
+
+    #[test]
+    fn highlighter_highlight_covers_comment_string_number_and_plain_word() {
+        use reedline::Highlighter;
+        let schema = schema_with(&[], &[]);
+        let h = SqlHighlighter::new(schema);
+        // exercises Comment, StringLiteral, Number, and plain-word (None) branches
+        let styled = h.highlight("-- note\n'hello' 42 foo", 0);
+        let combined: String = styled.buffer.iter().map(|(_, s)| s.as_str()).collect();
+        assert!(combined.contains("note"));
+        assert!(combined.contains("hello"));
+        assert!(combined.contains("42"));
+        assert!(combined.contains("foo"));
+    }
+
+    #[test]
+    fn qualified_dot_with_unknown_table_falls_back_to_all_columns() {
+        let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
+        let c = SqlCompleter::new(schema);
+        // "ghost" is not a known table — should fall back to all columns
+        let input = "SELECT ghost.";
+        let results = c.complete_input(input, input.len());
+        assert!(results.iter().any(|(r, _)| r == "id"), "expected fallback column id");
+        assert!(results.iter().any(|(r, _)| r == "email"));
+    }
+
+    #[test]
+    fn select_without_from_suggests_keywords() {
+        let schema = schema_with(&["users"], &[]);
+        let c = SqlCompleter::new(schema);
+        // SELECT followed by space, no FROM yet — table_refs empty → keywords
+        let results = c.complete_input("SELECT ", 7);
+        assert!(
+            results.iter().any(|(r, k)| r == "FROM" && matches!(k, CompletionKind::Keyword)),
+            "expected FROM keyword when no table referenced yet"
+        );
+    }
 }

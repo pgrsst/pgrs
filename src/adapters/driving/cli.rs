@@ -301,4 +301,85 @@ mod tests {
         let conn = cli.get_connection("prod").unwrap();
         assert_eq!(conn.tls, TlsMode::Require);
     }
+
+    #[test]
+    fn no_args_returns_ok() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(std::iter::empty()).is_ok());
+    }
+
+    #[test]
+    fn unknown_command_returns_error() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["unknown".to_string()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn add_with_invalid_port_returns_error() {
+        let cli = cli_with(&[]);
+        let result = cli.run(add_args("prod", &["--port=abc"]));
+        assert_eq!(result, Err("port must be a number".to_string()));
+    }
+
+    #[test]
+    fn add_with_unknown_tls_returns_error() {
+        let cli = cli_with(&[]);
+        let result = cli.run(add_args("prod", &["--tls=starttls"]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown tls mode"));
+    }
+
+    #[test]
+    fn list_empty_returns_ok() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["list".to_string()].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn list_with_connections_returns_ok() {
+        let cli = cli_with(&["prod", "staging"]);
+        assert!(cli.run(["list".to_string()].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn delete_succeeds_returns_ok() {
+        let cli = cli_with(&["prod"]);
+        assert!(cli.run(["delete".to_string(), "prod".to_string()].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn delete_missing_name_arg_returns_error() {
+        let cli = cli_with(&[]);
+        let result = cli.run(["delete".to_string()].into_iter());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("delete"));
+    }
+
+    #[test]
+    fn connect_missing_name_arg_returns_error() {
+        let cli = cli_with(&[]);
+        let result = cli.run(["connect".to_string()].into_iter());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("connect"));
+    }
+
+    #[test]
+    fn connect_unknown_connection_returns_error() {
+        let cli = cli_with(&[]);
+        let result = cli.run(["connect".to_string(), "nonexistent".to_string()].into_iter());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn completions_zsh_returns_ok() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["completions".to_string(), "zsh".to_string()].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn completions_fish_returns_ok() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["completions".to_string(), "fish".to_string()].into_iter()).is_ok());
+    }
 }
