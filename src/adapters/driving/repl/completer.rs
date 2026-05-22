@@ -293,7 +293,7 @@ impl SqlCompleter {
         };
 
         let full_upper = line.to_uppercase();
-        let candidates = self.candidates_for_trigger(effective_trigger, &full_upper);
+        let candidates = self.candidates_for_trigger(effective_trigger, &full_upper, &alias_map);
 
         let is_trigger = TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word);
         let prefix_upper = if is_trigger { String::new() } else { current_word.to_uppercase() };
@@ -328,7 +328,7 @@ impl SqlCompleter {
         }
     }
 
-    fn candidates_for_trigger(&self, trigger: &str, upper_query: &str) -> Vec<(String, CompletionKind)> {
+    fn candidates_for_trigger(&self, trigger: &str, upper_query: &str, alias_map: &AliasMap) -> Vec<(String, CompletionKind)> {
         match trigger {
             "FROM" | "JOIN" | "INTO" | "UPDATE" => self
                 .schema
@@ -337,7 +337,7 @@ impl SqlCompleter {
                 .map(|t| (t.to_string(), CompletionKind::Table))
                 .collect(),
             "SELECT" | "WHERE" | "ON" | "SET" | "BY" => {
-                let table_refs = self.extract_table_refs(upper_query);
+                let table_refs = self.extract_table_refs(upper_query, alias_map);
                 if table_refs.is_empty() {
                     SQL_KEYWORDS
                         .iter()
@@ -347,9 +347,8 @@ impl SqlCompleter {
                     table_refs
                         .iter()
                         .flat_map(|t| {
-                            let t_lower = t.to_lowercase();
                             self.schema
-                                .columns_for(&t_lower)
+                                .columns_for(t)
                                 .iter()
                                 .map(|c| (c.to_string(), CompletionKind::Column))
                         })
@@ -363,13 +362,19 @@ impl SqlCompleter {
         }
     }
 
-    fn extract_table_refs<'a>(&self, upper_query: &'a str) -> Vec<&'a str> {
+    fn extract_table_refs(&self, upper_query: &str, alias_map: &AliasMap) -> Vec<String> {
         let tokens: Vec<&str> = upper_query.split_whitespace().collect();
         let trigger = ["FROM", "JOIN", "UPDATE"];
-        tokens
+        let mut refs: Vec<String> = tokens
             .windows(2)
-            .filter_map(|w| trigger.contains(&w[0]).then_some(w[1]))
-            .collect()
+            .filter_map(|w| trigger.contains(&w[0]).then_some(w[1].to_lowercase()))
+            .collect();
+        for real_table in alias_map.map.values().filter_map(|v| v.as_deref()) {
+            if !refs.contains(&real_table.to_string()) {
+                refs.push(real_table.to_string());
+            }
+        }
+        refs
     }
 }
 
@@ -904,6 +909,26 @@ mod tests {
         assert!(results.iter().any(|(r, _)| r == "email"), "expected email");
         assert!(!results.iter().any(|(r, _)| r == "id"), "id should not appear");
         assert!(!results.iter().any(|(r, _)| r == "created_at"), "created_at should not appear");
+    }
+
+    #[test]
+    fn alias_in_where_trigger() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["id", "email"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let input = "SELECT u.id FROM users u WHERE ";
+        let results = c.complete_input(input, input.len());
+        assert!(
+            results.iter().any(|(r, k)| r == "email" && matches!(k, CompletionKind::Column)),
+            "expected email via WHERE trigger, got: {:?}",
+            results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+        assert!(
+            results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
+            "expected id via WHERE trigger"
+        );
     }
 
     #[test]
