@@ -83,7 +83,7 @@ impl Validator for SqlValidator {
 }
 
 fn repl_help_text() -> &'static str {
-    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
+    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables\n  \\x         toggle expanded display\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
 }
 
 pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
@@ -127,6 +127,8 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         db_name
     );
 
+    let mut expanded = false;
+
     loop {
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
@@ -144,11 +146,16 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                     }
                     continue;
                 }
+                if trimmed == "\\x" {
+                    expanded = !expanded;
+                    println!("Expanded display is {}.", if expanded { "on" } else { "off" });
+                    continue;
+                }
                 if trimmed.is_empty() {
                     continue;
                 }
                 match conn.execute(trimmed) {
-                    Ok(result) => print_result(&result, false),
+                    Ok(result) => print_result(&result, expanded),
                     Err(e) => eprintln!("error: {}", e),
                 }
             }
@@ -202,5 +209,11 @@ mod tests {
     fn help_text_mentions_exit_alias() {
         let text = repl_help_text();
         assert!(text.contains("exit"), "help should mention exit alias, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_x_command() {
+        let text = repl_help_text();
+        assert!(text.contains("\\x"), "help should mention \\x, got: {text}");
     }
 }
