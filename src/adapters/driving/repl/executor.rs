@@ -2,12 +2,21 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::core::ports::db_connection::QueryResult;
 
-fn colorize_cell(val: &str) -> String {
+fn normalize_val(val: &str) -> &str {
     match val.to_lowercase().as_str() {
-        "true" | "t"  => format!("\x1b[1;32m{}\x1b[0m", val),
-        "false" | "f" => format!("\x1b[1;31m{}\x1b[0m", val),
-        "null"        => format!("\x1b[2m{}\x1b[0m", val),
-        _             => val.to_string(),
+        "t" => "true",
+        "f" => "false",
+        _   => val,
+    }
+}
+
+fn colorize_cell(val: &str) -> String {
+    let display = normalize_val(val);
+    match display.to_lowercase().as_str() {
+        "true"  => format!("\x1b[1;32m{}\x1b[0m", display),
+        "false" => format!("\x1b[1;31m{}\x1b[0m", display),
+        "null"  => format!("\x1b[2m{}\x1b[0m", display),
+        _       => display.to_string(),
     }
 }
 
@@ -41,7 +50,7 @@ pub fn format_result(result: &QueryResult) -> String {
         .iter()
         .enumerate()
         .map(|(i, col)| {
-            let max_val = result.rows.iter().map(|r| visible_len(&r[i])).max().unwrap_or(0);
+            let max_val = result.rows.iter().map(|r| visible_len(normalize_val(&r[i]))).max().unwrap_or(0);
             col.len().max(max_val)
         })
         .collect();
@@ -195,17 +204,18 @@ mod tests {
     }
 
     #[test]
-    fn colorize_t_bold_green() {
+    fn colorize_t_translates_to_true() {
         let result = colorize_cell("t");
         assert!(result.contains("\x1b[1;32m"), "expected bold green for t");
-        assert!(result.contains("t"));
+        assert!(result.contains("true"), "expected 't' translated to 'true'");
+        assert!(!result.contains("\x1b[1;32mt\x1b[0m"), "should not show raw 't'");
     }
 
     #[test]
-    fn colorize_f_bold_red() {
+    fn colorize_f_translates_to_false() {
         let result = colorize_cell("f");
         assert!(result.contains("\x1b[1;31m"), "expected bold red for f");
-        assert!(result.contains("f"));
+        assert!(result.contains("false"), "expected 'f' translated to 'false'");
     }
 
     #[test]
