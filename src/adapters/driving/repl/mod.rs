@@ -111,6 +111,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         .with_highlighter(Box::new(highlighter))
         .with_validator(Box::new(SqlValidator))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
+        .with_quick_completions(true)
         .with_edit_mode(Box::new(Emacs::new(keybindings)));
 
     let prompt = PgrsPrompt;
