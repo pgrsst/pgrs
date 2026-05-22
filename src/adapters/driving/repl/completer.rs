@@ -1,7 +1,18 @@
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Highlighter, Span, StyledText, Suggestion};
+use std::collections::HashMap;
 
 use crate::core::services::schema::service::SchemaService;
+
+struct AliasMap {
+    map: HashMap<String, Option<String>>,
+}
+
+impl AliasMap {
+    fn resolve<'a>(&self, name: &'a str) -> Option<&str> {
+        self.map.get(name).and_then(|v| v.as_deref())
+    }
+}
 
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
@@ -691,5 +702,25 @@ mod tests {
             results.iter().any(|(r, k)| r == "FROM" && matches!(k, CompletionKind::Keyword)),
             "expected FROM keyword when no table referenced yet"
         );
+    }
+
+    #[test]
+    fn alias_map_resolve_known_alias() {
+        let mut m = AliasMap { map: std::collections::HashMap::new() };
+        m.map.insert("u".to_string(), Some("users".to_string()));
+        assert_eq!(m.resolve("u"), Some("users"));
+    }
+
+    #[test]
+    fn alias_map_resolve_unknown_returns_none() {
+        let m = AliasMap { map: std::collections::HashMap::new() };
+        assert_eq!(m.resolve("x"), None);
+    }
+
+    #[test]
+    fn alias_map_resolve_subquery_alias_returns_none() {
+        let mut m = AliasMap { map: std::collections::HashMap::new() };
+        m.map.insert("s".to_string(), None);
+        assert_eq!(m.resolve("s"), None);
     }
 }
