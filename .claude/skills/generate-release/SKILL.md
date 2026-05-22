@@ -86,6 +86,36 @@ Remember to update `Cargo.lock` by running `cargo check` or `cargo build` afterw
 
 ---
 
+### Step 5 — Preview & revision loop
+
+Display a structured preview in chat — never ask the user to edit a file:
+
+```
+Version:  X.Y.Z-prev → X.Y.Z
+Commits:
+  - feat: ...
+  - fix: ...
+
+Release Notes:
+---
+## What's Changed
+### 🚀 New Features
+- ...
+
+### 🐛 Bug Fixes
+- ...
+
+**Full Changelog**: https://github.com/<owner>/<repo>/compare/vX.Y.Z-prev...vX.Y.Z
+---
+Lanjutkan publish? (ok / minta revisi)
+```
+
+- User replies **"ok" / "lanjut" / "publish" / "go"** → proceed to Step 6
+- User requests a change → revise the release notes in the response → show the full preview again → repeat
+- No iteration limit; continue until the user approves
+
+---
+
 ### Step 5 — Git tag
 
 Provide the commands to create the tag:
