@@ -1,5 +1,29 @@
 use crate::core::ports::db_connection::QueryResult;
 
+fn colorize_cell(val: &str) -> String {
+    match val.to_lowercase().as_str() {
+        "true"  => format!("\x1b[1;32m{}\x1b[0m", val),
+        "false" => format!("\x1b[1;31m{}\x1b[0m", val),
+        "null"  => format!("\x1b[2m{}\x1b[0m", val),
+        _       => val.to_string(),
+    }
+}
+
+fn visible_len(s: &str) -> usize {
+    let mut len = 0;
+    let mut in_escape = false;
+    for c in s.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+        } else if in_escape {
+            if c == 'm' { in_escape = false; }
+        } else {
+            len += 1;
+        }
+    }
+    len
+}
+
 pub fn print_result(result: &QueryResult) {
     print!("{}", format_result(result));
 }
@@ -96,5 +120,50 @@ mod tests {
         let out = format_result(&result);
         assert!(out.contains("a_very_long_name"));
         assert!(out.contains("short"));
+    }
+
+    #[test]
+    fn colorize_true_bold_green() {
+        let result = colorize_cell("true");
+        assert!(result.contains("\x1b[1;32m"), "expected bold green for true");
+        assert!(result.contains("true"));
+        assert!(result.contains("\x1b[0m"));
+    }
+
+    #[test]
+    fn colorize_false_bold_red() {
+        let result = colorize_cell("false");
+        assert!(result.contains("\x1b[1;31m"), "expected bold red for false");
+        assert!(result.contains("false"));
+    }
+
+    #[test]
+    fn colorize_null_dim() {
+        let result = colorize_cell("null");
+        assert!(result.contains("\x1b[2m"), "expected dim for null");
+        assert!(result.contains("null"));
+    }
+
+    #[test]
+    fn colorize_null_case_insensitive() {
+        let result = colorize_cell("NULL");
+        assert!(result.contains("\x1b[2m"), "expected dim for NULL");
+    }
+
+    #[test]
+    fn colorize_plain_value_unchanged() {
+        let result = colorize_cell("hello");
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn visible_len_strips_ansi() {
+        let colored = "\x1b[1;32mtrue\x1b[0m";
+        assert_eq!(visible_len(colored), 4);
+    }
+
+    #[test]
+    fn visible_len_plain_string() {
+        assert_eq!(visible_len("hello"), 5);
     }
 }
