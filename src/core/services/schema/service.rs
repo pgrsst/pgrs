@@ -34,7 +34,7 @@ mod tests {
 
     impl DbConnection for MockDb {
         fn execute(&self, _: &str) -> Result<QueryResult, String> {
-            Ok(QueryResult { columns: vec![], rows: vec![] })
+            Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None })
         }
 
         fn list_tables(&self) -> Result<Vec<String>, String> {

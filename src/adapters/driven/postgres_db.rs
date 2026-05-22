@@ -28,35 +28,44 @@ impl PostgresDb {
 
 impl DbConnection for PostgresDb {
     fn execute(&self, query: &str) -> Result<QueryResult, String> {
-        let mut client = self.client.borrow_mut();
-        let rows = client.query(query, &[]).map_err(|e| e.to_string())?;
+        use postgres::SimpleQueryMessage;
 
-        if rows.is_empty() {
-            return Ok(QueryResult {
-                columns: vec![],
-                rows: vec![],
-            });
+        let mut client = self.client.borrow_mut();
+        let messages = client.simple_query(query).map_err(|e| e.to_string())?;
+
+        let mut columns: Vec<String> = vec![];
+        let mut rows: Vec<Vec<String>> = vec![];
+        let mut rows_affected: Option<u64> = None;
+
+        for msg in messages {
+            match msg {
+                SimpleQueryMessage::Row(row) => {
+                    if columns.is_empty() {
+                        columns = row.columns().iter().map(|c| c.name().to_string()).collect();
+                    }
+                    rows.push(
+                        (0..row.len())
+                            .map(|i| row.get(i).unwrap_or("NULL").to_string())
+                            .collect(),
+                    );
+                }
+                SimpleQueryMessage::CommandComplete(n) => {
+                    rows_affected = Some(n);
+                }
+                _ => {}
+            }
         }
 
-        let columns: Vec<String> = rows[0]
-            .columns()
-            .iter()
-            .map(|c| c.name().to_string())
-            .collect();
+        // Zero-row SELECT: simple_query sends no Row messages, so column names
+        // are lost. Use PREPARE to retrieve them from the server's plan.
+        // DML/DDL also land here but return no columns from prepare — fine.
+        if columns.is_empty() && rows.is_empty() {
+            if let Ok(stmt) = client.prepare(query) {
+                columns = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+            }
+        }
 
-        let data = rows
-            .iter()
-            .map(|row| {
-                (0..row.len())
-                    .map(|i| cell_to_string(row, i))
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-
-        Ok(QueryResult {
-            columns,
-            rows: data,
-        })
+        Ok(QueryResult { columns, rows, rows_affected })
     }
 
     fn list_tables(&self) -> Result<Vec<String>, String> {
@@ -93,21 +102,3 @@ impl DbConnection for PostgresDb {
     }
 }
 
-fn cell_to_string(row: &postgres::Row, idx: usize) -> String {
-    if let Ok(Some(v)) = row.try_get::<_, Option<String>>(idx) {
-        return v;
-    }
-    if let Ok(Some(v)) = row.try_get::<_, Option<i64>>(idx) {
-        return v.to_string();
-    }
-    if let Ok(Some(v)) = row.try_get::<_, Option<i32>>(idx) {
-        return v.to_string();
-    }
-    if let Ok(Some(v)) = row.try_get::<_, Option<f64>>(idx) {
-        return v.to_string();
-    }
-    if let Ok(Some(v)) = row.try_get::<_, Option<bool>>(idx) {
-        return v.to_string();
-    }
-    "NULL".to_string()
-}

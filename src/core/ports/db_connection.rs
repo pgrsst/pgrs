@@ -3,6 +3,7 @@ use std::collections::HashMap;
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
+    pub rows_affected: Option<u64>,
 }
 
 pub trait DbConnection {
@@ -22,6 +23,7 @@ mod tests {
             Ok(QueryResult {
                 columns: vec!["id".to_string()],
                 rows: vec![vec!["1".to_string()]],
+                rows_affected: None,
             })
         }
 

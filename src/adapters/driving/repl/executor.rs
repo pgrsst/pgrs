@@ -32,7 +32,7 @@ pub fn print_result(result: &QueryResult) {
 
 pub fn format_result(result: &QueryResult) -> String {
     if result.columns.is_empty() {
-        let count = result.rows.len();
+        let count = result.rows_affected.unwrap_or(result.rows.len() as u64);
         return format!("({} {})\n", count, if count == 1 { "row" } else { "rows" });
     }
 
@@ -95,6 +95,7 @@ mod tests {
         let result = QueryResult {
             columns: vec!["id".to_string(), "email".to_string()],
             rows: vec![vec!["1".to_string(), "alice@example.com".to_string()]],
+            rows_affected: None,
         };
         let out = format_result(&result);
         assert!(out.contains("id"), "missing column 'id'");
@@ -109,6 +110,7 @@ mod tests {
         let result = QueryResult {
             columns: vec![],
             rows: vec![],
+            rows_affected: None,
         };
         let out = format_result(&result);
         assert!(out.contains("(0 rows)"));
@@ -122,10 +124,46 @@ mod tests {
                 vec!["short".to_string()],
                 vec!["a_very_long_name".to_string()],
             ],
+            rows_affected: None,
         };
         let out = format_result(&result);
         assert!(out.contains("a_very_long_name"));
         assert!(out.contains("short"));
+    }
+
+    #[test]
+    fn zero_row_select_shows_column_headers() {
+        let result = QueryResult {
+            columns: vec!["id".to_string(), "email".to_string()],
+            rows: vec![],
+            rows_affected: Some(0),
+        };
+        let out = format_result(&result);
+        assert!(out.contains("id"), "header 'id' missing");
+        assert!(out.contains("email"), "header 'email' missing");
+        assert!(out.contains("(0 rows)"), "row count missing");
+    }
+
+    #[test]
+    fn dml_shows_rows_affected_count() {
+        let result = QueryResult {
+            columns: vec![],
+            rows: vec![],
+            rows_affected: Some(3),
+        };
+        let out = format_result(&result);
+        assert!(out.contains("(3 rows)"), "expected 3 rows, got: {}", out);
+    }
+
+    #[test]
+    fn dml_single_row_affected() {
+        let result = QueryResult {
+            columns: vec![],
+            rows: vec![],
+            rows_affected: Some(1),
+        };
+        let out = format_result(&result);
+        assert!(out.contains("(1 row)"), "expected singular, got: {}", out);
     }
 
     #[test]

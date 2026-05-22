@@ -1,6 +1,38 @@
 pub mod completer;
 pub mod executor;
 
+fn is_complete_statement(s: &str) -> bool {
+    let s = s.trim_end();
+    if !s.ends_with(';') {
+        return false;
+    }
+    // Ensure the trailing ';' is outside any string literal.
+    // Handles SQL '' escape for embedded single quotes.
+    let mut in_string = false;
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if in_string {
+            if chars[i] == '\'' {
+                if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                    i += 2; // '' escape — skip both
+                } else {
+                    in_string = false;
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        } else {
+            if chars[i] == '\'' {
+                in_string = true;
+            }
+            i += 1;
+        }
+    }
+    !in_string
+}
+
 use rustyline::error::ReadlineError;
 use rustyline::history::DefaultHistory;
 use rustyline::Editor;
@@ -58,13 +90,13 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                     continue;
                 }
 
-                rl.add_history_entry(&line).ok();
                 pending.push_str(&line);
                 pending.push('\n');
 
-                if pending.trim_end().ends_with(';') {
+                if is_complete_statement(&pending) {
                     let query = pending.trim().to_string();
                     pending.clear();
+                    rl.add_history_entry(&query).ok();
                     match conn.execute(&query) {
                         Ok(result) => print_result(&result),
                         Err(e) => eprintln!("ERROR:  {}", e),

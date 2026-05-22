@@ -36,21 +36,45 @@ impl FileConnectionRepository {
         fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))
             .map_err(|error| error.to_string())
     }
+
+    // Acquires an exclusive lock file before calling f(), releases it after.
+    // create_new is atomic on POSIX — only one process succeeds.
+    fn with_lock<F, T>(&self, f: F) -> Result<T, String>
+    where
+        F: FnOnce() -> Result<T, String>,
+    {
+        let lock_path = self.path.with_extension("lock");
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|_| {
+                format!(
+                    "connections file is locked by another process (remove {:?} if stale)",
+                    lock_path
+                )
+            })?;
+        let result = f();
+        let _ = fs::remove_file(&lock_path);
+        result
+    }
 }
 
 impl ConnectionRepository for FileConnectionRepository {
     fn add(&self, connection: Connection) -> Result<(), String> {
-        let mut connections = self.read_connections()?;
+        self.with_lock(|| {
+            let mut connections = self.read_connections()?;
 
-        if connections
-            .iter()
-            .any(|existing| existing.name == connection.name)
-        {
-            return Err(format!("connection '{}' already exists", connection.name));
-        }
+            if connections
+                .iter()
+                .any(|existing| existing.name == connection.name)
+            {
+                return Err(format!("connection '{}' already exists", connection.name));
+            }
 
-        connections.push(connection);
-        self.write_connections(&connections)
+            connections.push(connection);
+            self.write_connections(&connections)
+        })
     }
 
     fn list(&self) -> Result<Vec<Connection>, String> {
@@ -58,16 +82,18 @@ impl ConnectionRepository for FileConnectionRepository {
     }
 
     fn delete(&self, name: &str) -> Result<(), String> {
-        let mut connections = self.read_connections()?;
-        let initial_len = connections.len();
+        self.with_lock(|| {
+            let mut connections = self.read_connections()?;
+            let initial_len = connections.len();
 
-        connections.retain(|connection| connection.name != name);
+            connections.retain(|connection| connection.name != name);
 
-        if connections.len() == initial_len {
-            return Err(format!("connection '{}' not found", name));
-        }
+            if connections.len() == initial_len {
+                return Err(format!("connection '{}' not found", name));
+            }
 
-        self.write_connections(&connections)
+            self.write_connections(&connections)
+        })
     }
 
     fn get_connection(&self, name: &str) -> Result<Connection, String> {
