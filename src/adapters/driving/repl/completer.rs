@@ -20,6 +20,7 @@ enum AliasState {
     ExpectTable,
     ExpectAlias { candidate: String },
     ExpectAliasName { candidate: String },
+    PostAlias,
 }
 
 fn build_alias_map(line: &str) -> AliasMap {
@@ -55,15 +56,22 @@ fn build_alias_map(line: &str) -> AliasMap {
                 if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
             {
                 map.insert(w.to_lowercase(), Some(candidate));
-                AliasState::Idle
+                AliasState::PostAlias
             }
             (AliasState::ExpectAlias { .. }, SqlToken::Other(',')) => AliasState::ExpectTable,
             (AliasState::ExpectAlias { .. }, _) => AliasState::Idle,
             (AliasState::ExpectAliasName { candidate }, SqlToken::Word(w)) => {
                 map.insert(w.to_lowercase(), Some(candidate));
-                AliasState::Idle
+                AliasState::PostAlias
             }
             (AliasState::ExpectAliasName { .. }, _) => AliasState::Idle,
+            (AliasState::PostAlias, SqlToken::Other(',')) => AliasState::ExpectTable,
+            (AliasState::PostAlias, SqlToken::Word(w))
+                if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
+            {
+                AliasState::ExpectTable
+            }
+            (AliasState::PostAlias, _) => AliasState::Idle,
             (AliasState::Idle, _) => AliasState::Idle,
         };
     }
