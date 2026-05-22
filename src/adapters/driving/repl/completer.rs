@@ -21,6 +21,9 @@ enum AliasState {
     ExpectAlias { candidate: String },
     ExpectAliasName { candidate: String },
     PostAlias,
+    InSubquery { depth: usize },
+    ExpectSubqueryAlias,
+    ExpectSubqueryAliasName,
 }
 
 fn build_alias_map(line: &str) -> AliasMap {
@@ -28,13 +31,31 @@ fn build_alias_map(line: &str) -> AliasMap {
     let mut state = AliasState::Idle;
 
     for token in tokenize(line) {
-        // Skip whitespace and comments
-        match &token {
-            SqlToken::Comment(_) => continue,
-            SqlToken::Other(c) if c.is_whitespace() => continue,
-            _ => {}
+        if let SqlToken::Other(c) = token {
+            if c.is_whitespace() {
+                continue;
+            }
+            state = match (state, SqlToken::Other(c)) {
+                (AliasState::ExpectTable, SqlToken::Other('(')) => {
+                    AliasState::InSubquery { depth: 1 }
+                }
+                (AliasState::ExpectAlias { .. }, SqlToken::Other(',')) => AliasState::ExpectTable,
+                (AliasState::PostAlias, SqlToken::Other(',')) => AliasState::ExpectTable,
+                (AliasState::InSubquery { depth }, SqlToken::Other('(')) => {
+                    AliasState::InSubquery { depth: depth + 1 }
+                }
+                (AliasState::InSubquery { depth }, SqlToken::Other(')')) => {
+                    if depth == 1 {
+                        AliasState::ExpectSubqueryAlias
+                    } else {
+                        AliasState::InSubquery { depth: depth - 1 }
+                    }
+                }
+                (AliasState::InSubquery { depth }, _) => AliasState::InSubquery { depth },
+                (s, _) => s,
+            };
+            continue;
         }
-
         state = match (state, token) {
             (AliasState::Idle, SqlToken::Word(w))
                 if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
@@ -58,21 +79,36 @@ fn build_alias_map(line: &str) -> AliasMap {
                 map.insert(w.to_lowercase(), Some(candidate));
                 AliasState::PostAlias
             }
-            (AliasState::ExpectAlias { .. }, SqlToken::Other(',')) => AliasState::ExpectTable,
             (AliasState::ExpectAlias { .. }, _) => AliasState::Idle,
             (AliasState::ExpectAliasName { candidate }, SqlToken::Word(w)) => {
                 map.insert(w.to_lowercase(), Some(candidate));
                 AliasState::PostAlias
             }
             (AliasState::ExpectAliasName { .. }, _) => AliasState::Idle,
-            (AliasState::PostAlias, SqlToken::Other(',')) => AliasState::ExpectTable,
             (AliasState::PostAlias, SqlToken::Word(w))
                 if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
             {
                 AliasState::ExpectTable
             }
             (AliasState::PostAlias, _) => AliasState::Idle,
-            (AliasState::Idle, _) => AliasState::Idle,
+            (AliasState::ExpectSubqueryAlias, SqlToken::Word(w))
+                if w.to_uppercase() == "AS" =>
+            {
+                AliasState::ExpectSubqueryAliasName
+            }
+            (AliasState::ExpectSubqueryAlias, SqlToken::Word(w))
+                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
+            {
+                map.insert(w.to_lowercase(), None);
+                AliasState::PostAlias
+            }
+            (AliasState::ExpectSubqueryAlias, _) => AliasState::Idle,
+            (AliasState::ExpectSubqueryAliasName, SqlToken::Word(w)) => {
+                map.insert(w.to_lowercase(), None);
+                AliasState::PostAlias
+            }
+            (AliasState::ExpectSubqueryAliasName, _) => AliasState::Idle,
+            (s, _) => s,
         };
     }
 
@@ -813,5 +849,24 @@ mod tests {
     fn build_alias_map_table_without_alias_not_in_map() {
         let m = build_alias_map("SELECT * FROM users");
         assert_eq!(m.resolve("users"), None);
+    }
+
+    #[test]
+    fn build_alias_map_comma_separated() {
+        let m = build_alias_map("SELECT * FROM users u, orders o");
+        assert_eq!(m.resolve("u"), Some("users"));
+        assert_eq!(m.resolve("o"), Some("orders"));
+    }
+
+    #[test]
+    fn build_alias_map_subquery_with_as() {
+        let m = build_alias_map("SELECT * FROM (SELECT id FROM users) AS s");
+        assert_eq!(m.resolve("s"), None);
+    }
+
+    #[test]
+    fn build_alias_map_subquery_without_as() {
+        let m = build_alias_map("SELECT * FROM (SELECT id FROM users) s");
+        assert_eq!(m.resolve("s"), None);
     }
 }
