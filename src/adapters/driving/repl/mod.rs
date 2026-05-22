@@ -100,11 +100,10 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
     keybindings.add_binding(
         KeyModifiers::NONE,
         KeyCode::Tab,
+        // Tab always goes through the dropdown completer which does full-word replacement,
+        // guaranteeing keywords are uppercase. Ghost text can be accepted via End key
+        // (reedline default) which preserves the user's typed case.
         ReedlineEvent::UntilFound(vec![
-            // HistoryHintComplete is reedline's generic "accept the active hinter's ghost text"
-            // event — works for any Hinter impl, not just history-based ones.
-            // Returns Inapplicable (falls through) when no hint is currently shown.
-            ReedlineEvent::HistoryHintComplete,
             ReedlineEvent::Menu("completion_menu".to_string()),
             ReedlineEvent::MenuNext,
         ]),
