@@ -1,10 +1,5 @@
-use std::borrow::Cow;
-
-use rustyline::completion::{Completer, Pair};
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::validate::Validator;
-use rustyline::{Context, Helper};
+use nu_ansi_term::{Color, Style};
+use reedline::{Completer, Highlighter, Span, StyledText, Suggestion};
 
 use crate::core::services::schema::service::SchemaService;
 
@@ -21,6 +16,24 @@ pub enum CompletionKind {
     Keyword,
     Table,
     Column,
+}
+
+impl CompletionKind {
+    fn label(&self) -> &'static str {
+        match self {
+            CompletionKind::Keyword => "[keyword]",
+            CompletionKind::Table   => "[table]",
+            CompletionKind::Column  => "[column]",
+        }
+    }
+
+    fn style(&self) -> Style {
+        match self {
+            CompletionKind::Keyword => Style::new().fg(Color::Cyan).bold(),
+            CompletionKind::Table   => Style::new().fg(Color::Yellow).bold(),
+            CompletionKind::Column  => Style::new().fg(Color::Green),
+        }
+    }
 }
 
 pub fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> String {
@@ -98,6 +111,17 @@ pub fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> Strin
     }
 
     out
+}
+
+fn word_start(line: &str, pos: usize) -> usize {
+    let input = &line[..pos];
+    let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+    let word = &input[last_ws..];
+    if let Some(dot_pos) = word.rfind('.') {
+        last_ws + dot_pos + 1
+    } else {
+        last_ws
+    }
 }
 
 pub struct SqlCompleter {
@@ -199,62 +223,99 @@ impl SqlCompleter {
 }
 
 impl Completer for SqlCompleter {
-    type Candidate = Pair;
-
-    fn complete(
-        &self,
-        line: &str,
-        pos: usize,
-        _ctx: &Context<'_>,
-    ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        let word_start = line[..pos]
-            .rfind(char::is_whitespace)
-            .map(|i| i + 1)
-            .unwrap_or(0);
-
-        let candidates = self.complete_input(line, pos);
-        let pairs = candidates
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let start = word_start(line, pos);
+        self.complete_input(line, pos)
             .into_iter()
-            .map(|(c, kind)| {
-                let label = match kind {
-                    CompletionKind::Keyword => "[keyword]",
-                    CompletionKind::Table   => "[table]",
-                    CompletionKind::Column  => "[column]",
-                };
-                Pair {
-                    display:     format!("{:<20} {}", c, label),
-                    replacement: c,
-                }
+            .map(|(value, kind)| Suggestion {
+                value,
+                display_override: None,
+                description: Some(kind.label().to_string()),
+                style: Some(kind.style()),
+                span: Span::new(start, pos),
+                extra: None,
+                append_whitespace: false,
+                match_indices: None,
             })
-            .collect();
-
-        Ok((word_start, pairs))
+            .collect()
     }
 }
 
-impl Hinter for SqlCompleter {
-    type Hint = String;
-    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<String> {
-        None
-    }
+pub struct SqlHighlighter {
+    tables: Vec<String>,
+    columns: Vec<String>,
 }
 
-impl Highlighter for SqlCompleter {
-    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
-        let tables = self.schema.tables();
-        let columns: Vec<String> = tables
+impl SqlHighlighter {
+    pub fn new(schema: SchemaService) -> Self {
+        let tables = schema.tables().to_vec();
+        let columns: Vec<String> = schema
+            .tables()
             .iter()
-            .flat_map(|t| self.schema.columns_for(t).iter().cloned())
+            .flat_map(|t| schema.columns_for(t).iter().cloned())
             .collect();
-        Cow::Owned(highlight_sql(line, tables, &columns))
-    }
-
-    fn highlight_char(&self, _line: &str, _pos: usize, forced: bool) -> bool {
-        forced
+        Self { tables, columns }
     }
 }
-impl Validator for SqlCompleter {}
-impl Helper for SqlCompleter {}
+
+impl Highlighter for SqlHighlighter {
+    fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
+        let mut styled = StyledText::new();
+        let chars: Vec<char> = line.chars().collect();
+        let len = chars.len();
+        let mut i = 0;
+
+        while i < len {
+            if chars[i] == '-' && i + 1 < len && chars[i + 1] == '-' {
+                let start = i;
+                while i < len && chars[i] != '\n' { i += 1; }
+                let span: String = chars[start..i].iter().collect();
+                styled.push((Style::new().dimmed(), span));
+            } else if chars[i] == '\'' {
+                let start = i;
+                i += 1;
+                loop {
+                    if i >= len { break; }
+                    if chars[i] == '\'' {
+                        i += 1;
+                        if i < len && chars[i] == '\'' { i += 1; } else { break; }
+                    } else { i += 1; }
+                }
+                let span: String = chars[start..i].iter().collect();
+                styled.push((Style::new().fg(Color::Yellow), span));
+            } else if chars[i].is_ascii_digit() {
+                let start = i;
+                let mut has_dot = false;
+                while i < len && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot && i + 1 < len && chars[i + 1].is_ascii_digit())) {
+                    if chars[i] == '.' { has_dot = true; }
+                    i += 1;
+                }
+                let span: String = chars[start..i].iter().collect();
+                styled.push((Style::new().fg(Color::Magenta), span));
+            } else if chars[i].is_alphabetic() || chars[i] == '_' {
+                let start = i;
+                while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
+                let word: String = chars[start..i].iter().collect();
+                let upper = word.to_uppercase();
+                let style = if SQL_KEYWORDS.contains(&upper.as_str()) {
+                    Style::new().fg(Color::Cyan).bold()
+                } else if self.tables.iter().any(|t| t.eq_ignore_ascii_case(&word)) {
+                    Style::new().fg(Color::Yellow).bold()
+                } else if self.columns.iter().any(|c| c.eq_ignore_ascii_case(&word)) {
+                    Style::new().fg(Color::Green)
+                } else {
+                    Style::new()
+                };
+                styled.push((style, word));
+            } else {
+                styled.push((Style::new(), chars[i].to_string()));
+                i += 1;
+            }
+        }
+
+        styled
+    }
+}
 
 #[cfg(test)]
 mod tests {
