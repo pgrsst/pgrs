@@ -290,6 +290,23 @@ fn fuzzy_match(candidate: &str, query: &str) -> bool {
         .all(|q| chars.any(|c| c.eq_ignore_ascii_case(&q)))
 }
 
+pub(crate) fn common_prefix(candidates: &[(String, CompletionKind)]) -> String {
+    if candidates.is_empty() {
+        return String::new();
+    }
+    let first = &candidates[0].0;
+    // Count how many leading chars of `first` are a case-insensitive prefix of every other candidate.
+    let prefix_len = candidates[1..].iter().fold(first.chars().count(), |acc, (c, _)| {
+        first
+            .chars()
+            .zip(c.chars())
+            .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+            .count()
+            .min(acc)
+    });
+    first.chars().take(prefix_len).collect()
+}
+
 fn word_start(line: &str, pos: usize) -> usize {
     let input = &line[..pos];
     let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
@@ -1232,5 +1249,54 @@ mod tests {
         let results = c.complete_input(input, input.len());
         assert!(results.iter().any(|(r, _)| r == "id" || r == "email"),
             "fallback should return columns from known tables");
+    }
+
+    #[test]
+    fn common_prefix_multiple_shared() {
+        let cands = vec![
+            ("transaction".to_string(), CompletionKind::Table),
+            ("transaction_detail".to_string(), CompletionKind::Table),
+            ("transaction_shipment".to_string(), CompletionKind::Table),
+        ];
+        assert_eq!(common_prefix(&cands), "transaction");
+    }
+
+    #[test]
+    fn common_prefix_single_candidate() {
+        let cands = vec![("users".to_string(), CompletionKind::Table)];
+        assert_eq!(common_prefix(&cands), "users");
+    }
+
+    #[test]
+    fn common_prefix_empty_candidates() {
+        assert_eq!(common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn common_prefix_no_shared_chars() {
+        let cands = vec![
+            ("users".to_string(), CompletionKind::Table),
+            ("orders".to_string(), CompletionKind::Table),
+        ];
+        assert_eq!(common_prefix(&cands), "");
+    }
+
+    #[test]
+    fn common_prefix_partial_overlap() {
+        let cands = vec![
+            ("users".to_string(), CompletionKind::Table),
+            ("user_sessions".to_string(), CompletionKind::Table),
+            ("user_profiles".to_string(), CompletionKind::Table),
+        ];
+        assert_eq!(common_prefix(&cands), "user");
+    }
+
+    #[test]
+    fn common_prefix_case_insensitive_preserves_first_case() {
+        let cands = vec![
+            ("Users".to_string(), CompletionKind::Table),
+            ("users_sessions".to_string(), CompletionKind::Table),
+        ];
+        assert_eq!(common_prefix(&cands), "Users");
     }
 }
