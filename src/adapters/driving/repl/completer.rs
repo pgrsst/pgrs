@@ -146,37 +146,17 @@ impl SqlCompleter {
     pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
         let input = &line[..pos];
 
-        // Qualified name detection: "table.col_prefix" or "schema.table.col_prefix"
-        {
-            let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
-            let token = &input[last_ws..];
-            if let Some(dot_pos) = token.rfind('.') {
-                let prefix_part = &token[..dot_pos];
-                let col_prefix = token[dot_pos + 1..].to_uppercase();
-                // Get table name: last segment after the last dot (handles schema.table)
-                let table_name = prefix_part
-                    .split('.')
-                    .next_back()
-                    .unwrap_or(prefix_part)
-                    .to_lowercase();
-                let cols = self.schema.columns_for(&table_name);
-                let candidates: Vec<(String, CompletionKind)> = if !cols.is_empty() {
-                    cols.iter()
-                        .filter(|c| c.to_uppercase().starts_with(col_prefix.as_str()))
-                        .map(|c| (c.to_string(), CompletionKind::Column))
-                        .collect()
-                } else {
-                    // Table not found: fallback to all columns
-                    self.schema
-                        .tables()
-                        .iter()
-                        .flat_map(|t| self.schema.columns_for(t).iter().cloned())
-                        .filter(|c| c.to_uppercase().starts_with(col_prefix.as_str()))
-                        .map(|c| (c, CompletionKind::Column))
-                        .collect()
-                };
-                return candidates;
-            }
+        // Qualified name: "table.col_prefix" or "schema.table.col_prefix"
+        let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+        let token = &input[last_ws..];
+        if let Some(dot_pos) = token.rfind('.') {
+            let table_name = token[..dot_pos]
+                .split('.')
+                .next_back()
+                .unwrap_or(&token[..dot_pos])
+                .to_lowercase();
+            let col_prefix = token[dot_pos + 1..].to_uppercase();
+            return self.complete_qualified(&table_name, &col_prefix);
         }
 
         let upper = input.to_uppercase();
@@ -199,8 +179,42 @@ impl SqlCompleter {
         };
 
         let full_upper = line.to_uppercase();
+        let candidates = self.candidates_for_trigger(effective_trigger, &full_upper);
 
-        let candidates: Vec<(String, CompletionKind)> = match effective_trigger {
+        let is_trigger = TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word);
+        let prefix_upper = if is_trigger { String::new() } else { current_word.to_uppercase() };
+
+        let mut results: Vec<(String, CompletionKind)> = candidates
+            .into_iter()
+            .filter(|(c, _)| c.to_uppercase().starts_with(&prefix_upper))
+            .collect();
+
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        results.dedup_by(|a, b| a.0 == b.0);
+        results
+    }
+
+    fn complete_qualified(&self, table_name: &str, col_prefix: &str) -> Vec<(String, CompletionKind)> {
+        let cols = self.schema.columns_for(table_name);
+        if !cols.is_empty() {
+            cols.iter()
+                .filter(|c| c.to_uppercase().starts_with(col_prefix))
+                .map(|c| (c.to_string(), CompletionKind::Column))
+                .collect()
+        } else {
+            // Table not found: fallback to all columns
+            self.schema
+                .tables()
+                .iter()
+                .flat_map(|t| self.schema.columns_for(t).iter().cloned())
+                .filter(|c| c.to_uppercase().starts_with(col_prefix))
+                .map(|c| (c, CompletionKind::Column))
+                .collect()
+        }
+    }
+
+    fn candidates_for_trigger(&self, trigger: &str, upper_query: &str) -> Vec<(String, CompletionKind)> {
+        match trigger {
             "FROM" | "JOIN" | "INTO" | "UPDATE" => self
                 .schema
                 .tables()
@@ -208,7 +222,7 @@ impl SqlCompleter {
                 .map(|t| (t.to_string(), CompletionKind::Table))
                 .collect(),
             "SELECT" | "WHERE" | "ON" | "SET" | "BY" => {
-                let table_refs = self.extract_table_refs(&full_upper);
+                let table_refs = self.extract_table_refs(upper_query);
                 if table_refs.is_empty() {
                     SQL_KEYWORDS
                         .iter()
@@ -231,31 +245,16 @@ impl SqlCompleter {
                 .iter()
                 .map(|k| (k.to_string(), CompletionKind::Keyword))
                 .collect(),
-        };
-
-        let is_trigger = TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word);
-        let prefix_upper = if is_trigger { "".to_string() } else { current_word.to_uppercase() };
-
-        let mut results: Vec<(String, CompletionKind)> = candidates
-            .into_iter()
-            .filter(|(c, _)| c.to_uppercase().starts_with(&prefix_upper))
-            .collect();
-
-        results.sort_by(|a, b| a.0.cmp(&b.0));
-        results.dedup_by(|a, b| a.0 == b.0);
-        results
+        }
     }
 
     fn extract_table_refs<'a>(&self, upper_query: &'a str) -> Vec<&'a str> {
         let tokens: Vec<&str> = upper_query.split_whitespace().collect();
-        let mut tables = vec![];
         let trigger = ["FROM", "JOIN", "UPDATE"];
-        for window in tokens.windows(2) {
-            if trigger.contains(&window[0]) {
-                tables.push(window[1]);
-            }
-        }
-        tables
+        tokens
+            .windows(2)
+            .filter_map(|w| trigger.contains(&w[0]).then_some(w[1]))
+            .collect()
     }
 }
 

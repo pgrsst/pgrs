@@ -163,7 +163,7 @@ where
     }
 
     #[cfg(test)]
-    pub(crate) fn get_connection(&self, name: &str) -> Result<Connection, String> {
+    pub(crate) fn get_connection(&self, name: &str) -> Result<crate::core::domain::connection::Connection, String> {
         self.connection_service.get_connection(name)
     }
 }

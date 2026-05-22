@@ -64,7 +64,7 @@ impl FileConnectionRepository {
             .map_err(|_| {
                 format!(
                     "connections file is locked by another process (remove {:?} if stale)",
-                    lock_path.clone()
+                    lock_path
                 )
             })?;
         let _guard = LockGuard { path: lock_path };

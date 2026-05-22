@@ -21,25 +21,18 @@ fn is_complete_statement(s: &str) -> bool {
         return false;
     }
     let mut in_string = false;
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
         if in_string {
-            if chars[i] == '\'' {
-                if i + 1 < chars.len() && chars[i + 1] == '\'' {
-                    i += 2;
+            if c == '\'' {
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
                 } else {
                     in_string = false;
-                    i += 1;
                 }
-            } else {
-                i += 1;
             }
-        } else {
-            if chars[i] == '\'' {
-                in_string = true;
-            }
-            i += 1;
+        } else if c == '\'' {
+            in_string = true;
         }
     }
     !in_string

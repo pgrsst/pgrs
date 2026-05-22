@@ -12,11 +12,14 @@ fn normalize_val(val: &str) -> &str {
 
 fn colorize_cell(val: &str) -> String {
     let display = normalize_val(val);
-    match display.to_lowercase().as_str() {
-        "true"  => format!("\x1b[1;32m{}\x1b[0m", display),
-        "false" => format!("\x1b[1;31m{}\x1b[0m", display),
-        "null"  => format!("\x1b[2m{}\x1b[0m", display),
-        _       => display.to_string(),
+    if display.eq_ignore_ascii_case("true") {
+        format!("\x1b[1;32m{}\x1b[0m", display)
+    } else if display.eq_ignore_ascii_case("false") {
+        format!("\x1b[1;31m{}\x1b[0m", display)
+    } else if display.eq_ignore_ascii_case("null") {
+        format!("\x1b[2m{}\x1b[0m", display)
+    } else {
+        display.to_string()
     }
 }
 
