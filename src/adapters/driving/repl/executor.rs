@@ -4,10 +4,10 @@ use crate::core::ports::db_connection::QueryResult;
 
 fn colorize_cell(val: &str) -> String {
     match val.to_lowercase().as_str() {
-        "true"  => format!("\x1b[1;32m{}\x1b[0m", val),
-        "false" => format!("\x1b[1;31m{}\x1b[0m", val),
-        "null"  => format!("\x1b[2m{}\x1b[0m", val),
-        _       => val.to_string(),
+        "true" | "t"  => format!("\x1b[1;32m{}\x1b[0m", val),
+        "false" | "f" => format!("\x1b[1;31m{}\x1b[0m", val),
+        "null"        => format!("\x1b[2m{}\x1b[0m", val),
+        _             => val.to_string(),
     }
 }
 
@@ -192,6 +192,20 @@ mod tests {
     fn colorize_null_case_insensitive() {
         let result = colorize_cell("NULL");
         assert!(result.contains("\x1b[2m"), "expected dim for NULL");
+    }
+
+    #[test]
+    fn colorize_t_bold_green() {
+        let result = colorize_cell("t");
+        assert!(result.contains("\x1b[1;32m"), "expected bold green for t");
+        assert!(result.contains("t"));
+    }
+
+    #[test]
+    fn colorize_f_bold_red() {
+        let result = colorize_cell("f");
+        assert!(result.contains("\x1b[1;31m"), "expected bold red for f");
+        assert!(result.contains("f"));
     }
 
     #[test]
