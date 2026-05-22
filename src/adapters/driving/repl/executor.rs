@@ -86,8 +86,7 @@ fn format_expanded(result: &QueryResult) -> String {
         out.push('\n');
 
         for (i, col) in result.columns.iter().enumerate() {
-            let val = normalize_val(&row[i]);
-            let colored = colorize_cell(val);
+            let colored = colorize_cell(&row[i]);
             out.push_str(&format!("{:<width$} | {}\n", col, colored, width = label_width));
         }
     }
