@@ -110,8 +110,8 @@ Release Notes:
 Lanjutkan publish? (ok / minta revisi)
 ```
 
-- User replies **"ok" / "lanjut" / "publish" / "go"** → proceed to Step 6
-- User requests a change → revise the release notes in the response → show the full preview again → repeat
+- User replies **"ok"** / **"lanjut"** / **"publish"** / **"go"** → approve and proceed to Step 6
+- Any other reply → treat as a revision request: revise the release notes in the response → show the full preview again → repeat
 - No iteration limit; continue until the user approves
 
 ---
