@@ -147,7 +147,7 @@ impl SqlCompleter {
                 // Get table name: last segment after the last dot (handles schema.table)
                 let table_name = prefix_part
                     .split('.')
-                    .last()
+                    .next_back()
                     .unwrap_or(prefix_part)
                     .to_lowercase();
                 let cols = self.schema.columns_for(&table_name);
