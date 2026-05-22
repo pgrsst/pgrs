@@ -1,5 +1,5 @@
 use nu_ansi_term::{Color, Style};
-use reedline::{Completer, Highlighter, Span, StyledText, Suggestion};
+use reedline::{Completer, Highlighter, Hinter, History, Span, StyledText, Suggestion};
 use std::collections::HashMap;
 
 use crate::core::services::schema::service::SchemaService;
@@ -568,6 +568,66 @@ impl Highlighter for SqlHighlighter {
             }
         }
         styled
+    }
+}
+
+pub struct SqlHinter {
+    completer: SqlCompleter,
+    current_hint: String,
+    style: Style,
+}
+
+impl SqlHinter {
+    pub fn new(schema: SchemaService) -> Self {
+        Self {
+            completer: SqlCompleter::new(schema),
+            current_hint: String::new(),
+            style: Style::new().fg(Color::DarkGray),
+        }
+    }
+}
+
+impl Hinter for SqlHinter {
+    fn handle(
+        &mut self,
+        line: &str,
+        pos: usize,
+        _history: &dyn History,
+        use_ansi_coloring: bool,
+        _cwd: &str,
+    ) -> String {
+        let candidates = self.completer.complete_input(line, pos);
+        let prefix = common_prefix(&candidates);
+
+        let start = word_start(line, pos);
+        let current_word = &line[start..pos];
+
+        self.current_hint = if !prefix.is_empty()
+            && prefix.len() > current_word.len()
+            && prefix.to_lowercase().starts_with(&current_word.to_lowercase())
+        {
+            prefix[current_word.len()..].to_string()
+        } else {
+            String::new()
+        };
+
+        if use_ansi_coloring && !self.current_hint.is_empty() {
+            self.style.paint(&self.current_hint).to_string()
+        } else {
+            self.current_hint.clone()
+        }
+    }
+
+    fn complete_hint(&self) -> String {
+        self.current_hint.clone()
+    }
+
+    fn next_hint_token(&self) -> String {
+        self.current_hint
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string()
     }
 }
 
@@ -1298,5 +1358,82 @@ mod tests {
             ("users_sessions".to_string(), CompletionKind::Table),
         ];
         assert_eq!(common_prefix(&cands), "Users");
+    }
+
+    fn empty_history() -> reedline::FileBackedHistory {
+        reedline::FileBackedHistory::new(0).expect("in-memory history")
+    }
+
+    #[test]
+    fn hinter_shows_suffix_for_partial_table_match() {
+        let schema = schema_with(&["transaction", "transaction_detail"], &[]);
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        let hint = h.handle("SELECT * FROM tran", 18, &history, false, "");
+        assert_eq!(hint, "saction");
+    }
+
+    #[test]
+    fn hinter_empty_when_no_candidates() {
+        let schema = schema_with(&["users"], &[]);
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        let hint = h.handle("SELECT * FROM xyz", 17, &history, false, "");
+        assert_eq!(hint, "");
+    }
+
+    #[test]
+    fn hinter_empty_when_word_already_equals_prefix() {
+        // "users" typed in full, common_prefix == current_word → no hint
+        let schema = schema_with(&["users"], &[]);
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        let input = "SELECT * FROM users";
+        let hint = h.handle(input, input.len(), &history, false, "");
+        assert_eq!(hint, "");
+    }
+
+    #[test]
+    fn hinter_complete_hint_returns_stored_suffix() {
+        let schema = schema_with(&["transaction", "transaction_detail"], &[]);
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        h.handle("SELECT * FROM tran", 18, &history, false, "");
+        assert_eq!(h.complete_hint(), "saction");
+    }
+
+    #[test]
+    fn hinter_complete_hint_empty_before_first_handle() {
+        let schema = schema_with(&["users"], &[]);
+        let h = SqlHinter::new(schema);
+        assert_eq!(h.complete_hint(), "");
+    }
+
+    #[test]
+    fn hinter_shows_column_suffix_via_dot_notation() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["email", "email_verified"])],
+        );
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        let input = "SELECT users.em";
+        let hint = h.handle(input, input.len(), &history, false, "");
+        // common_prefix(["email","email_verified"]) = "email", current_word = "em" → suffix = "ail"
+        assert_eq!(hint, "ail");
+    }
+
+    #[test]
+    fn hinter_clears_after_word_grows_past_prefix() {
+        // After accepting "transaction", typing further chars should clear the hint
+        let schema = schema_with(&["transaction"], &[]);
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        // "transactio" → hint = "n"
+        let hint1 = h.handle("FROM transactio", 15, &history, false, "");
+        assert_eq!(hint1, "n");
+        // "transactions" (past the only match) → no hint
+        let hint2 = h.handle("FROM transactions", 17, &history, false, "");
+        assert_eq!(hint2, "");
     }
 }
