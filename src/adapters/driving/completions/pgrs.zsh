@@ -1,4 +1,6 @@
 #compdef pgrs
+# To install, add this line to ~/.zshrc:
+#   eval "$(pgrs completions zsh)"
 
 _pgrs() {
     local state

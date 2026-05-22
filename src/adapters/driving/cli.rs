@@ -31,13 +31,17 @@ where
             Some("delete") => self.delete_connection(&args[1..]),
             Some("connect") => self.connect_to(&args[1..]),
             Some("completions") => self.print_completions(&args[1..]),
+            Some("--version") | Some("-V") => {
+                println!("pgrs {}", env!("CARGO_PKG_VERSION"));
+                Ok(())
+            }
             // "shell" is intercepted in app.rs before cli.run() is called
-            _ => Err(usage().to_string()),
+            Some(cmd) => Err(format!("unknown command '{cmd}'. Run 'pgrs' for help.")),
         }
     }
 
     fn add_connection(&self, args: &[String]) -> Result<(), String> {
-        let name = args.first().ok_or_else(|| usage().to_string())?.trim().to_string();
+        let name = args.first().ok_or("usage: pgrs add <name> --host=<host> --username=<username> --password=<password> --database=<database> [--port=<port>]")?.trim().to_string();
 
         let host = required_option(args, "--host")?;
         let username = required_option(args, "--username")?;
@@ -119,6 +123,8 @@ where
 
         let connection = self.connection_service.get_connection(&name)?;
 
+        eprintln!("connecting to '{}'...", name);
+
         let error = std::process::Command::new("psql")
             .env("PGPASSWORD", &connection.password)
             .arg("-h")
@@ -180,12 +186,28 @@ fn optional_option(args: &[String], key: &str) -> Option<String> {
 }
 
 fn welcome() -> &'static str {
-    "pgrs — PostgreSQL connection manager built with Rust\n\nManage and store named PostgreSQL connections locally.\n\nCommands:\n  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require]\n             Add a new named connection\n  list         List all saved connections\n  list --names-only\n             Print connection names only, one per line\n  delete <name>\n             Delete a named connection\n  connect <name>\n             Open an interactive psql session using a saved connection\n  shell <name>\n             Open pgrs interactive SQL REPL with auto-completion\n  completions <bash|zsh|fish>\n             Print shell completion script\n\nRun `pgrs <command> --help` for more info on a specific command."
+    concat!(
+        "pgrs — PostgreSQL connection manager built with Rust\n",
+        "\n",
+        "Manage and store named PostgreSQL connections locally.\n",
+        "\n",
+        "Commands:\n",
+        "  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require]\n",
+        "             Add a new named connection\n",
+        "  list         List all saved connections\n",
+        "  list --names-only\n",
+        "             Print connection names only, one per line\n",
+        "  delete <name>\n",
+        "             Delete a named connection\n",
+        "  connect <name>\n",
+        "             Open an interactive psql session using a saved connection\n",
+        "  shell <name>\n",
+        "             Open pgrs interactive SQL REPL with auto-completion\n",
+        "  completions <bash|zsh|fish>\n",
+        "             Print shell completion script",
+    )
 }
 
-fn usage() -> &'static str {
-    "usage: pgrs add <connection-name> --host=<host> --username=<username> --password=<password> --database=<database> [--port=<port>]"
-}
 
 #[cfg(test)]
 mod tests {
@@ -272,6 +294,14 @@ mod tests {
         assert_eq!(conn.name, "prod");
     }
 
+    #[test]
+    fn add_without_name_shows_add_usage() {
+        let cli = cli_with(&[]);
+        let err = cli.run(["add".to_string()].into_iter()).unwrap_err();
+        assert!(err.contains("--host"), "error should show add usage, got: {err}");
+        assert!(err.contains("add"), "error should mention add command, got: {err}");
+    }
+
     fn add_args(name: &str, extra: &[&str]) -> impl Iterator<Item = String> {
         let mut args = vec![
             "add".to_string(), name.to_string(),
@@ -312,6 +342,20 @@ mod tests {
     fn unknown_command_returns_error() {
         let cli = cli_with(&[]);
         assert!(cli.run(["unknown".to_string()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn unknown_command_error_mentions_command_name() {
+        let cli = cli_with(&[]);
+        let err = cli.run(["foobar".to_string()].into_iter()).unwrap_err();
+        assert!(err.contains("foobar"), "error should mention the unknown command, got: {err}");
+    }
+
+    #[test]
+    fn unknown_command_error_does_not_show_add_usage() {
+        let cli = cli_with(&[]);
+        let err = cli.run(["foobar".to_string()].into_iter()).unwrap_err();
+        assert!(!err.contains("--host"), "error should not show add usage, got: {err}");
     }
 
     #[test]
@@ -369,6 +413,34 @@ mod tests {
         let result = cli.run(["connect".to_string(), "nonexistent".to_string()].into_iter());
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn version_flag_returns_ok() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["--version".to_string()].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn version_short_flag_returns_ok() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["-V".to_string()].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn connect_to_nonexistent_connection_returns_not_found() {
+        let cli = cli_with(&[]);
+        let err = cli.run(["connect".to_string(), "ghost".to_string()].into_iter()).unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn welcome_lists_all_commands() {
+        use super::welcome;
+        let w = welcome();
+        for cmd in &["add", "list", "delete", "connect", "shell", "completions"] {
+            assert!(w.contains(cmd), "welcome should mention '{cmd}', got:\n{w}");
+        }
     }
 
     #[test]

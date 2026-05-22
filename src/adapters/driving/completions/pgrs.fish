@@ -1,3 +1,6 @@
+# To install, run:
+#   pgrs completions fish > ~/.config/fish/completions/pgrs.fish
+
 function __pgrs_connections
     pgrs list --names-only 2>/dev/null
 end

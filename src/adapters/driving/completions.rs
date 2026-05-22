@@ -27,6 +27,12 @@ mod tests {
     }
 
     #[test]
+    fn bash_script_contains_install_hint() {
+        let s = bash_script();
+        assert!(s.contains("~/.bashrc"), "bash script should hint at ~/.bashrc install, got: {s}");
+    }
+
+    #[test]
     fn zsh_script_contains_subcommands() {
         let s = zsh_script();
         assert!(s.contains("add"));
@@ -35,10 +41,22 @@ mod tests {
     }
 
     #[test]
+    fn zsh_script_contains_install_hint() {
+        let s = zsh_script();
+        assert!(s.contains("~/.zshrc"), "zsh script should hint at ~/.zshrc install, got: {s}");
+    }
+
+    #[test]
     fn fish_script_contains_subcommands() {
         let s = fish_script();
         assert!(s.contains("add"));
         assert!(s.contains("shell"));
         assert!(s.contains("--names-only"));
+    }
+
+    #[test]
+    fn fish_script_contains_install_hint() {
+        let s = fish_script();
+        assert!(s.contains("completions/pgrs.fish"), "fish script should hint at install path, got: {s}");
     }
 }

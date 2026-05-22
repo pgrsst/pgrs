@@ -1,3 +1,6 @@
+# To install, add this line to ~/.bashrc:
+#   eval "$(pgrs completions bash)"
+
 _pgrs_completions() {
     local cur prev words cword
     _init_completion || return

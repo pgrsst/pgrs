@@ -45,7 +45,11 @@ pub fn print_result(result: &QueryResult) {
 pub fn format_result(result: &QueryResult) -> String {
     if result.columns.is_empty() {
         let count = result.rows_affected.unwrap_or(result.rows.len() as u64);
-        return format!("({} {})\n", count, if count == 1 { "row" } else { "rows" });
+        return if result.rows_affected.is_some() {
+            format!("({} {})\n", count, if count == 1 { "row affected" } else { "rows affected" })
+        } else {
+            format!("({} {})\n", count, if count == 1 { "row" } else { "rows" })
+        };
     }
 
     let col_widths: Vec<usize> = result
@@ -157,25 +161,37 @@ mod tests {
     }
 
     #[test]
-    fn dml_shows_rows_affected_count() {
+    fn dml_shows_rows_affected_label() {
         let result = QueryResult {
             columns: vec![],
             rows: vec![],
             rows_affected: Some(3),
         };
         let out = format_result(&result);
-        assert!(out.contains("(3 rows)"), "expected 3 rows, got: {}", out);
+        assert!(out.contains("(3 rows affected)"), "expected 'rows affected', got: {}", out);
     }
 
     #[test]
-    fn dml_single_row_affected() {
+    fn dml_single_row_affected_singular() {
         let result = QueryResult {
             columns: vec![],
             rows: vec![],
             rows_affected: Some(1),
         };
         let out = format_result(&result);
-        assert!(out.contains("(1 row)"), "expected singular, got: {}", out);
+        assert!(out.contains("(1 row affected)"), "expected singular 'row affected', got: {}", out);
+    }
+
+    #[test]
+    fn select_row_count_does_not_say_affected() {
+        let result = QueryResult {
+            columns: vec!["id".to_string()],
+            rows: vec![vec!["1".to_string()]],
+            rows_affected: None,
+        };
+        let out = format_result(&result);
+        assert!(out.contains("(1 row)"), "SELECT should show '(1 row)', got: {}", out);
+        assert!(!out.contains("affected"), "SELECT should not say 'affected', got: {}", out);
     }
 
     #[test]

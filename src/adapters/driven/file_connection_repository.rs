@@ -63,7 +63,7 @@ impl FileConnectionRepository {
             .open(&lock_path)
             .map_err(|_| {
                 format!(
-                    "connections file is locked by another process (remove {:?} if stale)",
+                    "another pgrs process is running — if not, remove {:?} and try again",
                     lock_path
                 )
             })?;
@@ -231,6 +231,27 @@ mod tests {
             !lock_path.exists(),
             "lock file must be cleaned up after panic so future operations can proceed"
         );
+    }
+
+    #[test]
+    fn lock_error_message_is_user_friendly() {
+        let (repo, dir) = repo();
+        let lock_path = dir.path().join("connections.lock");
+        std::fs::write(&lock_path, b"").unwrap();
+
+        let err = repo.add(sample_connection("prod")).unwrap_err();
+        assert!(!err.contains("connections file is locked"), "old technical message should be gone, got: {err}");
+        assert!(err.contains("pgrs"), "should mention pgrs, got: {err}");
+    }
+
+    #[test]
+    fn lock_error_still_includes_path_for_recovery() {
+        let (repo, dir) = repo();
+        let lock_path = dir.path().join("connections.lock");
+        std::fs::write(&lock_path, b"").unwrap();
+
+        let err = repo.add(sample_connection("prod")).unwrap_err();
+        assert!(err.contains("connections.lock"), "should include lock path so user can remove it, got: {err}");
     }
 
     #[test]
