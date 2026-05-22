@@ -117,6 +117,44 @@ fn build_alias_map(line: &str) -> AliasMap {
     AliasMap { map }
 }
 
+struct JoinContext {
+    right_table: String,
+    left_tables: Vec<String>,
+}
+
+fn extract_join_context(upper_query: &str, alias_map: &AliasMap) -> Option<JoinContext> {
+    let tokens: Vec<&str> = upper_query.split_whitespace().collect();
+
+    let last_join_pos = tokens.iter().rposition(|&t| t == "JOIN")?;
+
+    let right_raw = tokens.get(last_join_pos + 1)?.to_lowercase();
+    let right_table = alias_map
+        .resolve(&right_raw)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| right_raw.clone());
+
+    let left_tables: Vec<String> = tokens
+        .windows(2)
+        .enumerate()
+        .filter_map(|(i, w)| {
+            if (w[0] == "FROM" || w[0] == "JOIN" || w[0] == "UPDATE") && i != last_join_pos {
+                Some(w[1].to_lowercase())
+            } else {
+                None
+            }
+        })
+        .map(|raw| {
+            alias_map
+                .resolve(&raw)
+                .map(|s| s.to_string())
+                .unwrap_or(raw)
+        })
+        .filter(|t| t != &right_table)
+        .collect();
+
+    Some(JoinContext { right_table, left_tables })
+}
+
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
     "ON", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "DISTINCT",
@@ -314,6 +352,18 @@ impl SqlCompleter {
         let is_trigger = TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word);
         let prefix_upper = if is_trigger { String::new() } else { current_word.to_uppercase() };
 
+        // For JOIN ON completions the candidates are already ordered intentionally
+        // (shared columns first).  Sorting alphabetically would destroy that priority,
+        // so we skip the sort and use a seen-set for deduplication instead.
+        if effective_trigger == "ON" {
+            let mut seen = std::collections::HashSet::new();
+            return candidates
+                .into_iter()
+                .filter(|(c, _)| fuzzy_match(c, &prefix_upper))
+                .filter(|(c, _)| seen.insert(c.clone()))
+                .collect();
+        }
+
         let mut results: Vec<(String, CompletionKind)> = candidates
             .into_iter()
             .filter(|(c, _)| fuzzy_match(c, &prefix_upper))
@@ -352,7 +402,54 @@ impl SqlCompleter {
                 .iter()
                 .map(|t| (t.to_string(), CompletionKind::Table))
                 .collect(),
-            "SELECT" | "WHERE" | "ON" | "SET" | "BY" => {
+            "ON" => {
+                if let Some(ctx) = extract_join_context(upper_query, alias_map) {
+                    let right_cols: Vec<String> = self.schema.columns_for(&ctx.right_table).to_vec();
+                    let left_cols: Vec<String> = ctx
+                        .left_tables
+                        .iter()
+                        .flat_map(|t| self.schema.columns_for(t).iter().cloned())
+                        .collect();
+
+                    // Shared columns (likely FK keys) first
+                    let mut result: Vec<(String, CompletionKind)> = right_cols
+                        .iter()
+                        .filter(|c| left_cols.iter().any(|lc| lc.eq_ignore_ascii_case(c)))
+                        .map(|c| (c.clone(), CompletionKind::Column))
+                        .collect();
+
+                    // Remaining right table columns
+                    for c in right_cols.iter().filter(|c| !left_cols.iter().any(|lc| lc.eq_ignore_ascii_case(c))) {
+                        result.push((c.clone(), CompletionKind::Column));
+                    }
+
+                    // Left table columns
+                    for c in &left_cols {
+                        result.push((c.clone(), CompletionKind::Column));
+                    }
+
+                    result
+                } else {
+                    let table_refs = self.extract_table_refs(upper_query, alias_map);
+                    if table_refs.is_empty() {
+                        SQL_KEYWORDS
+                            .iter()
+                            .map(|k| (k.to_string(), CompletionKind::Keyword))
+                            .collect()
+                    } else {
+                        table_refs
+                            .iter()
+                            .flat_map(|t| {
+                                self.schema
+                                    .columns_for(t)
+                                    .iter()
+                                    .map(|c| (c.to_string(), CompletionKind::Column))
+                            })
+                            .collect()
+                    }
+                }
+            }
+            "SELECT" | "WHERE" | "SET" | "BY" => {
                 let table_refs = self.extract_table_refs(upper_query, alias_map);
                 if table_refs.is_empty() {
                     SQL_KEYWORDS
@@ -1037,5 +1134,92 @@ mod tests {
             "expected 'created_at' via fuzzy 'crat' in dot-completion, got: {:?}",
             results.iter().map(|(r, _)| r).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn extract_join_context_finds_right_and_left_tables() {
+        let alias_map = build_alias_map("SELECT * FROM users JOIN orders ON");
+        let ctx = extract_join_context("SELECT * FROM USERS JOIN ORDERS ON", &alias_map)
+            .expect("should find join context");
+        assert_eq!(ctx.right_table, "orders");
+        assert!(ctx.left_tables.contains(&"users".to_string()), "left_tables: {:?}", ctx.left_tables);
+    }
+
+    #[test]
+    fn extract_join_context_resolves_aliases() {
+        let alias_map = build_alias_map("SELECT * FROM users u JOIN orders o ON");
+        let ctx = extract_join_context("SELECT * FROM USERS U JOIN ORDERS O ON", &alias_map)
+            .expect("should find join context with aliases");
+        assert_eq!(ctx.right_table, "orders");
+        assert!(ctx.left_tables.contains(&"users".to_string()), "left_tables: {:?}", ctx.left_tables);
+    }
+
+    #[test]
+    fn extract_join_context_no_join_returns_none() {
+        let alias_map = build_alias_map("SELECT * FROM users");
+        let ctx = extract_join_context("SELECT * FROM USERS ON", &alias_map);
+        assert!(ctx.is_none(), "expected None when no JOIN present");
+    }
+
+    #[test]
+    fn extract_join_context_multi_join_uses_last() {
+        let alias_map = build_alias_map("SELECT * FROM a JOIN b ON b.x = a.y JOIN c ON");
+        let ctx = extract_join_context("SELECT * FROM A JOIN B ON B.X = A.Y JOIN C ON", &alias_map)
+            .expect("should find context for last JOIN");
+        assert_eq!(ctx.right_table, "c");
+        assert!(ctx.left_tables.contains(&"a".to_string()), "left_tables: {:?}", ctx.left_tables);
+        assert!(ctx.left_tables.contains(&"b".to_string()), "left_tables: {:?}", ctx.left_tables);
+    }
+
+    #[test]
+    fn join_on_shared_column_appears_first() {
+        let schema = schema_with(
+            &["users", "orders"],
+            &[
+                ("users", &["id", "email"]),
+                ("orders", &["id", "user_id"]),
+            ],
+        );
+        let c = SqlCompleter::new(schema);
+        let input = "SELECT * FROM users JOIN orders ON ";
+        let results = c.complete_input(input, input.len());
+        let id_pos = results.iter().position(|(r, _)| r == "id");
+        let email_pos = results.iter().position(|(r, _)| r == "email");
+        assert!(id_pos.is_some(), "expected 'id' in results");
+        assert!(email_pos.is_some(), "expected 'email' in results");
+        assert!(
+            id_pos.unwrap() < email_pos.unwrap(),
+            "shared column 'id' should appear before non-shared 'email'"
+        );
+    }
+
+    #[test]
+    fn join_on_with_aliases_includes_both_tables_columns() {
+        let schema = schema_with(
+            &["users", "orders"],
+            &[
+                ("users", &["id", "email"]),
+                ("orders", &["id", "user_id"]),
+            ],
+        );
+        let c = SqlCompleter::new(schema);
+        let input = "SELECT * FROM users u JOIN orders o ON ";
+        let results = c.complete_input(input, input.len());
+        assert!(results.iter().any(|(r, _)| r == "user_id"), "expected user_id from orders");
+        assert!(results.iter().any(|(r, _)| r == "email"), "expected email from users");
+    }
+
+    #[test]
+    fn on_without_prior_join_falls_back_to_all_table_cols() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["id", "email"])],
+        );
+        let c = SqlCompleter::new(schema);
+        // ON without a preceding JOIN — unusual but must not panic, fall back to table columns
+        let input = "SELECT id FROM users ON ";
+        let results = c.complete_input(input, input.len());
+        assert!(results.iter().any(|(r, _)| r == "id" || r == "email"),
+            "fallback should return columns from known tables");
     }
 }
