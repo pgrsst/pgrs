@@ -603,10 +603,10 @@ impl Hinter for SqlHinter {
         let current_word = &line[start..pos];
 
         self.current_hint = if !prefix.is_empty()
-            && prefix.len() > current_word.len()
+            && prefix.chars().count() > current_word.chars().count()
             && prefix.to_lowercase().starts_with(&current_word.to_lowercase())
         {
-            prefix[current_word.len()..].to_string()
+            prefix.chars().skip(current_word.chars().count()).collect()
         } else {
             String::new()
         };
