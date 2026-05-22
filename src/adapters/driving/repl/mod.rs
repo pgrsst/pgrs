@@ -102,7 +102,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         KeyCode::Tab,
         ReedlineEvent::UntilFound(vec![
             ReedlineEvent::Menu("completion_menu".to_string()),
-            ReedlineEvent::MenuNext,
+            ReedlineEvent::Enter,
         ]),
     );
 
