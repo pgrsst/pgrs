@@ -12,7 +12,7 @@ use reedline::{
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::services::schema::service::SchemaService;
 
-use completer::{SqlCompleter, SqlHighlighter};
+use completer::{SqlCompleter, SqlHighlighter, SqlHinter};
 use executor::print_result;
 
 fn is_complete_statement(s: &str) -> bool {
@@ -91,6 +91,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
     let tables_for_dt: Vec<String> = schema.tables().to_vec();
 
     let highlighter = SqlHighlighter::new(schema.clone());
+    let hinter = SqlHinter::new(schema.clone());
     let completer = SqlCompleter::new(schema);
 
     let menu = ColumnarMenu::default().with_name("completion_menu");
@@ -100,6 +101,8 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         KeyModifiers::NONE,
         KeyCode::Tab,
         ReedlineEvent::UntilFound(vec![
+            // Accept ghost text if visible; returns Inapplicable when no hint is active.
+            ReedlineEvent::HistoryHintComplete,
             ReedlineEvent::Menu("completion_menu".to_string()),
             ReedlineEvent::MenuNext,
         ]),
@@ -107,6 +110,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
 
     let mut rl = Reedline::create()
         .with_completer(Box::new(completer))
+        .with_hinter(Box::new(hinter))
         .with_highlighter(Box::new(highlighter))
         .with_validator(Box::new(SqlValidator))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
