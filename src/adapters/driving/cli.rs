@@ -22,7 +22,7 @@ where
         let args: Vec<String> = args.into_iter().collect();
 
         match args.first().map(String::as_str) {
-            None => {
+            None | Some("help") | Some("--help") | Some("-h") => {
                 println!("{}", welcome());
                 Ok(())
             }
@@ -59,7 +59,8 @@ where
         let tls = match optional_option(args, "--tls").as_deref() {
             None | Some("disable") => TlsMode::Disable,
             Some("require") => TlsMode::Require,
-            Some(other) => return Err(format!("unknown tls mode '{other}' — supported: disable, require")),
+            Some("verify-full") => TlsMode::VerifyFull,
+            Some(other) => return Err(format!("unknown tls mode '{other}' — supported: disable, require, verify-full")),
         };
 
         self.connection_service.add_connection(AddConnectionInput {
@@ -123,7 +124,7 @@ where
 
         let connection = self.connection_service.get_connection(&name)?;
 
-        eprintln!("connecting to '{}'...", name);
+        eprintln!("handing off to psql for '{}' — you'll return to your shell, not pgrs, on exit", name);
 
         let error = std::process::Command::new("psql")
             .env("PGPASSWORD", &connection.password)
@@ -192,11 +193,13 @@ fn welcome() -> &'static str {
         "Manage and store named PostgreSQL connections locally.\n",
         "\n",
         "Commands:\n",
-        "  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require]\n",
+        "  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require|verify-full]\n",
         "             Add a new named connection\n",
+        "             --tls: disable (no encryption), require (encrypt, no cert check),\n",
+        "                    verify-full (encrypt + verify server certificate)\n",
         "  list         List all saved connections\n",
         "  list --names-only\n",
-        "             Print connection names only, one per line\n",
+        "             Print connection names only, one per line (handy for scripts and shell completion)\n",
         "  delete <name>\n",
         "             Delete a named connection\n",
         "  connect <name>\n",
@@ -204,7 +207,9 @@ fn welcome() -> &'static str {
         "  shell <name>\n",
         "             Open pgrs interactive SQL REPL with auto-completion\n",
         "  completions <bash|zsh|fish>\n",
-        "             Print shell completion script",
+        "             Print shell completion script\n",
+        "  help, --help, -h\n",
+        "             Show this help",
     )
 }
 
@@ -333,9 +338,26 @@ mod tests {
     }
 
     #[test]
+    fn add_with_tls_verify_full_saves_verify_full_mode() {
+        use crate::core::domain::connection::TlsMode;
+        let cli = cli_with(&[]);
+        cli.run(add_args("prod", &["--tls=verify-full"])).unwrap();
+        let conn = cli.get_connection("prod").unwrap();
+        assert_eq!(conn.tls, TlsMode::VerifyFull);
+    }
+
+    #[test]
     fn no_args_returns_ok() {
         let cli = cli_with(&[]);
         assert!(cli.run(std::iter::empty()).is_ok());
+    }
+
+    #[test]
+    fn help_command_returns_ok() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["help".to_string()].into_iter()).is_ok());
+        assert!(cli.run(["--help".to_string()].into_iter()).is_ok());
+        assert!(cli.run(["-h".to_string()].into_iter()).is_ok());
     }
 
     #[test]

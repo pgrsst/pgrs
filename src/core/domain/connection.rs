@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum TlsMode {
     #[default]
     Disable,
     Require,
+    VerifyFull,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]

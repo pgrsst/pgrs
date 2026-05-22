@@ -23,6 +23,18 @@ impl PostgresDb {
                 .connect(postgres::NoTls)
                 .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?,
             TlsMode::Require => {
+                // Encrypt without verifying the server certificate (matches psql sslmode=require).
+                let tls = native_tls::TlsConnector::builder()
+                    .danger_accept_invalid_certs(true)
+                    .danger_accept_invalid_hostnames(true)
+                    .build()
+                    .map_err(|e| format!("failed to build TLS connector: {}", e))?;
+                let tls = postgres_native_tls::MakeTlsConnector::new(tls);
+                config
+                    .connect(tls)
+                    .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?
+            }
+            TlsMode::VerifyFull => {
                 let tls = native_tls::TlsConnector::new()
                     .map_err(|e| format!("failed to build TLS connector: {}", e))?;
                 let tls = postgres_native_tls::MakeTlsConnector::new(tls);

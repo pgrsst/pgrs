@@ -83,7 +83,7 @@ impl Validator for SqlValidator {
 }
 
 fn repl_help_text() -> &'static str {
-    "  \\dt        list tables\n  \\help      show this help\n  \\q, exit   quit"
+    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
 }
 
 pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
