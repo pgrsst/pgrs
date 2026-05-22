@@ -53,11 +53,11 @@ fn visible_len(s: &str) -> usize {
     len
 }
 
-pub fn print_result(result: &QueryResult) {
-    print!("{}", format_result(result));
+pub fn print_result(result: &QueryResult, expanded: bool) {
+    print!("{}", format_result(result, expanded));
 }
 
-pub fn format_result(result: &QueryResult) -> String {
+pub fn format_result(result: &QueryResult, expanded: bool) -> String {
     if result.columns.is_empty() {
         let count = result.rows_affected.unwrap_or(result.rows.len() as u64);
         return if result.rows_affected.is_some() {
@@ -67,12 +67,24 @@ pub fn format_result(result: &QueryResult) -> String {
         };
     }
 
+    let _ = expanded; // expanded rendering added in a later task
+    format_minimal(result)
+}
+
+fn format_minimal(result: &QueryResult) -> String {
+    // pre-truncate each cell value (after t/f normalization)
+    let cells: Vec<Vec<String>> = result
+        .rows
+        .iter()
+        .map(|r| r.iter().map(|v| truncate_middle(normalize_val(v))).collect())
+        .collect();
+
     let col_widths: Vec<usize> = result
         .columns
         .iter()
         .enumerate()
         .map(|(i, col)| {
-            let max_val = result.rows.iter().map(|r| visible_len(normalize_val(&r[i]))).max().unwrap_or(0);
+            let max_val = cells.iter().map(|r| visible_len(&r[i])).max().unwrap_or(0);
             col.len().max(max_val)
         })
         .collect();
@@ -86,25 +98,27 @@ pub fn format_result(result: &QueryResult) -> String {
         .enumerate()
         .map(|(i, col)| format!("{:<width$}", col, width = col_widths[i]))
         .collect();
-    out.push_str(&format!(" {} \n", header.join(" | ")));
+    out.push_str(&header.join("  "));
+    out.push('\n');
 
-    // separator
-    let sep: Vec<String> = col_widths.iter().map(|w| "-".repeat(*w + 2)).collect();
-    out.push_str(&sep.join("+"));
+    // underline
+    let underline: Vec<String> = col_widths.iter().map(|w| "─".repeat(*w)).collect();
+    out.push_str(&underline.join("  "));
     out.push('\n');
 
     // rows
-    for row in &result.rows {
-        let cells: Vec<String> = row
+    for row in &cells {
+        let line: Vec<String> = row
             .iter()
             .enumerate()
             .map(|(i, val)| {
                 let colored = colorize_cell(val);
-                let padding = col_widths[i].saturating_sub(visible_len(normalize_val(val)));
+                let padding = col_widths[i].saturating_sub(visible_len(val));
                 format!("{}{}", colored, " ".repeat(padding))
             })
             .collect();
-        out.push_str(&format!(" {} \n", cells.join(" | ")));
+        out.push_str(&line.join("  "));
+        out.push('\n');
     }
 
     let count = result.rows.len();
@@ -128,7 +142,7 @@ mod tests {
             rows: vec![vec!["1".to_string(), "alice@example.com".to_string()]],
             rows_affected: None,
         };
-        let out = format_result(&result);
+        let out = format_result(&result, false);
         assert!(out.contains("id"), "missing column 'id'");
         assert!(out.contains("email"), "missing column 'email'");
         assert!(out.contains("1"), "missing value '1'");
@@ -143,7 +157,7 @@ mod tests {
             rows: vec![],
             rows_affected: None,
         };
-        let out = format_result(&result);
+        let out = format_result(&result, false);
         assert!(out.contains("(0 rows)"));
     }
 
@@ -157,7 +171,7 @@ mod tests {
             ],
             rows_affected: None,
         };
-        let out = format_result(&result);
+        let out = format_result(&result, false);
         assert!(out.contains("a_very_long_name"));
         assert!(out.contains("short"));
     }
@@ -169,7 +183,7 @@ mod tests {
             rows: vec![],
             rows_affected: Some(0),
         };
-        let out = format_result(&result);
+        let out = format_result(&result, false);
         assert!(out.contains("id"), "header 'id' missing");
         assert!(out.contains("email"), "header 'email' missing");
         assert!(out.contains("(0 rows)"), "row count missing");
@@ -182,7 +196,7 @@ mod tests {
             rows: vec![],
             rows_affected: Some(3),
         };
-        let out = format_result(&result);
+        let out = format_result(&result, false);
         assert!(out.contains("(3 rows affected)"), "expected 'rows affected', got: {}", out);
     }
 
@@ -193,7 +207,7 @@ mod tests {
             rows: vec![],
             rows_affected: Some(1),
         };
-        let out = format_result(&result);
+        let out = format_result(&result, false);
         assert!(out.contains("(1 row affected)"), "expected singular 'row affected', got: {}", out);
     }
 
@@ -204,7 +218,7 @@ mod tests {
             rows: vec![vec!["1".to_string()]],
             rows_affected: None,
         };
-        let out = format_result(&result);
+        let out = format_result(&result, false);
         assert!(out.contains("(1 row)"), "SELECT should show '(1 row)', got: {}", out);
         assert!(!out.contains("affected"), "SELECT should not say 'affected', got: {}", out);
     }
@@ -309,5 +323,32 @@ mod tests {
         let out = truncate_middle(&s);
         assert_eq!(out.chars().count(), 40);
         assert!(out.contains("..."));
+    }
+
+    #[test]
+    fn minimal_uses_box_underline_and_two_space_gap() {
+        let result = QueryResult {
+            columns: vec!["id".to_string(), "email".to_string()],
+            rows: vec![vec!["1".to_string(), "alice@example.com".to_string()]],
+            rows_affected: None,
+        };
+        let out = format_result(&result, false);
+        assert!(out.contains('─'), "expected box-drawing underline, got:\n{out}");
+        assert!(!out.contains('|'), "minimal style has no pipes, got:\n{out}");
+        assert!(!out.contains('+'), "minimal style has no plus, got:\n{out}");
+        assert!(out.contains("id  email"), "expected 2-space gap, got:\n{out}");
+    }
+
+    #[test]
+    fn minimal_truncates_long_cell() {
+        let long = "x".repeat(60);
+        let result = QueryResult {
+            columns: vec!["v".to_string()],
+            rows: vec![vec![long.clone()]],
+            rows_affected: None,
+        };
+        let out = format_result(&result, false);
+        assert!(out.contains("..."), "expected truncated cell, got:\n{out}");
+        assert!(!out.contains(&long), "full value should not appear, got:\n{out}");
     }
 }

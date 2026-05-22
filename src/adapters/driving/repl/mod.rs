@@ -148,7 +148,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                     continue;
                 }
                 match conn.execute(trimmed) {
-                    Ok(result) => print_result(&result),
+                    Ok(result) => print_result(&result, false),
                     Err(e) => eprintln!("error: {}", e),
                 }
             }
