@@ -21,6 +21,72 @@ pub enum CompletionKind {
     Column,
 }
 
+pub fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> String {
+    let mut out = String::with_capacity(line.len() * 2);
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Line comment: --
+        if chars[i] == '-' && i + 1 < len && chars[i + 1] == '-' {
+            let start = i;
+            while i < len && chars[i] != '\n' {
+                i += 1;
+            }
+            let span: String = chars[start..i].iter().collect();
+            out.push_str(&format!("\x1b[2m{}\x1b[0m", span));
+        }
+        // String literal: '...'
+        else if chars[i] == '\'' {
+            let start = i;
+            i += 1;
+            while i < len && chars[i] != '\'' {
+                i += 1;
+            }
+            if i < len { i += 1; } // consume closing '
+            let span: String = chars[start..i].iter().collect();
+            out.push_str(&format!("\x1b[33m{}\x1b[0m", span));
+        }
+        // Number: digit
+        else if chars[i].is_ascii_digit() {
+            let start = i;
+            let mut has_dot = false;
+            while i < len && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot)) {
+                if chars[i] == '.' { has_dot = true; }
+                i += 1;
+            }
+            let span: String = chars[start..i].iter().collect();
+            out.push_str(&format!("\x1b[35m{}\x1b[0m", span));
+        }
+        // Word: letter or underscore
+        else if chars[i].is_alphabetic() || chars[i] == '_' {
+            let start = i;
+            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            let word: String = chars[start..i].iter().collect();
+            let upper = word.to_uppercase();
+            if SQL_KEYWORDS.contains(&upper.as_str()) {
+                out.push_str(&format!("\x1b[1;36m{}\x1b[0m", word));
+            } else if tables.iter().any(|t| t.eq_ignore_ascii_case(&word)) {
+                out.push_str(&format!("\x1b[1;33m{}\x1b[0m", word));
+            } else if columns.iter().any(|c| c.eq_ignore_ascii_case(&word)) {
+                out.push_str(&format!("\x1b[32m{}\x1b[0m", word));
+            } else {
+                out.push_str(&word);
+            }
+        }
+        // Everything else
+        else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    out
+}
+
 pub struct SqlCompleter {
     schema: SchemaService,
 }
@@ -277,5 +343,63 @@ mod tests {
             results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
             "expected id [column]"
         );
+    }
+
+    #[test]
+    fn highlight_keyword_bold_cyan() {
+        let result = highlight_sql("SELECT", &[], &[]);
+        assert!(result.contains("\x1b[1;36m"), "expected bold cyan escape");
+        assert!(result.contains("SELECT"));
+        assert!(result.contains("\x1b[0m"), "expected reset");
+    }
+
+    #[test]
+    fn highlight_string_literal_yellow() {
+        let result = highlight_sql("'hello'", &[], &[]);
+        assert!(result.contains("\x1b[33m"), "expected yellow escape");
+        assert!(result.contains("'hello'"));
+    }
+
+    #[test]
+    fn highlight_number_magenta() {
+        let result = highlight_sql("42", &[], &[]);
+        assert!(result.contains("\x1b[35m"), "expected magenta escape");
+        assert!(result.contains("42"));
+    }
+
+    #[test]
+    fn highlight_comment_dim() {
+        let result = highlight_sql("-- comment", &[], &[]);
+        assert!(result.contains("\x1b[2m"), "expected dim escape");
+        assert!(result.contains("-- comment"));
+    }
+
+    #[test]
+    fn highlight_table_name_bold_yellow() {
+        let tables = vec!["users".to_string()];
+        let result = highlight_sql("users", &tables, &[]);
+        assert!(result.contains("\x1b[1;33m"), "expected bold yellow for table");
+    }
+
+    #[test]
+    fn highlight_column_name_green() {
+        let columns = vec!["email".to_string()];
+        let result = highlight_sql("email", &[], &columns);
+        assert!(result.contains("\x1b[32m"), "expected green for column");
+    }
+
+    #[test]
+    fn highlight_plain_word_no_escape() {
+        let result = highlight_sql("foo", &[], &[]);
+        assert!(!result.contains("\x1b["), "expected no escape for unknown word");
+    }
+
+    #[test]
+    fn highlight_mixed_query() {
+        let tables = vec!["users".to_string()];
+        let result = highlight_sql("SELECT * FROM users WHERE id = 1", &tables, &[]);
+        assert!(result.contains("\x1b[1;36m"), "SELECT should be bold cyan");
+        assert!(result.contains("\x1b[1;33m"), "users should be bold yellow");
+        assert!(result.contains("\x1b[35m"), "1 should be magenta");
     }
 }
