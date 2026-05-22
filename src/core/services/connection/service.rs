@@ -18,6 +18,14 @@ pub struct AddConnectionInput {
     pub tls: TlsMode,
 }
 
+fn require_field(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{label} is required"))
+    } else {
+        Ok(())
+    }
+}
+
 impl<R> ConnectionService<R>
 where
     R: ConnectionRepository,
@@ -27,25 +35,11 @@ where
     }
 
     pub fn add_connection(&self, input: AddConnectionInput) -> Result<(), String> {
-        if input.name.trim().is_empty() {
-            return Err("connection name is required".to_string());
-        }
-
-        if input.host.trim().is_empty() {
-            return Err("host is required".to_string());
-        }
-
-        if input.database.trim().is_empty() {
-            return Err("database is required".to_string());
-        }
-
-        if input.username.trim().is_empty() {
-            return Err("username is required".to_string());
-        }
-
-        if input.password.trim().is_empty() {
-            return Err("password is required".to_string());
-        }
+        require_field("connection name", &input.name)?;
+        require_field("host", &input.host)?;
+        require_field("database", &input.database)?;
+        require_field("username", &input.username)?;
+        require_field("password", &input.password)?;
 
         let connection = Connection {
             name: input.name,
@@ -65,18 +59,12 @@ where
     }
 
     pub fn delete_connection(&self, name: &str) -> Result<(), String> {
-        if name.trim().is_empty() {
-            return Err("connection name is required".to_string());
-        }
-
+        require_field("connection name", name)?;
         self.repository.delete(name)
     }
 
     pub fn get_connection(&self, name: &str) -> Result<Connection, String> {
-        if name.trim().is_empty() {
-            return Err("connection name is required".to_string());
-        }
-
+        require_field("connection name", name)?;
         self.repository.get_connection(name)
     }
 }

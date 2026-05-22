@@ -11,6 +11,9 @@ const SQL_KEYWORDS: &[&str] = &[
     "BEGIN", "COMMIT", "ROLLBACK",
 ];
 
+const TABLE_TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE"];
+const COLUMN_TRIGGERS: &[&str] = &["SELECT", "WHERE", "ON", "SET", "BY"];
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompletionKind {
     Keyword,
@@ -36,81 +39,87 @@ impl CompletionKind {
     }
 }
 
-#[cfg(test)]
-pub fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> String {
-    let mut out = String::with_capacity(line.len() * 2);
-    let chars: Vec<char> = line.chars().collect();
+enum SqlToken {
+    Comment(String),
+    StringLiteral(String),
+    Number(String),
+    Word(String),
+    Other(char),
+}
+
+fn tokenize(input: &str) -> Vec<SqlToken> {
+    let chars: Vec<char> = input.chars().collect();
     let len = chars.len();
     let mut i = 0;
+    let mut tokens = Vec::new();
 
     while i < len {
-        // Line comment: --
         if chars[i] == '-' && i + 1 < len && chars[i + 1] == '-' {
             let start = i;
-            while i < len && chars[i] != '\n' {
-                i += 1;
-            }
-            let span: String = chars[start..i].iter().collect();
-            out.push_str(&format!("\x1b[2m{}\x1b[0m", span));
-        }
-        // String literal: '...' with '' escape for embedded single quote
-        else if chars[i] == '\'' {
+            while i < len && chars[i] != '\n' { i += 1; }
+            tokens.push(SqlToken::Comment(chars[start..i].iter().collect()));
+        } else if chars[i] == '\'' {
             let start = i;
             i += 1;
             loop {
-                if i >= len {
-                    break; // unterminated — highlight what we have
-                }
+                if i >= len { break; }
                 if chars[i] == '\'' {
-                    i += 1; // consume the quote
-                    if i < len && chars[i] == '\'' {
-                        i += 1; // '' escape: skip second quote and continue
-                    } else {
-                        break; // closing quote
-                    }
-                } else {
                     i += 1;
-                }
+                    if i < len && chars[i] == '\'' { i += 1; } else { break; }
+                } else { i += 1; }
             }
-            let span: String = chars[start..i].iter().collect();
-            out.push_str(&format!("\x1b[33m{}\x1b[0m", span));
-        }
-        // Number: digit
-        else if chars[i].is_ascii_digit() {
+            tokens.push(SqlToken::StringLiteral(chars[start..i].iter().collect()));
+        } else if chars[i].is_ascii_digit() {
             let start = i;
             let mut has_dot = false;
             while i < len && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot && i + 1 < len && chars[i + 1].is_ascii_digit())) {
                 if chars[i] == '.' { has_dot = true; }
                 i += 1;
             }
-            let span: String = chars[start..i].iter().collect();
-            out.push_str(&format!("\x1b[35m{}\x1b[0m", span));
-        }
-        // Word: letter or underscore
-        else if chars[i].is_alphabetic() || chars[i] == '_' {
+            tokens.push(SqlToken::Number(chars[start..i].iter().collect()));
+        } else if chars[i].is_alphabetic() || chars[i] == '_' {
             let start = i;
-            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let upper = word.to_uppercase();
-            if SQL_KEYWORDS.contains(&upper.as_str()) {
-                out.push_str(&format!("\x1b[1;36m{}\x1b[0m", word));
-            } else if tables.iter().any(|t| t.eq_ignore_ascii_case(&word)) {
-                out.push_str(&format!("\x1b[1;33m{}\x1b[0m", word));
-            } else if columns.iter().any(|c| c.eq_ignore_ascii_case(&word)) {
-                out.push_str(&format!("\x1b[32m{}\x1b[0m", word));
-            } else {
-                out.push_str(&word);
-            }
-        }
-        // Everything else
-        else {
-            out.push(chars[i]);
+            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
+            tokens.push(SqlToken::Word(chars[start..i].iter().collect()));
+        } else {
+            tokens.push(SqlToken::Other(chars[i]));
             i += 1;
         }
     }
 
+    tokens
+}
+
+fn classify_word(word: &str, tables: &[String], columns: &[String]) -> Option<CompletionKind> {
+    let upper = word.to_uppercase();
+    if SQL_KEYWORDS.contains(&upper.as_str()) {
+        Some(CompletionKind::Keyword)
+    } else if tables.iter().any(|t| t.eq_ignore_ascii_case(word)) {
+        Some(CompletionKind::Table)
+    } else if columns.iter().any(|c| c.eq_ignore_ascii_case(word)) {
+        Some(CompletionKind::Column)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> String {
+    let mut out = String::with_capacity(line.len() * 2);
+    for token in tokenize(line) {
+        match token {
+            SqlToken::Comment(s)       => out.push_str(&format!("\x1b[2m{s}\x1b[0m")),
+            SqlToken::StringLiteral(s) => out.push_str(&format!("\x1b[33m{s}\x1b[0m")),
+            SqlToken::Number(s)        => out.push_str(&format!("\x1b[35m{s}\x1b[0m")),
+            SqlToken::Word(s) => match classify_word(&s, tables, columns) {
+                Some(CompletionKind::Keyword) => out.push_str(&format!("\x1b[1;36m{s}\x1b[0m")),
+                Some(CompletionKind::Table)   => out.push_str(&format!("\x1b[1;33m{s}\x1b[0m")),
+                Some(CompletionKind::Column)  => out.push_str(&format!("\x1b[32m{s}\x1b[0m")),
+                None                          => out.push_str(&s),
+            },
+            SqlToken::Other(c) => out.push(c),
+        }
+    }
     out
 }
 
@@ -179,10 +188,7 @@ impl SqlCompleter {
             tokens.last().copied().unwrap_or("")
         };
 
-        let table_triggers = ["FROM", "JOIN", "INTO", "UPDATE"];
-        let col_triggers = ["SELECT", "WHERE", "ON", "SET", "BY"];
-
-        let effective_trigger = if table_triggers.contains(&current_word) || col_triggers.contains(&current_word) {
+        let effective_trigger = if TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word) {
             current_word
         } else if input.ends_with(char::is_whitespace) {
             tokens.last().copied().unwrap_or("")
@@ -227,7 +233,7 @@ impl SqlCompleter {
                 .collect(),
         };
 
-        let is_trigger = table_triggers.contains(&current_word) || col_triggers.contains(&current_word);
+        let is_trigger = TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word);
         let prefix_upper = if is_trigger { "".to_string() } else { current_word.to_uppercase() };
 
         let mut results: Vec<(String, CompletionKind)> = candidates
@@ -292,58 +298,21 @@ impl SqlHighlighter {
 impl Highlighter for SqlHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         let mut styled = StyledText::new();
-        let chars: Vec<char> = line.chars().collect();
-        let len = chars.len();
-        let mut i = 0;
-
-        while i < len {
-            if chars[i] == '-' && i + 1 < len && chars[i + 1] == '-' {
-                let start = i;
-                while i < len && chars[i] != '\n' { i += 1; }
-                let span: String = chars[start..i].iter().collect();
-                styled.push((Style::new().dimmed(), span));
-            } else if chars[i] == '\'' {
-                let start = i;
-                i += 1;
-                loop {
-                    if i >= len { break; }
-                    if chars[i] == '\'' {
-                        i += 1;
-                        if i < len && chars[i] == '\'' { i += 1; } else { break; }
-                    } else { i += 1; }
+        for token in tokenize(line) {
+            match token {
+                SqlToken::Comment(s)       => styled.push((Style::new().dimmed(), s)),
+                SqlToken::StringLiteral(s) => styled.push((Style::new().fg(Color::Yellow), s)),
+                SqlToken::Number(s)        => styled.push((Style::new().fg(Color::Magenta), s)),
+                SqlToken::Word(s) => {
+                    let style = match classify_word(&s, &self.tables, &self.columns) {
+                        Some(kind) => kind.style(),
+                        None       => Style::new(),
+                    };
+                    styled.push((style, s));
                 }
-                let span: String = chars[start..i].iter().collect();
-                styled.push((Style::new().fg(Color::Yellow), span));
-            } else if chars[i].is_ascii_digit() {
-                let start = i;
-                let mut has_dot = false;
-                while i < len && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot && i + 1 < len && chars[i + 1].is_ascii_digit())) {
-                    if chars[i] == '.' { has_dot = true; }
-                    i += 1;
-                }
-                let span: String = chars[start..i].iter().collect();
-                styled.push((Style::new().fg(Color::Magenta), span));
-            } else if chars[i].is_alphabetic() || chars[i] == '_' {
-                let start = i;
-                while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
-                let word: String = chars[start..i].iter().collect();
-                let upper = word.to_uppercase();
-                let style = if SQL_KEYWORDS.contains(&upper.as_str()) {
-                    Style::new().fg(Color::Cyan).bold()
-                } else if self.tables.iter().any(|t| t.eq_ignore_ascii_case(&word)) {
-                    Style::new().fg(Color::Yellow).bold()
-                } else if self.columns.iter().any(|c| c.eq_ignore_ascii_case(&word)) {
-                    Style::new().fg(Color::Green)
-                } else {
-                    Style::new()
-                };
-                styled.push((style, word));
-            } else {
-                styled.push((Style::new(), chars[i].to_string()));
-                i += 1;
+                SqlToken::Other(c) => styled.push((Style::new(), c.to_string())),
             }
         }
-
         styled
     }
 }
