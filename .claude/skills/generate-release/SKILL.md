@@ -137,7 +137,7 @@ gh release create vX.Y.Z \
   --target main
 ```
 
-After the command succeeds, display the GitHub release URL that `gh` returns so the user can verify.
+`gh release create` prints the release URL to stdout. Copy it from the command output and show it to the user as confirmation.
 
 ---
 
