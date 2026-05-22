@@ -48,22 +48,22 @@ fn is_complete_statement(s: &str) -> bool {
 struct PgrsPrompt;
 
 impl Prompt for PgrsPrompt {
-    fn render_prompt_left(&self) -> Cow<str> {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
         Cow::Borrowed("pgrs")
     }
-    fn render_prompt_right(&self) -> Cow<str> {
+    fn render_prompt_right(&self) -> Cow<'_, str> {
         Cow::Borrowed("")
     }
-    fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<str> {
+    fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
         Cow::Borrowed("> ")
     }
-    fn render_prompt_multiline_indicator(&self) -> Cow<str> {
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
         Cow::Borrowed("   -> ")
     }
     fn render_prompt_history_search_indicator(
         &self,
         history_search: PromptHistorySearch,
-    ) -> Cow<str> {
+    ) -> Cow<'_, str> {
         let prefix = match history_search.status {
             PromptHistorySearchStatus::Passing => "",
             PromptHistorySearchStatus::Failing => "failing ",

@@ -36,6 +36,7 @@ impl CompletionKind {
     }
 }
 
+#[cfg(test)]
 pub fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> String {
     let mut out = String::with_capacity(line.len() * 2);
     let chars: Vec<char> = line.chars().collect();
@@ -131,10 +132,6 @@ pub struct SqlCompleter {
 impl SqlCompleter {
     pub fn new(schema: SchemaService) -> Self {
         Self { schema }
-    }
-
-    pub fn schema(&self) -> &SchemaService {
-        &self.schema
     }
 
     pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
