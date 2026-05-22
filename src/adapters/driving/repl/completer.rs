@@ -238,6 +238,16 @@ fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> String {
     out
 }
 
+fn fuzzy_match(candidate: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let mut chars = candidate.chars();
+    query
+        .chars()
+        .all(|q| chars.any(|c| c.eq_ignore_ascii_case(&q)))
+}
+
 fn word_start(line: &str, pos: usize) -> usize {
     let input = &line[..pos];
     let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
@@ -302,7 +312,7 @@ impl SqlCompleter {
 
         let mut results: Vec<(String, CompletionKind)> = candidates
             .into_iter()
-            .filter(|(c, _)| c.to_uppercase().starts_with(&prefix_upper))
+            .filter(|(c, _)| fuzzy_match(c, &prefix_upper))
             .collect();
 
         results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -948,5 +958,64 @@ mod tests {
             results.iter().map(|(r, _)| r).collect::<Vec<_>>()
         );
         assert!(!results.iter().any(|(r, _)| r == "email"), "email from users should not appear");
+    }
+
+    #[test]
+    fn fuzzy_match_empty_query_matches_everything() {
+        assert!(fuzzy_match("users", ""));
+        assert!(fuzzy_match("orders", ""));
+    }
+
+    #[test]
+    fn fuzzy_match_prefix_still_works() {
+        assert!(fuzzy_match("users", "use"));
+    }
+
+    #[test]
+    fn fuzzy_match_subsequence_usr_users() {
+        assert!(fuzzy_match("users", "usr"));
+    }
+
+    #[test]
+    fn fuzzy_match_subsequence_crat_created_at() {
+        assert!(fuzzy_match("created_at", "crat"));
+    }
+
+    #[test]
+    fn fuzzy_match_no_match() {
+        assert!(!fuzzy_match("users", "xyz"));
+    }
+
+    #[test]
+    fn fuzzy_match_case_insensitive() {
+        assert!(fuzzy_match("Users", "usr"));
+        assert!(fuzzy_match("users", "USR"));
+    }
+
+    #[test]
+    fn complete_input_fuzzy_matches_table_by_subsequence() {
+        let schema = schema_with(&["users", "orders"], &[]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT * FROM usr", 17);
+        assert!(
+            results.iter().any(|(r, _)| r == "users"),
+            "expected 'users' via fuzzy 'usr', got: {:?}",
+            results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn complete_input_fuzzy_matches_column_by_subsequence() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["created_at", "email"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT crat FROM users", 11);
+        assert!(
+            results.iter().any(|(r, _)| r == "created_at"),
+            "expected 'created_at' via fuzzy 'crat', got: {:?}",
+            results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
     }
 }
