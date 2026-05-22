@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use rustyline::completion::{Completer, Pair};
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -226,7 +228,20 @@ impl Hinter for SqlCompleter {
     }
 }
 
-impl Highlighter for SqlCompleter {}
+impl Highlighter for SqlCompleter {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        let tables = self.schema.tables();
+        let columns: Vec<String> = tables
+            .iter()
+            .flat_map(|t| self.schema.columns_for(t).iter().cloned())
+            .collect();
+        Cow::Owned(highlight_sql(line, tables, &columns))
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        true
+    }
+}
 impl Validator for SqlCompleter {}
 impl Helper for SqlCompleter {}
 
