@@ -10,6 +10,21 @@ fn normalize_val(val: &str) -> &str {
     }
 }
 
+const MAX_CELL_CHARS: usize = 40;
+
+fn truncate_middle(val: &str) -> String {
+    let chars: Vec<char> = val.chars().collect();
+    if chars.len() <= MAX_CELL_CHARS {
+        return val.to_string();
+    }
+    let keep = MAX_CELL_CHARS - 3; // room for "..."
+    let prefix = keep.div_ceil(2); // 19
+    let suffix = keep - prefix;     // 18
+    let head: String = chars[..prefix].iter().collect();
+    let tail: String = chars[chars.len() - suffix..].iter().collect();
+    format!("{}...{}", head, tail)
+}
+
 fn colorize_cell(val: &str) -> String {
     let display = normalize_val(val);
     if display.eq_ignore_ascii_case("true") {
@@ -264,5 +279,35 @@ mod tests {
     fn visible_len_non_m_escape_terminator() {
         // cursor-movement escape \x1b[A must not corrupt subsequent chars
         assert_eq!(visible_len("\x1b[Ahello"), 5);
+    }
+
+    #[test]
+    fn truncate_middle_keeps_short_values() {
+        assert_eq!(truncate_middle("12345678910"), "12345678910");
+    }
+
+    #[test]
+    fn truncate_middle_exactly_40_unchanged() {
+        let s = "a".repeat(40);
+        assert_eq!(truncate_middle(&s), s);
+    }
+
+    #[test]
+    fn truncate_middle_long_value_has_ellipsis_total_40() {
+        let s = "a".repeat(60);
+        let out = truncate_middle(&s);
+        assert_eq!(out.chars().count(), 40);
+        assert!(out.contains("..."));
+        assert!(out.starts_with(&"a".repeat(19)));
+        assert!(out.ends_with(&"a".repeat(18)));
+    }
+
+    #[test]
+    fn truncate_middle_char_based_multibyte() {
+        // 50 CJK chars -> truncated to 40 chars, not bytes
+        let s = "あ".repeat(50);
+        let out = truncate_middle(&s);
+        assert_eq!(out.chars().count(), 40);
+        assert!(out.contains("..."));
     }
 }
