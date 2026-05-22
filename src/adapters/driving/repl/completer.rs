@@ -257,6 +257,7 @@ impl SqlCompleter {
     }
 
     pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
+        let alias_map = build_alias_map(line);
         let input = &line[..pos];
 
         // Qualified name: "table.col_prefix" or "schema.table.col_prefix"
@@ -269,7 +270,7 @@ impl SqlCompleter {
                 .unwrap_or(&token[..dot_pos])
                 .to_lowercase();
             let col_prefix = token[dot_pos + 1..].to_uppercase();
-            return self.complete_qualified(&table_name, &col_prefix);
+            return self.complete_qualified(&table_name, &col_prefix, &alias_map);
         }
 
         let upper = input.to_uppercase();
@@ -307,8 +308,9 @@ impl SqlCompleter {
         results
     }
 
-    fn complete_qualified(&self, table_name: &str, col_prefix: &str) -> Vec<(String, CompletionKind)> {
-        let cols = self.schema.columns_for(table_name);
+    fn complete_qualified(&self, table_name: &str, col_prefix: &str, alias_map: &AliasMap) -> Vec<(String, CompletionKind)> {
+        let resolved = alias_map.resolve(table_name).unwrap_or(table_name);
+        let cols = self.schema.columns_for(resolved);
         if !cols.is_empty() {
             cols.iter()
                 .filter(|c| c.to_uppercase().starts_with(col_prefix))
@@ -868,5 +870,56 @@ mod tests {
     fn build_alias_map_subquery_without_as() {
         let m = build_alias_map("SELECT * FROM (SELECT id FROM users) s");
         assert_eq!(m.resolve("s"), None);
+    }
+
+    #[test]
+    fn alias_simple() {
+        let schema = schema_with(&["users"], &[("users", &["id", "email", "created_at"])]);
+        let c = SqlCompleter::new(schema);
+        // cursor at pos 9 — "SELECT u." — alias defined later in full line
+        let results = c.complete_input("SELECT u. FROM users u", 9);
+        assert!(
+            results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
+            "expected id [column] via alias u, got: {:?}",
+            results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+        assert!(results.iter().any(|(r, _)| r == "email"));
+    }
+
+    #[test]
+    fn alias_with_as() {
+        let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT u. FROM users AS u", 9);
+        assert!(results.iter().any(|(r, _)| r == "id"), "expected id via AS alias");
+        assert!(results.iter().any(|(r, _)| r == "email"));
+    }
+
+    #[test]
+    fn alias_prefix_filter() {
+        let schema = schema_with(&["users"], &[("users", &["id", "email", "created_at"])]);
+        let c = SqlCompleter::new(schema);
+        // "SELECT u.em" — pos=11
+        let results = c.complete_input("SELECT u.em FROM users u", 11);
+        assert!(results.iter().any(|(r, _)| r == "email"), "expected email");
+        assert!(!results.iter().any(|(r, _)| r == "id"), "id should not appear");
+        assert!(!results.iter().any(|(r, _)| r == "created_at"), "created_at should not appear");
+    }
+
+    #[test]
+    fn multi_alias() {
+        let schema = schema_with(
+            &["users", "orders"],
+            &[("users", &["id", "email"]), ("orders", &["id", "user_id"])],
+        );
+        let c = SqlCompleter::new(schema);
+        // "SELECT o." — pos=9 — alias o resolves to orders
+        let results = c.complete_input("SELECT o. FROM users u JOIN orders o ON u.id = o.user_id", 9);
+        assert!(
+            results.iter().any(|(r, _)| r == "user_id"),
+            "expected user_id from orders via alias o, got: {:?}",
+            results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+        assert!(!results.iter().any(|(r, _)| r == "email"), "email from users should not appear");
     }
 }
