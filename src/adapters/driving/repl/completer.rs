@@ -131,7 +131,7 @@ fn extract_join_context(upper_query: &str, alias_map: &AliasMap) -> Option<JoinC
     let right_table = alias_map
         .resolve(&right_raw)
         .map(|s| s.to_string())
-        .unwrap_or_else(|| right_raw.clone());
+        .unwrap_or(right_raw);
 
     let left_tables: Vec<String> = tokens
         .windows(2)
@@ -411,22 +411,27 @@ impl SqlCompleter {
                         .flat_map(|t| self.schema.columns_for(t).iter().cloned())
                         .collect();
 
+                    // Build a lowercase set for O(1) shared-column lookup
+                    let left_lower: std::collections::HashSet<String> =
+                        left_cols.iter().map(|c| c.to_lowercase()).collect();
+
                     // Shared columns (likely FK keys) first
                     let mut result: Vec<(String, CompletionKind)> = right_cols
                         .iter()
-                        .filter(|c| left_cols.iter().any(|lc| lc.eq_ignore_ascii_case(c)))
+                        .filter(|c| left_lower.contains(&c.to_lowercase()))
                         .map(|c| (c.clone(), CompletionKind::Column))
                         .collect();
 
-                    // Remaining right table columns
-                    for c in right_cols.iter().filter(|c| !left_cols.iter().any(|lc| lc.eq_ignore_ascii_case(c))) {
-                        result.push((c.clone(), CompletionKind::Column));
-                    }
+                    // Remaining right-table-only columns
+                    result.extend(
+                        right_cols
+                            .iter()
+                            .filter(|c| !left_lower.contains(&c.to_lowercase()))
+                            .map(|c| (c.clone(), CompletionKind::Column)),
+                    );
 
                     // Left table columns
-                    for c in &left_cols {
-                        result.push((c.clone(), CompletionKind::Column));
-                    }
+                    result.extend(left_cols.iter().map(|c| (c.clone(), CompletionKind::Column)));
 
                     result
                 } else {
@@ -1147,11 +1152,17 @@ mod tests {
 
     #[test]
     fn extract_join_context_resolves_aliases() {
+        // alias map: u -> users, o -> orders
         let alias_map = build_alias_map("SELECT * FROM users u JOIN orders o ON");
-        let ctx = extract_join_context("SELECT * FROM USERS U JOIN ORDERS O ON", &alias_map)
+        // upper query passes alias tokens (u, o) not real table names
+        let ctx = extract_join_context("SELECT * FROM U JOIN O ON", &alias_map)
             .expect("should find join context with aliases");
-        assert_eq!(ctx.right_table, "orders");
-        assert!(ctx.left_tables.contains(&"users".to_string()), "left_tables: {:?}", ctx.left_tables);
+        assert_eq!(ctx.right_table, "orders", "right alias 'o' should resolve to 'orders'");
+        assert!(
+            ctx.left_tables.contains(&"users".to_string()),
+            "left alias 'u' should resolve to 'users', left_tables: {:?}",
+            ctx.left_tables
+        );
     }
 
     #[test]
