@@ -14,6 +14,63 @@ impl AliasMap {
     }
 }
 
+#[derive(Debug)]
+enum AliasState {
+    Idle,
+    ExpectTable,
+    ExpectAlias { candidate: String },
+    ExpectAliasName { candidate: String },
+}
+
+fn build_alias_map(line: &str) -> AliasMap {
+    let mut map: HashMap<String, Option<String>> = HashMap::new();
+    let mut state = AliasState::Idle;
+
+    for token in tokenize(line) {
+        // Skip whitespace and comments
+        match &token {
+            SqlToken::Comment(_) => continue,
+            SqlToken::Other(c) if c.is_whitespace() => continue,
+            _ => {}
+        }
+
+        state = match (state, token) {
+            (AliasState::Idle, SqlToken::Word(w))
+                if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
+            {
+                AliasState::ExpectTable
+            }
+            (AliasState::ExpectTable, SqlToken::Word(w))
+                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
+            {
+                AliasState::ExpectAlias { candidate: w.to_lowercase() }
+            }
+            (AliasState::ExpectTable, _) => AliasState::Idle,
+            (AliasState::ExpectAlias { candidate }, SqlToken::Word(w))
+                if w.to_uppercase() == "AS" =>
+            {
+                AliasState::ExpectAliasName { candidate }
+            }
+            (AliasState::ExpectAlias { candidate }, SqlToken::Word(w))
+                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
+            {
+                map.insert(w.to_lowercase(), Some(candidate));
+                AliasState::Idle
+            }
+            (AliasState::ExpectAlias { .. }, SqlToken::Other(',')) => AliasState::ExpectTable,
+            (AliasState::ExpectAlias { .. }, _) => AliasState::Idle,
+            (AliasState::ExpectAliasName { candidate }, SqlToken::Word(w)) => {
+                map.insert(w.to_lowercase(), Some(candidate));
+                AliasState::Idle
+            }
+            (AliasState::ExpectAliasName { .. }, _) => AliasState::Idle,
+            (AliasState::Idle, _) => AliasState::Idle,
+        };
+    }
+
+    AliasMap { map }
+}
+
 const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
     "ON", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "DISTINCT",
@@ -50,6 +107,7 @@ impl CompletionKind {
     }
 }
 
+#[derive(Debug)]
 enum SqlToken {
     Comment(String),
     StringLiteral(String),
@@ -722,5 +780,30 @@ mod tests {
         let mut m = AliasMap { map: std::collections::HashMap::new() };
         m.map.insert("s".to_string(), None);
         assert_eq!(m.resolve("s"), None);
+    }
+
+    #[test]
+    fn build_alias_map_from_without_as() {
+        let m = build_alias_map("SELECT * FROM users u");
+        assert_eq!(m.resolve("u"), Some("users"));
+    }
+
+    #[test]
+    fn build_alias_map_from_with_as() {
+        let m = build_alias_map("SELECT * FROM users AS u");
+        assert_eq!(m.resolve("u"), Some("users"));
+    }
+
+    #[test]
+    fn build_alias_map_join_alias() {
+        let m = build_alias_map("SELECT * FROM users u JOIN orders o ON u.id = o.user_id");
+        assert_eq!(m.resolve("u"), Some("users"));
+        assert_eq!(m.resolve("o"), Some("orders"));
+    }
+
+    #[test]
+    fn build_alias_map_table_without_alias_not_in_map() {
+        let m = build_alias_map("SELECT * FROM users");
+        assert_eq!(m.resolve("users"), None);
     }
 }
