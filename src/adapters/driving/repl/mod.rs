@@ -101,7 +101,9 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         KeyModifiers::NONE,
         KeyCode::Tab,
         ReedlineEvent::UntilFound(vec![
-            // Accept ghost text if visible; returns Inapplicable when no hint is active.
+            // HistoryHintComplete is reedline's generic "accept the active hinter's ghost text"
+            // event — works for any Hinter impl, not just history-based ones.
+            // Returns Inapplicable (falls through) when no hint is currently shown.
             ReedlineEvent::HistoryHintComplete,
             ReedlineEvent::Menu("completion_menu".to_string()),
             ReedlineEvent::MenuNext,
