@@ -388,7 +388,7 @@ impl SqlCompleter {
                 .tables()
                 .iter()
                 .flat_map(|t| self.schema.columns_for(t).iter().cloned())
-                .filter(|c| fuzzy_match(&c, col_prefix))
+                .filter(|c| fuzzy_match(c, col_prefix))
                 .map(|c| (c, CompletionKind::Column))
                 .collect()
         }
