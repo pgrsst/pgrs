@@ -162,7 +162,8 @@ where
         Ok(())
     }
 
-    pub fn get_connection(&self, name: &str) -> Result<Connection, String> {
+    #[cfg(test)]
+    pub(crate) fn get_connection(&self, name: &str) -> Result<Connection, String> {
         self.connection_service.get_connection(name)
     }
 }

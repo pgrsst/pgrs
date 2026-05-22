@@ -3,8 +3,8 @@ use crate::core::ports::db_connection::DbConnection;
 
 #[derive(Clone)]
 pub struct SchemaService {
-    pub tables: Vec<String>,
-    pub columns: HashMap<String, Vec<String>>,
+    tables: Vec<String>,
+    columns: HashMap<String, Vec<String>>,
 }
 
 impl SchemaService {

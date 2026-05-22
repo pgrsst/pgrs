@@ -320,7 +320,25 @@ impl Highlighter for SqlHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ports::db_connection::QueryResult;
     use std::collections::HashMap;
+
+    struct TestDb {
+        tables: Vec<String>,
+        columns: HashMap<String, Vec<String>>,
+    }
+
+    impl crate::core::ports::db_connection::DbConnection for TestDb {
+        fn execute(&self, _: &str) -> Result<QueryResult, String> {
+            Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None })
+        }
+        fn list_tables(&self) -> Result<Vec<String>, String> {
+            Ok(self.tables.clone())
+        }
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+            Ok(self.columns.clone())
+        }
+    }
 
     fn schema_with(tables: &[&str], columns: &[(&str, &[&str])]) -> SchemaService {
         let mut col_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -330,10 +348,11 @@ mod tests {
                 cols.iter().map(|c| c.to_string()).collect(),
             );
         }
-        SchemaService {
+        SchemaService::load(&TestDb {
             tables: tables.iter().map(|t| t.to_string()).collect(),
             columns: col_map,
-        }
+        })
+        .unwrap()
     }
 
     #[test]
