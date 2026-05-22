@@ -1,3 +1,5 @@
+use unicode_width::UnicodeWidthChar;
+
 use crate::core::ports::db_connection::QueryResult;
 
 fn colorize_cell(val: &str) -> String {
@@ -16,9 +18,9 @@ fn visible_len(s: &str) -> usize {
         if c == '\x1b' {
             in_escape = true;
         } else if in_escape {
-            if c == 'm' { in_escape = false; }
+            if c.is_ascii_alphabetic() { in_escape = false; }
         } else {
-            len += 1;
+            len += c.width().unwrap_or(0);
         }
     }
     len
@@ -169,5 +171,17 @@ mod tests {
     #[test]
     fn visible_len_plain_string() {
         assert_eq!(visible_len("hello"), 5);
+    }
+
+    #[test]
+    fn visible_len_wide_cjk_chars() {
+        // each CJK char is 2 display columns
+        assert_eq!(visible_len("日本語"), 6);
+    }
+
+    #[test]
+    fn visible_len_non_m_escape_terminator() {
+        // cursor-movement escape \x1b[A must not corrupt subsequent chars
+        assert_eq!(visible_len("\x1b[Ahello"), 5);
     }
 }

@@ -39,14 +39,25 @@ pub fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> Strin
             let span: String = chars[start..i].iter().collect();
             out.push_str(&format!("\x1b[2m{}\x1b[0m", span));
         }
-        // String literal: '...'
+        // String literal: '...' with '' escape for embedded single quote
         else if chars[i] == '\'' {
             let start = i;
             i += 1;
-            while i < len && chars[i] != '\'' {
-                i += 1;
+            loop {
+                if i >= len {
+                    break; // unterminated — highlight what we have
+                }
+                if chars[i] == '\'' {
+                    i += 1; // consume the quote
+                    if i < len && chars[i] == '\'' {
+                        i += 1; // '' escape: skip second quote and continue
+                    } else {
+                        break; // closing quote
+                    }
+                } else {
+                    i += 1;
+                }
             }
-            if i < len { i += 1; } // consume closing '
             let span: String = chars[start..i].iter().collect();
             out.push_str(&format!("\x1b[33m{}\x1b[0m", span));
         }
@@ -54,7 +65,7 @@ pub fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> Strin
         else if chars[i].is_ascii_digit() {
             let start = i;
             let mut has_dot = false;
-            while i < len && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot)) {
+            while i < len && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot && i + 1 < len && chars[i + 1].is_ascii_digit())) {
                 if chars[i] == '.' { has_dot = true; }
                 i += 1;
             }
@@ -238,8 +249,8 @@ impl Highlighter for SqlCompleter {
         Cow::Owned(highlight_sql(line, tables, &columns))
     }
 
-    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
-        true
+    fn highlight_char(&self, _line: &str, _pos: usize, forced: bool) -> bool {
+        forced
     }
 }
 impl Validator for SqlCompleter {}
@@ -407,6 +418,28 @@ mod tests {
     fn highlight_plain_word_no_escape() {
         let result = highlight_sql("foo", &[], &[]);
         assert!(!result.contains("\x1b["), "expected no escape for unknown word");
+    }
+
+    #[test]
+    fn highlight_number_trailing_dot_not_consumed() {
+        // "10." — dot is punctuation, not part of the number
+        let result = highlight_sql("10.", &[], &[]);
+        assert!(result.contains("\x1b[35m10\x1b[0m"), "10 should be magenta");
+        assert!(result.ends_with('.'), "trailing dot should be plain");
+    }
+
+    #[test]
+    fn highlight_number_decimal_consumed() {
+        // "3.14" — dot followed by digit is part of the number
+        let result = highlight_sql("3.14", &[], &[]);
+        assert!(result.contains("\x1b[35m3.14\x1b[0m"), "3.14 should be one magenta span");
+    }
+
+    #[test]
+    fn highlight_string_with_escaped_quote() {
+        let result = highlight_sql("'O''Brien'", &[], &[]);
+        // entire 'O''Brien' should be one yellow span
+        assert_eq!(result, "\x1b[33m'O''Brien'\x1b[0m");
     }
 
     #[test]
