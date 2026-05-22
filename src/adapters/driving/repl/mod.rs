@@ -100,10 +100,11 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
     keybindings.add_binding(
         KeyModifiers::NONE,
         KeyCode::Tab,
-        // Tab always goes through the dropdown completer which does full-word replacement,
-        // guaranteeing keywords are uppercase. Ghost text can be accepted via End key
-        // (reedline default) which preserves the user's typed case.
         ReedlineEvent::UntilFound(vec![
+            // Accept ghost text first (table/column prefix completion).
+            // Keywords never produce ghost text, so this is Inapplicable for them
+            // and falls through to the menu which does uppercase replacement.
+            ReedlineEvent::HistoryHintComplete,
             ReedlineEvent::Menu("completion_menu".to_string()),
             ReedlineEvent::MenuNext,
         ]),
@@ -116,6 +117,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         .with_validator(Box::new(SqlValidator))
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
         .with_quick_completions(true)
+        .with_partial_completions(true)
         .with_edit_mode(Box::new(Emacs::new(keybindings)));
 
     let prompt = PgrsPrompt { db_name: db_name.to_string() };

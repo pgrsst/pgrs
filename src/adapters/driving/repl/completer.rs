@@ -373,7 +373,10 @@ impl SqlCompleter {
             .filter(|(c, _)| c.to_uppercase().starts_with(&prefix_upper))
             .collect();
 
-        results.sort_by(|a, b| a.0.cmp(&b.0));
+        results.sort_by(|a, b| match (&a.1, &b.1) {
+            (CompletionKind::Keyword, CompletionKind::Keyword) => a.0.cmp(&b.0),
+            _ => a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)),
+        });
         results.dedup_by(|a, b| a.0 == b.0);
         results
     }
@@ -590,9 +593,13 @@ impl Hinter for SqlHinter {
 
         // Ghost text needs prefix-matching, not fuzzy/subsequence matching.
         // Fuzzy matching yields too many unrelated candidates whose common prefix collapses to "".
+        // Keywords are excluded: they go through the dropdown (Tab→Menu) to ensure uppercase insertion.
         let prefix_candidates: Vec<_> = candidates
             .into_iter()
-            .filter(|(c, _)| c.to_lowercase().starts_with(&current_word.to_lowercase()))
+            .filter(|(c, k)| {
+                !matches!(k, CompletionKind::Keyword)
+                    && c.to_lowercase().starts_with(&current_word.to_lowercase())
+            })
             .collect();
         let prefix = common_prefix(&prefix_candidates);
 
@@ -1354,5 +1361,56 @@ mod tests {
         // "transactions" (past the only match) → no hint
         let hint2 = h.handle("FROM transactions", 17, &history, false, "");
         assert_eq!(hint2, "");
+    }
+
+    #[test]
+    fn hinter_no_hint_for_keyword_prefix() {
+        // Keywords never produce ghost text; they go through the Tab→Menu path (uppercase).
+        let schema = schema_with(&[], &[]);
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        let hint = h.handle("sel", 3, &history, false, "");
+        assert_eq!(hint, "", "keyword prefix should produce no ghost text");
+    }
+
+    #[test]
+    fn tables_sorted_by_length_then_alpha() {
+        let schema = schema_with(&["users", "user_role", "user_store"], &[]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT * FROM use", 17);
+        let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
+        // "users" (5) comes before "user_role" (9) and "user_store" (10)
+        let pos_users = names.iter().position(|&n| n == "users").unwrap();
+        let pos_role  = names.iter().position(|&n| n == "user_role").unwrap();
+        let pos_store = names.iter().position(|&n| n == "user_store").unwrap();
+        assert!(pos_users < pos_role,  "users should come before user_role");
+        assert!(pos_users < pos_store, "users should come before user_store");
+    }
+
+    #[test]
+    fn columns_sorted_by_length_then_alpha() {
+        let schema = schema_with(
+            &["orders"],
+            &[("orders", &["id", "status", "created_at"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT  FROM orders", 7);
+        let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
+        // "id" (2) < "status" (6) < "created_at" (10)
+        let pos_id         = names.iter().position(|&n| n == "id").unwrap();
+        let pos_status     = names.iter().position(|&n| n == "status").unwrap();
+        let pos_created_at = names.iter().position(|&n| n == "created_at").unwrap();
+        assert!(pos_id < pos_status,     "id should come before status");
+        assert!(pos_status < pos_created_at, "status should come before created_at");
+    }
+
+    #[test]
+    fn hinter_shows_common_prefix_for_ambiguous_tables() {
+        // "use" with [users, user_role, user_store] → common prefix "user" → hint "r"
+        let schema = schema_with(&["users", "user_role", "user_store"], &[]);
+        let mut h = SqlHinter::new(schema);
+        let history = empty_history();
+        let hint = h.handle("SELECT * FROM use", 17, &history, false, "");
+        assert_eq!(hint, "r", "hint should be the common prefix suffix 'r'");
     }
 }
