@@ -39,7 +39,7 @@ pub fn format_result(result: &QueryResult) -> String {
         .iter()
         .enumerate()
         .map(|(i, col)| {
-            let max_val = result.rows.iter().map(|r| r[i].len()).max().unwrap_or(0);
+            let max_val = result.rows.iter().map(|r| visible_len(&r[i])).max().unwrap_or(0);
             col.len().max(max_val)
         })
         .collect();
@@ -65,7 +65,11 @@ pub fn format_result(result: &QueryResult) -> String {
         let cells: Vec<String> = row
             .iter()
             .enumerate()
-            .map(|(i, val)| format!("{:<width$}", val, width = col_widths[i]))
+            .map(|(i, val)| {
+                let colored = colorize_cell(val);
+                let padding = col_widths[i].saturating_sub(visible_len(val));
+                format!("{}{}", colored, " ".repeat(padding))
+            })
             .collect();
         out.push_str(&format!(" {} \n", cells.join(" | ")));
     }
