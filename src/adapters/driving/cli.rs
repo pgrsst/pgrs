@@ -1,5 +1,5 @@
 use crate::adapters::driving::completions;
-use crate::core::domain::connection::{Connection, TlsMode};
+use crate::core::domain::connection::TlsMode;
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::services::connection::service::{AddConnectionInput, ConnectionService};
 
