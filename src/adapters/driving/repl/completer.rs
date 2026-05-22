@@ -136,6 +136,40 @@ impl SqlCompleter {
 
     pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
         let input = &line[..pos];
+
+        // Qualified name detection: "table.col_prefix" or "schema.table.col_prefix"
+        {
+            let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+            let token = &input[last_ws..];
+            if let Some(dot_pos) = token.rfind('.') {
+                let prefix_part = &token[..dot_pos];
+                let col_prefix = token[dot_pos + 1..].to_uppercase();
+                // Get table name: last segment after the last dot (handles schema.table)
+                let table_name = prefix_part
+                    .split('.')
+                    .last()
+                    .unwrap_or(prefix_part)
+                    .to_lowercase();
+                let cols = self.schema.columns_for(&table_name);
+                let candidates: Vec<(String, CompletionKind)> = if !cols.is_empty() {
+                    cols.iter()
+                        .filter(|c| c.to_uppercase().starts_with(col_prefix.as_str()))
+                        .map(|c| (c.to_string(), CompletionKind::Column))
+                        .collect()
+                } else {
+                    // Table not found: fallback to all columns
+                    self.schema
+                        .tables()
+                        .iter()
+                        .flat_map(|t| self.schema.columns_for(t).iter().cloned())
+                        .filter(|c| c.to_uppercase().starts_with(col_prefix.as_str()))
+                        .map(|c| (c, CompletionKind::Column))
+                        .collect()
+                };
+                return candidates;
+            }
+        }
+
         let upper = input.to_uppercase();
         let tokens: Vec<&str> = upper.split_whitespace().collect();
 
@@ -507,5 +541,62 @@ mod tests {
         assert!(result.contains("\x1b[1;36m"), "SELECT should be bold cyan");
         assert!(result.contains("\x1b[1;33m"), "users should be bold yellow");
         assert!(result.contains("\x1b[35m"), "1 should be magenta");
+    }
+
+    #[test]
+    fn suggests_columns_after_table_dot() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["id", "email", "created_at"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let input = "SELECT users.";
+        let results = c.complete_input(input, input.len());
+        assert!(
+            results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
+            "expected id [column] in {:?}", results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+        assert!(results.iter().any(|(r, _)| r == "email"));
+        assert!(results.iter().any(|(r, _)| r == "created_at"));
+    }
+
+    #[test]
+    fn filters_columns_after_table_dot_with_prefix() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["id", "email", "created_at"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let input = "SELECT users.em";
+        let results = c.complete_input(input, input.len());
+        assert!(results.iter().any(|(r, _)| r == "email"), "expected email");
+        assert!(!results.iter().any(|(r, _)| r == "id"), "id should not appear");
+    }
+
+    #[test]
+    fn suggests_columns_after_schema_table_dot() {
+        let schema = schema_with(
+            &["users"],
+            &[("users", &["id", "email"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let input = "SELECT public.users.";
+        let results = c.complete_input(input, input.len());
+        assert!(
+            results.iter().any(|(r, _)| r == "id"),
+            "expected id from public.users. in {:?}", results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn word_start_returns_position_after_dot() {
+        // "SELECT users." — word_start at pos=13 should be 13 (after the dot)
+        assert_eq!(word_start("SELECT users.", 13), 13);
+    }
+
+    #[test]
+    fn word_start_returns_position_after_last_dot_in_schema_table() {
+        // "SELECT public.users." — word_start at pos=20 should be 20
+        assert_eq!(word_start("SELECT public.users.", 20), 20);
     }
 }
