@@ -39,6 +39,34 @@ const CHECK_SQL: &str = "\
     WHERE conrelid = 'TABLE_NAME'::regclass AND contype = 'c' \
     ORDER BY conname";
 
+const TRIGGERS_SQL: &str = "\
+    SELECT tgname, pg_catalog.pg_get_triggerdef(oid, true) \
+    FROM pg_catalog.pg_trigger \
+    WHERE tgrelid = 'TABLE_NAME'::regclass AND NOT tgisinternal \
+    ORDER BY tgname";
+
+const COLUMNS_EXTENDED_SQL: &str = "\
+    SELECT \
+        a.attname AS column, \
+        pg_catalog.format_type(a.atttypid, a.atttypmod) AS type, \
+        CASE WHEN a.attnotnull THEN 'not null' ELSE '' END AS nullable, \
+        COALESCE(pg_catalog.pg_get_expr(d.adbin, d.adrelid), '') AS default, \
+        CASE a.attstorage \
+            WHEN 'p' THEN 'plain' \
+            WHEN 'e' THEN 'external' \
+            WHEN 'm' THEN 'main' \
+            WHEN 'x' THEN 'extended' \
+            ELSE '' \
+        END AS storage, \
+        CASE WHEN a.attstattarget = -1 THEN '-' ELSE a.attstattarget::text END AS stats_target, \
+        COALESCE(pg_catalog.col_description(a.attrelid, a.attnum), '') AS description \
+    FROM pg_catalog.pg_attribute a \
+    LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
+    WHERE a.attrelid = 'TABLE_NAME'::regclass \
+      AND a.attnum > 0 \
+      AND NOT a.attisdropped \
+    ORDER BY a.attnum";
+
 fn fetch_schema(db: &dyn DbConnection, table: &str) -> String {
     let sql = SCHEMA_SQL.replace("TABLE_NAME", table);
     db.execute(&sql)
@@ -80,8 +108,13 @@ pub fn describe_table(
     writeln!(writer, "Table \"{}.{}\"", schema_name, table).map_err(|e| e.to_string())?;
     writeln!(writer).map_err(|e| e.to_string())?;
 
-    let sql = COLUMNS_SQL.replace("TABLE_NAME", table);
-    let result = db.execute(&sql).map_err(|_| {
+    let col_sql = if extended {
+        COLUMNS_EXTENDED_SQL.replace("TABLE_NAME", table)
+    } else {
+        COLUMNS_SQL.replace("TABLE_NAME", table)
+    };
+
+    let result = db.execute(&col_sql).map_err(|_| {
         format!("Did not find any relation named \"{}\".", table)
     })?;
 
@@ -95,7 +128,10 @@ pub fn describe_table(
     print_named_list(db, FK_SQL, table, "Foreign-key constraints", writer);
     print_named_list(db, CHECK_SQL, table, "Check constraints", writer);
 
-    let _ = extended;
+    if extended {
+        print_named_list(db, TRIGGERS_SQL, table, "Triggers", writer);
+    }
+
     Ok(())
 }
 
@@ -268,5 +304,71 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(!text.contains("Indexes:"), "empty indexes section should be omitted, got:\n{text}");
         assert!(!text.contains("Foreign-key constraints:"), "got:\n{text}");
+    }
+
+    #[test]
+    fn extended_describe_prints_triggers_section() {
+        let triggers = QueryResult {
+            columns: vec!["tgname".to_string(), "tgdef".to_string()],
+            rows: vec![
+                vec!["audit_users".to_string(), "CREATE TRIGGER audit_users AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION audit()".to_string()],
+            ],
+            rows_affected: None,
+        };
+        let db = StubDb::new()
+            .with("pg_attribute", Ok(make_columns_result()))
+            .with("pg_trigger", Ok(triggers));
+        let mut out = Vec::new();
+        describe_table(&db, "users", true, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("Triggers:"), "got:\n{text}");
+        assert!(text.contains("audit_users"), "got:\n{text}");
+    }
+
+    #[test]
+    fn non_extended_describe_omits_triggers() {
+        let triggers = QueryResult {
+            columns: vec!["tgname".to_string(), "tgdef".to_string()],
+            rows: vec![
+                vec!["audit_users".to_string(), "CREATE TRIGGER audit_users ...".to_string()],
+            ],
+            rows_affected: None,
+        };
+        let db = StubDb::new()
+            .with("pg_attribute", Ok(make_columns_result()))
+            .with("pg_trigger", Ok(triggers));
+        let mut out = Vec::new();
+        describe_table(&db, "users", false, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("Triggers:"), "non-extended should omit triggers, got:\n{text}");
+    }
+
+    fn make_extended_columns_result() -> QueryResult {
+        QueryResult {
+            columns: vec![
+                "column".to_string(), "type".to_string(), "nullable".to_string(),
+                "default".to_string(), "storage".to_string(), "stats_target".to_string(),
+                "description".to_string(),
+            ],
+            rows: vec![
+                vec!["id".to_string(), "integer".to_string(), "not null".to_string(),
+                     "nextval('users_id_seq'::regclass)".to_string(),
+                     "plain".to_string(), "-".to_string(), "".to_string()],
+                vec!["email".to_string(), "character varying(255)".to_string(), "not null".to_string(),
+                     "".to_string(), "extended".to_string(), "-".to_string(), "User email address".to_string()],
+            ],
+            rows_affected: None,
+        }
+    }
+
+    #[test]
+    fn extended_describe_prints_column_extras() {
+        let db = StubDb::new()
+            .with("attstorage", Ok(make_extended_columns_result()));
+        let mut out = Vec::new();
+        describe_table(&db, "users", true, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("storage"), "should show storage column, got:\n{text}");
+        assert!(text.contains("extended"), "should show storage value, got:\n{text}");
     }
 }
