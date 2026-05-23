@@ -2,6 +2,7 @@ mod completer;
 mod executor;
 
 use std::borrow::Cow;
+use std::io::{self, Write};
 
 use reedline::{
     ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
@@ -15,7 +16,7 @@ use crate::core::ports::schema_port::SchemaPort;
 use crate::core::services::schema::service::SchemaService;
 
 use completer::{SqlCompleter, SqlHighlighter, SqlHinter};
-use executor::print_result;
+use executor::format_result;
 
 fn is_complete_statement(s: &str) -> bool {
     let s = s.trim_end();
@@ -161,37 +162,43 @@ fn is_ddl(query: &str) -> bool {
     )
 }
 
-fn handle_dt(schema: &SchemaService) {
+fn handle_dt(schema: &SchemaService, writer: &mut impl Write) {
     let tables = schema.tables();
     if tables.is_empty() {
-        println!("No tables.");
+        writeln!(writer, "No tables.").ok();
     } else {
         let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
         for table in tables {
             let col_count = schema.columns_for(table).len();
-            println!(" {:<name_w$}  ({} columns)", table, col_count);
+            writeln!(writer, " {:<name_w$}  ({} columns)", table, col_count).ok();
         }
     }
 }
 
-fn handle_l(conn: &dyn DbConnection, expanded: bool) {
-    match conn.execute(
-        "SELECT datname AS database \
-         FROM pg_database \
-         WHERE datistemplate = false \
-         ORDER BY datname",
-    ) {
-        Ok(result) => print_result(&result, expanded),
-        Err(e) => eprintln!("error: {}", e),
-    }
+const LIST_DATABASES_SQL: &str =
+    "SELECT datname AS database \
+     FROM pg_database \
+     WHERE datistemplate = false \
+     ORDER BY datname";
+
+fn handle_l(conn: &dyn DbConnection, expanded: bool, writer: &mut impl Write) {
+    match conn.execute(LIST_DATABASES_SQL) {
+        Ok(result) => write!(writer, "{}", format_result(&result, expanded)).ok(),
+        Err(e) => { eprintln!("error: {}", e); None }
+    };
 }
 
-fn handle_refresh(conn: &dyn SchemaPort, schema: &mut SchemaService, rebuild: &mut impl FnMut(SchemaService)) {
+fn handle_refresh(
+    conn: &dyn SchemaPort,
+    schema: &mut SchemaService,
+    rebuild: &mut impl FnMut(SchemaService),
+    writer: &mut impl Write,
+) {
     match SchemaService::load(conn) {
         Ok(new_schema) => {
             *schema = new_schema.clone();
             rebuild(new_schema);
-            println!("Schema refreshed.");
+            writeln!(writer, "Schema refreshed.").ok();
         }
         Err(e) => eprintln!("error: could not refresh schema: {}", e),
     }
@@ -204,17 +211,18 @@ fn handle_sql(
     timing: bool,
     schema: &mut SchemaService,
     rebuild: &mut impl FnMut(SchemaService),
+    writer: &mut impl Write,
 ) {
     let start = std::time::Instant::now();
     match conn.execute(query) {
         Ok(result) => {
-            print_result(&result, expanded);
+            write!(writer, "{}", format_result(&result, expanded)).ok();
             if timing {
                 let ms = start.elapsed().as_secs_f64() * 1000.0;
                 if ms >= 1000.0 {
-                    println!("Time: {:.3} s", ms / 1000.0);
+                    writeln!(writer, "Time: {:.3} s", ms / 1000.0).ok();
                 } else {
-                    println!("Time: {:.3} ms", ms);
+                    writeln!(writer, "Time: {:.3} ms", ms).ok();
                 }
             }
             if is_ddl(query)
@@ -222,7 +230,7 @@ fn handle_sql(
             {
                 *schema = new_schema.clone();
                 rebuild(new_schema);
-                println!("(schema refreshed)");
+                writeln!(writer, "(schema refreshed)").ok();
             }
         }
         Err(e) => eprintln!("error: {}", e),
@@ -249,11 +257,12 @@ pub fn run(conn: Box<dyn ReplPort>, db_name: &str) -> Result<(), String> {
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 let trimmed = line.trim();
+                let mut stdout = io::stdout();
                 match trimmed {
                     "\\q" | "exit" => break,
                     "\\help" | "\\?" => println!("{}", repl_help_text()),
-                    "\\dt" => handle_dt(&schema),
-                    "\\l" => handle_l(conn.as_ref(), expanded),
+                    "\\dt" => handle_dt(&schema, &mut stdout),
+                    "\\l" => handle_l(conn.as_ref(), expanded, &mut stdout),
                     "\\x" => {
                         expanded = !expanded;
                         println!(
@@ -265,9 +274,9 @@ pub fn run(conn: Box<dyn ReplPort>, db_name: &str) -> Result<(), String> {
                         timing = !timing;
                         println!("Timing is {}.", if timing { "on" } else { "off" });
                     }
-                    "\\refresh" => handle_refresh(conn.as_ref(), &mut schema, &mut |s| { rl = build_reedline(s); }),
+                    "\\refresh" => handle_refresh(conn.as_ref(), &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout),
                     "" => {}
-                    _ => handle_sql(conn.as_ref(), trimmed, expanded, timing, &mut schema, &mut |s| { rl = build_reedline(s); }),
+                    _ => handle_sql(conn.as_ref(), trimmed, expanded, timing, &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout),
                 }
             }
             Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
@@ -330,35 +339,49 @@ mod tests {
     #[test]
     fn handle_dt_prints_nothing_for_empty_schema() {
         let schema = schema_from(&[]);
-        // should not panic
-        handle_dt(&schema);
+        let mut out = Vec::new();
+        handle_dt(&schema, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("No tables."));
     }
 
     #[test]
-    fn handle_dt_uses_schema_tables() {
+    fn handle_dt_lists_table_names() {
         let schema = schema_from(&[("users", &["id", "email"]), ("orders", &["id"])]);
-        // tables are populated — just verify no panic and column count is accessible
-        assert_eq!(schema.columns_for("users").len(), 2);
-        assert_eq!(schema.columns_for("orders").len(), 1);
-        handle_dt(&schema);
+        let mut out = Vec::new();
+        handle_dt(&schema, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("users"), "expected 'users' in output, got: {text}");
+        assert!(text.contains("orders"), "expected 'orders' in output, got: {text}");
     }
 
     #[test]
-    fn handle_l_succeeds_with_stub() {
+    fn handle_dt_shows_column_count() {
+        let schema = schema_from(&[("users", &["id", "email"])]);
+        let mut out = Vec::new();
+        handle_dt(&schema, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("2 columns"), "expected column count, got: {text}");
+    }
+
+    #[test]
+    fn handle_l_output_includes_database_name() {
         let stub = StubDb::ok(
             vec![vec!["mydb".to_string()]],
             vec!["database".to_string()],
         );
-        // should not panic
-        handle_l(&stub, false);
-        handle_l(&stub, true);
+        let mut out = Vec::new();
+        handle_l(&stub, false, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("mydb"), "expected db name in output, got: {text}");
     }
 
     #[test]
     fn handle_l_handles_db_error_gracefully() {
         let stub = StubDb::err("connection lost");
-        // should print error, not panic
-        handle_l(&stub, false);
+        let mut out = Vec::new();
+        handle_l(&stub, false, &mut out);
+        // error goes to stderr, stdout output is empty — should not panic
     }
 
     #[test]
@@ -366,8 +389,19 @@ mod tests {
         let stub = StubDb::ok(vec![vec!["1".to_string()]], vec!["id".to_string()]);
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
-        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; });
+        let mut out = Vec::new();
+        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "no DDL — schema should not be rebuilt");
+    }
+
+    #[test]
+    fn handle_sql_output_includes_query_result() {
+        let stub = StubDb::ok(vec![vec!["42".to_string()]], vec!["id".to_string()]);
+        let mut schema = schema_from(&[]);
+        let mut out = Vec::new();
+        handle_sql(&stub, "SELECT 42", false, false, &mut schema, &mut |_| {}, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("42"), "expected result value in output, got: {text}");
     }
 
     #[test]
@@ -375,8 +409,19 @@ mod tests {
         let stub = StubDb::with_schema(&[("users", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
-        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, &mut schema, &mut |_| { rebuilt = true; });
+        let mut out = Vec::new();
+        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt, "DDL should trigger schema rebuild");
+    }
+
+    #[test]
+    fn handle_sql_shows_schema_refreshed_after_ddl() {
+        let stub = StubDb::with_schema(&[("users", &["id"])]);
+        let mut schema = schema_from(&[]);
+        let mut out = Vec::new();
+        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, &mut schema, &mut |_| {}, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("schema refreshed"), "expected refresh notice, got: {text}");
     }
 
     #[test]
@@ -384,7 +429,8 @@ mod tests {
         let stub = StubDb::ok(vec![], vec![]);
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
-        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; });
+        let mut out = Vec::new();
+        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt);
     }
 
@@ -392,7 +438,8 @@ mod tests {
     fn handle_sql_handles_error_gracefully() {
         let stub = StubDb::err("syntax error");
         let mut schema = schema_from(&[]);
-        handle_sql(&stub, "SELEKT *", false, false, &mut schema, &mut |_| {});
+        let mut out = Vec::new();
+        handle_sql(&stub, "SELEKT *", false, false, &mut schema, &mut |_| {}, &mut out);
     }
 
     #[test]
@@ -401,9 +448,20 @@ mod tests {
         let mut schema = schema_from(&[]);
         assert!(schema.tables().is_empty());
         let mut rebuilt = false;
-        handle_refresh(&stub, &mut schema, &mut |_| { rebuilt = true; });
+        let mut out = Vec::new();
+        handle_refresh(&stub, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt);
         assert!(schema.tables().contains(&"products".to_string()));
+    }
+
+    #[test]
+    fn handle_refresh_prints_confirmation() {
+        let stub = StubDb::with_schema(&[("t", &["id"])]);
+        let mut schema = schema_from(&[]);
+        let mut out = Vec::new();
+        handle_refresh(&stub, &mut schema, &mut |_| {}, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("refreshed"), "expected refresh confirmation, got: {text}");
     }
 
     #[test]
@@ -416,7 +474,8 @@ mod tests {
         }
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
-        handle_refresh(&FailingDb, &mut schema, &mut |_| { rebuilt = true; });
+        let mut out = Vec::new();
+        handle_refresh(&FailingDb, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "failed refresh must not trigger rebuild");
     }
 
