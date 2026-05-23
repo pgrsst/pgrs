@@ -83,8 +83,28 @@ impl Validator for SqlValidator {
     }
 }
 
-fn repl_help_text() -> &'static str {
-    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables with column count\n  \\x         toggle expanded display\n  \\timing    toggle query execution time\n  \\refresh   reload schema (after CREATE/DROP/ALTER TABLE)\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
+// To add a new REPL command: append one (&str, &str) entry here.
+const REPL_COMMANDS: &[(&str, &str)] = &[
+    ("\\dt",       "list tables with column count"),
+    ("\\x",        "toggle expanded display"),
+    ("\\timing",   "toggle query execution time"),
+    ("\\refresh",  "reload schema (after CREATE/DROP/ALTER TABLE)"),
+    ("\\help, \\?","show this help"),
+    ("\\q, exit",  "quit (or Ctrl+D)"),
+];
+
+fn repl_help_text() -> String {
+    let cmd_w = REPL_COMMANDS.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
+    let commands: String = REPL_COMMANDS
+        .iter()
+        .map(|(cmd, desc)| format!("  {cmd:<cmd_w$}  {desc}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "  Type any SQL and end it with ';' to run it (Enter alone continues a\n\
+           multi-line statement until the ';').\n\n\
+         {commands}"
+    )
 }
 
 fn build_reedline(schema: SchemaService) -> Reedline {

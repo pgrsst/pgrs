@@ -356,41 +356,85 @@ fn optional_option(args: &[String], key: &str) -> Option<String> {
         .find_map(|arg| arg.strip_prefix(&prefix).map(ToString::to_string))
 }
 
-fn welcome() -> &'static str {
-    concat!(
-        "pgrs — PostgreSQL connection manager built with Rust\n",
-        "\n",
-        "Manage and store named PostgreSQL connections locally.\n",
-        "\n",
-        "Commands:\n",
-        "  add <name> [--url=<postgresql://user:pass@host:port/db>]\n",
-        "             [--host=<host>] [--username=<user>] [--password=<pass>]\n",
-        "             [--database=<db>] [--port=<port>] [--tls=disable|require|verify-full]\n",
-        "             Add a new named connection. Use --url to specify all fields at once;\n",
-        "             individual flags override URL-parsed values.\n",
-        "             --tls: disable (no encryption), require (encrypt, no cert check),\n",
-        "                    verify-full (encrypt + verify server certificate)\n",
-        "  list         List all saved connections\n",
-        "  list --names-only\n",
-        "             Print connection names only, one per line (handy for scripts and shell completion)\n",
-        "  edit <name> [--host=...] [--port=...] [--username=...] [--password=...]\n",
-        "             [--database=...] [--tls=...]\n",
-        "             Update one or more fields of a saved connection\n",
-        "  delete <name> [--yes]\n",
-        "             Delete a named connection (prompts for confirmation without --yes)\n",
-        "  rename <old-name> <new-name>\n",
-        "             Rename a saved connection\n",
-        "  test <name>\n",
-        "             Verify a saved connection is reachable\n",
-        "  connect <name>\n",
-        "             Open an interactive psql session using a saved connection\n",
-        "  shell <name>\n",
-        "             Open pgrs interactive SQL REPL with auto-completion\n",
-        "  completions <bash|zsh|fish>\n",
-        "             Print shell completion script\n",
-        "  help, --help, -h\n",
-        "             Show this help",
-    )
+struct CmdDoc {
+    usage_lines: &'static [&'static str],
+    desc_lines: &'static [&'static str],
+}
+
+// To add a new command: append one CmdDoc block here — no string wrangling required.
+const COMMAND_DOCS: &[CmdDoc] = &[
+    CmdDoc {
+        usage_lines: &[
+            "add <name> [--url=<postgresql://user:pass@host:port/db>]",
+            "           [--host=<host>] [--username=<user>] [--password=<pass>]",
+            "           [--database=<db>] [--port=<port>] [--tls=disable|require|verify-full]",
+        ],
+        desc_lines: &[
+            "Add a new named connection. Use --url to specify all fields at once;",
+            "individual flags override URL-parsed values.",
+            "--tls: disable (no encryption), require (encrypt, no cert check),",
+            "       verify-full (encrypt + verify server certificate)",
+        ],
+    },
+    CmdDoc {
+        usage_lines: &["list [--names-only]"],
+        desc_lines: &[
+            "List all saved connections.",
+            "--names-only: print only names, one per line (handy for scripts and shell completion)",
+        ],
+    },
+    CmdDoc {
+        usage_lines: &[
+            "edit <name> [--host=...] [--port=...] [--username=...] [--password=...]",
+            "            [--database=...] [--tls=...]",
+        ],
+        desc_lines: &["Update one or more fields of a saved connection"],
+    },
+    CmdDoc {
+        usage_lines: &["delete <name> [--yes]"],
+        desc_lines: &["Delete a named connection (prompts for confirmation without --yes)"],
+    },
+    CmdDoc {
+        usage_lines: &["rename <old-name> <new-name>"],
+        desc_lines: &["Rename a saved connection"],
+    },
+    CmdDoc {
+        usage_lines: &["test <name>"],
+        desc_lines: &["Verify a saved connection is reachable"],
+    },
+    CmdDoc {
+        usage_lines: &["connect <name>"],
+        desc_lines: &["Open an interactive psql session using a saved connection"],
+    },
+    CmdDoc {
+        usage_lines: &["shell <name>"],
+        desc_lines: &["Open pgrs interactive SQL REPL with auto-completion"],
+    },
+    CmdDoc {
+        usage_lines: &["completions <bash|zsh|fish>"],
+        desc_lines: &["Print shell completion script"],
+    },
+    CmdDoc {
+        usage_lines: &["help, --help, -h"],
+        desc_lines: &["Show this help"],
+    },
+];
+
+fn welcome() -> String {
+    let mut out = String::from(
+        "pgrs — PostgreSQL connection manager built with Rust\n\n\
+         Manage and store named PostgreSQL connections locally.\n\n\
+         Commands:\n",
+    );
+    for doc in COMMAND_DOCS {
+        for line in doc.usage_lines {
+            out.push_str(&format!("  {line}\n"));
+        }
+        for line in doc.desc_lines {
+            out.push_str(&format!("             {line}\n"));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
