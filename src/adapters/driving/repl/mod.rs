@@ -19,6 +19,7 @@ use crate::core::ports::schema_port::SchemaPort;
 use crate::core::services::schema::service::SchemaService;
 
 use completer::{SqlCompleter, SqlHighlighter, SqlHinter};
+use describe::describe_table;
 use executor::format_result;
 
 fn is_complete_statement(s: &str) -> bool {
@@ -99,6 +100,8 @@ impl Validator for SqlValidator {
 // To add a new REPL command: append one (&str, &str) entry here.
 const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\dt",       "list tables with column count"),
+    ("\\d <table>",  "describe table (columns, indexes, constraints)"),
+    ("\\d+ <table>", "describe table (extended: + storage, triggers, comments)"),
     ("\\l",        "list databases"),
     ("\\x",        "toggle expanded display"),
     ("\\timing",   "toggle query execution time"),
@@ -279,7 +282,23 @@ pub fn run(conn: Box<dyn ReplPort>, db_name: &str) -> Result<(), String> {
                     }
                     "\\refresh" => handle_refresh(conn.as_ref(), &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout),
                     "" => {}
-                    _ => handle_sql(conn.as_ref(), trimmed, expanded, timing, &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout),
+                    _ => {
+                        if let Some(name) = trimmed.strip_prefix("\\d+ ") {
+                            if let Err(e) = describe_table(conn.as_ref(), name, true, &mut stdout) {
+                                eprintln!("error: {}", e);
+                            }
+                        } else if let Some(name) = trimmed.strip_prefix("\\d ") {
+                            if let Err(e) = describe_table(conn.as_ref(), name, false, &mut stdout) {
+                                eprintln!("error: {}", e);
+                            }
+                        } else if trimmed == "\\d+" {
+                            println!("Usage: \\d+ <table>");
+                        } else if trimmed == "\\d" {
+                            println!("Usage: \\d <table>");
+                        } else {
+                            handle_sql(conn.as_ref(), trimmed, expanded, timing, &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout)
+                        }
+                    }
                 }
             }
             Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
@@ -624,5 +643,11 @@ mod tests {
     fn help_text_mentions_l_command() {
         let text = repl_help_text();
         assert!(text.contains("\\l"), "help should mention \\l, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_backslash_d() {
+        let text = repl_help_text();
+        assert!(text.contains("\\d"), "help should mention \\d, got: {text}");
     }
 }
