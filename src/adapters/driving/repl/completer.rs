@@ -95,6 +95,31 @@ fn word_start(line: &str, pos: usize) -> usize {
     }
 }
 
+fn resolve_trigger_and_word(input: &str) -> (String, String) {
+    let upper = input.to_uppercase();
+    let tokens: Vec<&str> = upper.split_whitespace().collect();
+
+    let current_word = if input.ends_with(char::is_whitespace) || input.is_empty() {
+        String::new()
+    } else {
+        tokens.last().copied().unwrap_or("").to_string()
+    };
+
+    let effective_trigger = if TABLE_TRIGGERS.contains(&current_word.as_str())
+        || COLUMN_TRIGGERS.contains(&current_word.as_str())
+    {
+        current_word.clone()
+    } else if input.ends_with(char::is_whitespace) {
+        tokens.last().copied().unwrap_or("").to_string()
+    } else if tokens.len() >= 2 {
+        tokens[tokens.len() - 2].to_string()
+    } else {
+        String::new()
+    };
+
+    (effective_trigger, current_word)
+}
+
 pub struct SqlCompleter {
     schema: SchemaService,
 }
@@ -108,47 +133,48 @@ impl SqlCompleter {
         let alias_map = build_alias_map(line);
         let input = &line[..pos];
 
-        // Qualified name: "table.col_prefix" or "schema.table.col_prefix"
-        let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
-        let token = &input[last_ws..];
-        if let Some(dot_pos) = token.rfind('.') {
-            let table_name = token[..dot_pos]
-                .split('.')
-                .next_back()
-                .unwrap_or(&token[..dot_pos])
-                .to_lowercase();
-            let col_prefix = token[dot_pos + 1..].to_uppercase();
-            return self.complete_qualified(&table_name, &col_prefix, &alias_map);
+        if let Some(result) = self.try_complete_qualified(input, &alias_map) {
+            return result;
         }
 
-        let upper = input.to_uppercase();
-        let tokens: Vec<&str> = upper.split_whitespace().collect();
+        let (effective_trigger, current_word) = resolve_trigger_and_word(input);
+        let candidates =
+            self.candidates_for_trigger(&effective_trigger, &line.to_uppercase(), &alias_map);
+        self.filter_and_sort(candidates, &effective_trigger, &current_word)
+    }
 
-        let current_word = if input.ends_with(char::is_whitespace) || input.is_empty() {
-            ""
+    fn try_complete_qualified(
+        &self,
+        input: &str,
+        alias_map: &AliasMap,
+    ) -> Option<Vec<(String, CompletionKind)>> {
+        let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+        let token = &input[last_ws..];
+        let dot_pos = token.rfind('.')?;
+        let table_name = token[..dot_pos]
+            .split('.')
+            .next_back()
+            .unwrap_or(&token[..dot_pos])
+            .to_lowercase();
+        let col_prefix = token[dot_pos + 1..].to_uppercase();
+        Some(self.complete_qualified(&table_name, &col_prefix, alias_map))
+    }
+
+    fn filter_and_sort(
+        &self,
+        candidates: Vec<(String, CompletionKind)>,
+        effective_trigger: &str,
+        current_word: &str,
+    ) -> Vec<(String, CompletionKind)> {
+        let is_trigger = TABLE_TRIGGERS.contains(&current_word)
+            || COLUMN_TRIGGERS.contains(&current_word);
+        let prefix_upper = if is_trigger {
+            String::new()
         } else {
-            tokens.last().copied().unwrap_or("")
+            current_word.to_uppercase()
         };
 
-        let effective_trigger = if TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word) {
-            current_word
-        } else if input.ends_with(char::is_whitespace) {
-            tokens.last().copied().unwrap_or("")
-        } else if tokens.len() >= 2 {
-            tokens[tokens.len() - 2]
-        } else {
-            ""
-        };
-
-        let full_upper = line.to_uppercase();
-        let candidates = self.candidates_for_trigger(effective_trigger, &full_upper, &alias_map);
-
-        let is_trigger = TABLE_TRIGGERS.contains(&current_word) || COLUMN_TRIGGERS.contains(&current_word);
-        let prefix_upper = if is_trigger { String::new() } else { current_word.to_uppercase() };
-
-        // For JOIN ON completions the candidates are already ordered intentionally
-        // (shared columns first).  Sorting alphabetically would destroy that priority,
-        // so we skip the sort and use a seen-set for deduplication instead.
+        // For JOIN ON, preserve intentional shared-column priority ordering
         if effective_trigger == "ON" {
             let mut seen = std::collections::HashSet::new();
             return candidates
