@@ -54,11 +54,15 @@ fn is_complete_statement(s: &str) -> bool {
 
 struct PgrsPrompt {
     db_name: String,
+    environment: Option<String>,
 }
 
 impl Prompt for PgrsPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Owned(format!("pgrs ({})", self.db_name))
+        match &self.environment {
+            Some(env) => Cow::Owned(format!("pgrs({}:{})", self.db_name, env)),
+            None => Cow::Owned(format!("pgrs({})", self.db_name)),
+        }
     }
     fn render_prompt_right(&self) -> Cow<'_, str> {
         Cow::Borrowed("")
@@ -243,12 +247,13 @@ fn handle_sql(
     }
 }
 
-pub fn run(conn: Box<dyn ReplPort>, db_name: &str) -> Result<(), String> {
+pub fn run(conn: Box<dyn ReplPort>, db_name: &str, environment: Option<&str>) -> Result<(), String> {
     let mut schema = SchemaService::load(conn.as_ref())?;
     let mut rl = build_reedline(schema.clone());
 
     let prompt = PgrsPrompt {
         db_name: db_name.to_string(),
+        environment: environment.map(|s| s.to_string()),
     };
 
     println!(
@@ -502,9 +507,30 @@ mod tests {
     }
 
     #[test]
+    fn prompt_left_with_environment_shows_env() {
+        let prompt = PgrsPrompt {
+            db_name: "mydb".to_string(),
+            environment: Some("production".to_string()),
+        };
+        let left = prompt.render_prompt_left();
+        assert_eq!(left.as_ref(), "pgrs(mydb:production)");
+    }
+
+    #[test]
+    fn prompt_left_without_environment_omits_env() {
+        let prompt = PgrsPrompt {
+            db_name: "mydb".to_string(),
+            environment: None,
+        };
+        let left = prompt.render_prompt_left();
+        assert_eq!(left.as_ref(), "pgrs(mydb)");
+    }
+
+    #[test]
     fn prompt_left_includes_database_name() {
         let prompt = PgrsPrompt {
             db_name: "mydb".to_string(),
+            environment: None,
         };
         let left = prompt.render_prompt_left();
         assert!(
@@ -517,9 +543,10 @@ mod tests {
     fn prompt_left_format_is_pgrs_parens_name() {
         let prompt = PgrsPrompt {
             db_name: "production".to_string(),
+            environment: None,
         };
         let left = prompt.render_prompt_left();
-        assert_eq!(left.as_ref(), "pgrs (production)");
+        assert_eq!(left.as_ref(), "pgrs(production)");
     }
 
     #[test]
