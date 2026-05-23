@@ -291,13 +291,33 @@ where
     }
 }
 
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push((hi * 16 + lo) as u8 as char);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+type ParsedUrl = (Option<String>, Option<u16>, Option<String>, Option<String>, Option<String>);
+
 // Returns (host, port, username, password, database) parsed from a postgresql:// URL.
 // Individual CLI flags take precedence over URL-parsed values.
-// Note: percent-encoded characters (e.g. %40 in passwords) are not decoded —
-// use individual flags for credentials containing special characters.
-fn parse_connection_url(
-    url: &str,
-) -> Result<(Option<String>, Option<u16>, Option<String>, Option<String>, Option<String>), String> {
+fn parse_connection_url(url: &str) -> Result<ParsedUrl, String> {
     let rest = url
         .strip_prefix("postgresql://")
         .or_else(|| url.strip_prefix("postgres://"))
@@ -314,9 +334,12 @@ fn parse_connection_url(
     let (username, password) = match userinfo_str {
         Some(ui) => {
             if let Some(colon) = ui.find(':') {
-                (Some(ui[..colon].to_string()), Some(ui[colon + 1..].to_string()))
+                (
+                    Some(percent_decode(&ui[..colon])),
+                    Some(percent_decode(&ui[colon + 1..])),
+                )
             } else {
-                (Some(ui.to_string()), None)
+                (Some(percent_decode(ui)), None)
             }
         }
         None => (None, None),
@@ -326,7 +349,7 @@ fn parse_connection_url(
         let db = &hostinfo[slash + 1..];
         (
             &hostinfo[..slash],
-            if db.is_empty() { None } else { Some(db.to_string()) },
+            if db.is_empty() { None } else { Some(percent_decode(db)) },
         )
     } else {
         (hostinfo, None)
@@ -1000,6 +1023,37 @@ mod tests {
         let result = parse_connection_url("postgresql://user:pass@host:abc/db");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("port"));
+    }
+
+    #[test]
+    fn parse_url_decodes_percent_encoded_password() {
+        let (_, _, _, pass, _) =
+            parse_connection_url("postgresql://user:p%40ss%23word@localhost/db").unwrap();
+        assert_eq!(pass, Some("p@ss#word".to_string()));
+    }
+
+    #[test]
+    fn parse_url_decodes_percent_encoded_username() {
+        let (_, _, user, _, _) =
+            parse_connection_url("postgresql://admin%40corp:pass@localhost/db").unwrap();
+        assert_eq!(user, Some("admin@corp".to_string()));
+    }
+
+    #[test]
+    fn parse_url_decodes_percent_encoded_database() {
+        let (_, _, _, _, db) =
+            parse_connection_url("postgresql://user:pass@localhost/my%20db").unwrap();
+        assert_eq!(db, Some("my db".to_string()));
+    }
+
+    #[test]
+    fn percent_decode_handles_uppercase_hex() {
+        assert_eq!(percent_decode("hello%2Fworld"), "hello/world");
+    }
+
+    #[test]
+    fn percent_decode_leaves_plain_text_unchanged() {
+        assert_eq!(percent_decode("plaintext"), "plaintext");
     }
 
     #[test]
