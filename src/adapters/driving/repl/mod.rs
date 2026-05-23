@@ -93,6 +93,7 @@ impl Validator for SqlValidator {
 // To add a new REPL command: append one (&str, &str) entry here.
 const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\dt",       "list tables with column count"),
+    ("\\l",        "list databases"),
     ("\\x",        "toggle expanded display"),
     ("\\timing",   "toggle query execution time"),
     ("\\refresh",  "reload schema (after CREATE/DROP/ALTER TABLE)"),
@@ -195,6 +196,18 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                             let col_count = schema.columns_for(table).len();
                             println!(" {:<name_w$}  ({} columns)", table, col_count);
                         }
+                    }
+                    continue;
+                }
+                if trimmed == "\\l" {
+                    match conn.execute(
+                        "SELECT datname AS database \
+                         FROM pg_database \
+                         WHERE datistemplate = false \
+                         ORDER BY datname",
+                    ) {
+                        Ok(result) => print_result(&result, expanded),
+                        Err(e) => eprintln!("error: {}", e),
                     }
                     continue;
                 }
@@ -403,5 +416,11 @@ mod tests {
     #[test]
     fn complete_no_semicolon_not_complete() {
         assert!(!is_complete_statement(r#"SELECT "col" FROM t"#));
+    }
+
+    #[test]
+    fn help_text_mentions_l_command() {
+        let text = repl_help_text();
+        assert!(text.contains("\\l"), "help should mention \\l, got: {text}");
     }
 }
