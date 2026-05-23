@@ -46,26 +46,6 @@ fn classify_word(word: &str, tables: &[String], columns: &[String]) -> Option<Co
     }
 }
 
-#[cfg(test)]
-fn highlight_sql(line: &str, tables: &[String], columns: &[String]) -> String {
-    let mut out = String::with_capacity(line.len() * 2);
-    for token in tokenize(line) {
-        match token {
-            SqlToken::Comment(s)       => out.push_str(&format!("\x1b[2m{s}\x1b[0m")),
-            SqlToken::StringLiteral(s) => out.push_str(&format!("\x1b[33m{s}\x1b[0m")),
-            SqlToken::Number(s)        => out.push_str(&format!("\x1b[35m{s}\x1b[0m")),
-            SqlToken::Word(s) => match classify_word(&s, tables, columns) {
-                Some(CompletionKind::Keyword) => out.push_str(&format!("\x1b[1;36m{s}\x1b[0m")),
-                Some(CompletionKind::Table)   => out.push_str(&format!("\x1b[1;33m{s}\x1b[0m")),
-                Some(CompletionKind::Column)  => out.push_str(&format!("\x1b[32m{s}\x1b[0m")),
-                None                          => out.push_str(&s),
-            },
-            SqlToken::Other(c) => out.push(c),
-        }
-    }
-    out
-}
-
 
 pub(crate) fn common_prefix(candidates: &[(String, CompletionKind)]) -> String {
     if candidates.is_empty() {
@@ -452,6 +432,16 @@ impl Hinter for SqlHinter {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use reedline::Highlighter;
+
+    fn render_to_ansi(line: &str, schema: SchemaService) -> String {
+        let h = SqlHighlighter::new(schema);
+        h.highlight(line, 0)
+            .buffer
+            .iter()
+            .map(|(style, text)| style.paint(text).to_string())
+            .collect()
+    }
 
     struct TestDb {
         columns: HashMap<String, Vec<String>>,
@@ -576,82 +566,93 @@ mod tests {
 
     #[test]
     fn highlight_keyword_bold_cyan() {
-        let result = highlight_sql("SELECT", &[], &[]);
-        assert!(result.contains("\x1b[1;36m"), "expected bold cyan escape");
-        assert!(result.contains("SELECT"));
-        assert!(result.contains("\x1b[0m"), "expected reset");
+        let rendered = render_to_ansi("SELECT", schema_with(&[], &[]));
+        let expected = CompletionKind::Keyword.style().paint("SELECT").to_string();
+        assert!(rendered.contains(&expected), "keyword not styled correctly, got: {rendered}");
     }
 
     #[test]
     fn highlight_string_literal_yellow() {
-        let result = highlight_sql("'hello'", &[], &[]);
-        assert!(result.contains("\x1b[33m"), "expected yellow escape");
-        assert!(result.contains("'hello'"));
+        let rendered = render_to_ansi("'hello'", schema_with(&[], &[]));
+        use nu_ansi_term::Color;
+        let expected = Color::Yellow.paint("'hello'").to_string();
+        assert!(rendered.contains(&expected), "string literal not yellow, got: {rendered}");
     }
 
     #[test]
     fn highlight_number_magenta() {
-        let result = highlight_sql("42", &[], &[]);
-        assert!(result.contains("\x1b[35m"), "expected magenta escape");
-        assert!(result.contains("42"));
+        let rendered = render_to_ansi("42", schema_with(&[], &[]));
+        use nu_ansi_term::Color;
+        let expected = Color::Magenta.paint("42").to_string();
+        assert!(rendered.contains(&expected), "number not magenta, got: {rendered}");
     }
 
     #[test]
     fn highlight_comment_dim() {
-        let result = highlight_sql("-- comment", &[], &[]);
-        assert!(result.contains("\x1b[2m"), "expected dim escape");
-        assert!(result.contains("-- comment"));
+        let rendered = render_to_ansi("-- comment", schema_with(&[], &[]));
+        use nu_ansi_term::Style;
+        let expected = Style::new().dimmed().paint("-- comment").to_string();
+        assert!(rendered.contains(&expected), "comment not dim, got: {rendered}");
     }
 
     #[test]
     fn highlight_table_name_bold_yellow() {
-        let tables = vec!["users".to_string()];
-        let result = highlight_sql("users", &tables, &[]);
-        assert!(result.contains("\x1b[1;33m"), "expected bold yellow for table");
+        let schema = schema_with(&["users"], &[]);
+        let rendered = render_to_ansi("users", schema);
+        let expected = CompletionKind::Table.style().paint("users").to_string();
+        assert!(rendered.contains(&expected), "table not styled correctly, got: {rendered}");
     }
 
     #[test]
     fn highlight_column_name_green() {
-        let columns = vec!["email".to_string()];
-        let result = highlight_sql("email", &[], &columns);
-        assert!(result.contains("\x1b[32m"), "expected green for column");
+        let schema = schema_with(&[], &[("_dummy", &["email"])]);
+        let rendered = render_to_ansi("email", schema);
+        let expected = CompletionKind::Column.style().paint("email").to_string();
+        assert!(rendered.contains(&expected), "column not styled correctly, got: {rendered}");
     }
 
     #[test]
     fn highlight_plain_word_no_escape() {
-        let result = highlight_sql("foo", &[], &[]);
-        assert!(!result.contains("\x1b["), "expected no escape for unknown word");
+        let rendered = render_to_ansi("foo", schema_with(&[], &[]));
+        assert!(!rendered.contains('\x1b'), "unknown word should have no ANSI escape, got: {rendered}");
     }
 
     #[test]
     fn highlight_number_trailing_dot_not_consumed() {
-        // "10." — dot is punctuation, not part of the number
-        let result = highlight_sql("10.", &[], &[]);
-        assert!(result.contains("\x1b[35m10\x1b[0m"), "10 should be magenta");
-        assert!(result.ends_with('.'), "trailing dot should be plain");
+        let rendered = render_to_ansi("10.", schema_with(&[], &[]));
+        use nu_ansi_term::Color;
+        let expected_num = Color::Magenta.paint("10").to_string();
+        assert!(rendered.contains(&expected_num), "10 should be magenta, got: {rendered}");
+        assert!(rendered.ends_with('.'), "trailing dot should be plain, got: {rendered}");
     }
 
     #[test]
     fn highlight_number_decimal_consumed() {
-        // "3.14" — dot followed by digit is part of the number
-        let result = highlight_sql("3.14", &[], &[]);
-        assert!(result.contains("\x1b[35m3.14\x1b[0m"), "3.14 should be one magenta span");
+        let rendered = render_to_ansi("3.14", schema_with(&[], &[]));
+        use nu_ansi_term::Color;
+        let expected = Color::Magenta.paint("3.14").to_string();
+        assert!(rendered.contains(&expected), "3.14 should be one magenta span, got: {rendered}");
     }
 
     #[test]
     fn highlight_string_with_escaped_quote() {
-        let result = highlight_sql("'O''Brien'", &[], &[]);
-        // entire 'O''Brien' should be one yellow span
-        assert_eq!(result, "\x1b[33m'O''Brien'\x1b[0m");
+        let rendered = render_to_ansi("'O''Brien'", schema_with(&[], &[]));
+        use nu_ansi_term::Color;
+        let expected = Color::Yellow.paint("'O''Brien'").to_string();
+        assert_eq!(rendered, expected);
     }
 
     #[test]
     fn highlight_mixed_query() {
-        let tables = vec!["users".to_string()];
-        let result = highlight_sql("SELECT * FROM users WHERE id = 1", &tables, &[]);
-        assert!(result.contains("\x1b[1;36m"), "SELECT should be bold cyan");
-        assert!(result.contains("\x1b[1;33m"), "users should be bold yellow");
-        assert!(result.contains("\x1b[35m"), "1 should be magenta");
+        let schema = schema_with(&["users"], &[]);
+        let rendered = render_to_ansi("SELECT * FROM users WHERE id = 1", schema);
+        let kw_select = CompletionKind::Keyword.style().paint("SELECT").to_string();
+        let tbl_users = CompletionKind::Table.style().paint("users").to_string();
+        use nu_ansi_term::Color;
+        let num_1 = Color::Magenta.paint("1").to_string();
+        assert!(rendered.contains(&kw_select), "SELECT should be keyword style, got: {rendered}");
+        assert!(rendered.contains(&tbl_users), "users should be table style, got: {rendered}");
+        assert!(rendered.contains(&num_1), "1 should be magenta, got: {rendered}");
     }
 
     #[test]
