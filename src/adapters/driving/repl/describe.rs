@@ -136,6 +136,9 @@ pub fn describe_table(
 }
 
 fn validate_table_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("table name cannot be empty".to_string());
+    }
     if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
         Ok(())
     } else {
@@ -208,10 +211,16 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_empty() {
+    fn validate_accepts_valid_names() {
         assert!(validate_table_name("users").is_ok());
         assert!(validate_table_name("public.users").is_ok());
         assert!(validate_table_name("user_roles").is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_name() {
+        let err = validate_table_name("").unwrap_err();
+        assert!(err.contains("cannot be empty"), "got: {err}");
     }
 
     #[test]
