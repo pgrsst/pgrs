@@ -146,13 +146,8 @@ impl SqlCompleter {
     }
 
     fn try_complete_describe_arg(&self, input: &str) -> Option<Vec<(String, CompletionKind)>> {
-        let table_prefix = if input.starts_with("\\d+ ") {
-            &input["\\d+ ".len()..]
-        } else if input.starts_with("\\d ") {
-            &input["\\d ".len()..]
-        } else {
-            return None;
-        };
+        let table_prefix = input.strip_prefix("\\d+ ")
+            .or_else(|| input.strip_prefix("\\d "))?;
 
         let results = self.schema.tables()
             .iter()

@@ -1,5 +1,5 @@
 use std::io::Write;
-use crate::core::ports::db_connection::{DbConnection, QueryResult};
+use crate::core::ports::db_connection::DbConnection;
 use super::executor::format_result;
 
 const COLUMNS_SQL: &str = "\
@@ -84,14 +84,14 @@ fn print_named_list(
     writer: &mut impl Write,
 ) {
     let sql = sql_template.replace("TABLE_NAME", table);
-    if let Ok(result) = db.execute(&sql) {
-        if !result.rows.is_empty() {
-            writeln!(writer, "\n{}:", header).ok();
-            for row in &result.rows {
-                let name = row.get(0).map(String::as_str).unwrap_or("");
-                let def = row.get(1).map(String::as_str).unwrap_or("");
-                writeln!(writer, "    \"{}\" {}", name, def).ok();
-            }
+    if let Ok(result) = db.execute(&sql)
+        && !result.rows.is_empty()
+    {
+        writeln!(writer, "\n{}:", header).ok();
+        for row in &result.rows {
+            let name = row.first().map(|s| s.as_str()).unwrap_or("");
+            let def = row.get(1).map(String::as_str).unwrap_or("");
+            writeln!(writer, "    \"{}\" {}", name, def).ok();
         }
     }
 }
@@ -147,6 +147,7 @@ fn validate_table_name(name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use crate::core::ports::db_connection::QueryResult;
 
     struct StubDb {
         responses: HashMap<&'static str, Result<QueryResult, String>>,
