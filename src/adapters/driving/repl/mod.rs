@@ -20,22 +20,29 @@ fn is_complete_statement(s: &str) -> bool {
     if !s.ends_with(';') {
         return false;
     }
-    let mut in_string = false;
+    let mut in_single = false; // inside '...'
+    let mut in_double = false; // inside "..." (quoted identifier)
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
-        if in_string {
-            if c == '\'' {
-                if chars.peek() == Some(&'\'') {
-                    chars.next();
+        match c {
+            '\'' if !in_double => {
+                if in_single && chars.peek() == Some(&'\'') {
+                    chars.next(); // '' escape inside string
                 } else {
-                    in_string = false;
+                    in_single = !in_single;
                 }
             }
-        } else if c == '\'' {
-            in_string = true;
+            '"' if !in_single => {
+                if in_double && chars.peek() == Some(&'"') {
+                    chars.next(); // "" escape inside quoted identifier
+                } else {
+                    in_double = !in_double;
+                }
+            }
+            _ => {}
         }
     }
-    !in_string
+    !in_single && !in_double
 }
 
 struct PgrsPrompt {
@@ -360,5 +367,41 @@ mod tests {
         assert!(!is_ddl("INSERT INTO foo VALUES (1);"));
         assert!(!is_ddl("UPDATE foo SET x = 1;"));
         assert!(!is_ddl("DELETE FROM foo;"));
+    }
+
+    // is_complete_statement — double-quoted identifier handling
+    #[test]
+    fn complete_unclosed_double_quoted_identifier_ending_with_semicolon_not_complete() {
+        // ';' is the last char but it's inside an unclosed "..." — not a real terminator
+        assert!(!is_complete_statement(r#"SELECT "col;"#));
+    }
+
+    #[test]
+    fn complete_closed_double_quoted_identifier_then_semicolon_is_complete() {
+        // ';' after a properly closed "..." is a real terminator
+        assert!(is_complete_statement(r#"SELECT "col;name" FROM t;"#));
+    }
+
+    #[test]
+    fn complete_double_quoted_identifier_with_escaped_double_quote() {
+        // "" inside "..." is an escaped quote, not end of identifier
+        assert!(is_complete_statement(r#"SELECT "O""Brien" FROM t;"#));
+    }
+
+    #[test]
+    fn complete_double_quote_inside_single_quote_does_not_open_identifier() {
+        // '"' inside '...' is just a character, not a double-quote identifier delimiter
+        assert!(is_complete_statement(r#"SELECT '"quoted"' FROM t;"#));
+    }
+
+    #[test]
+    fn complete_single_quote_inside_double_quote_does_not_open_string() {
+        // '\'' inside "..." is just a character, not a string delimiter
+        assert!(is_complete_statement(r#"SELECT "it's" FROM t;"#));
+    }
+
+    #[test]
+    fn complete_no_semicolon_not_complete() {
+        assert!(!is_complete_statement(r#"SELECT "col" FROM t"#));
     }
 }
