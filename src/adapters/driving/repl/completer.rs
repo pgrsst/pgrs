@@ -1,168 +1,9 @@
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Highlighter, Hinter, History, Span, StyledText, Suggestion};
-use std::collections::HashMap;
 
 use crate::core::services::schema::service::SchemaService;
+use super::alias::{build_alias_map, extract_join_context, AliasMap, JoinContext, SQL_KEYWORDS};
 use super::tokenizer::{SqlToken, tokenize};
-
-struct AliasMap {
-    map: HashMap<String, Option<String>>,
-}
-
-impl AliasMap {
-    fn resolve(&self, name: &str) -> Option<&str> {
-        self.map.get(name).and_then(|v| v.as_deref())
-    }
-}
-
-#[derive(Debug)]
-enum AliasState {
-    Idle,
-    ExpectTable,
-    ExpectAlias { candidate: String },
-    ExpectAliasName { candidate: String },
-    PostAlias,
-    InSubquery { depth: usize },
-    ExpectSubqueryAlias,
-    ExpectSubqueryAliasName,
-}
-
-fn build_alias_map(line: &str) -> AliasMap {
-    // NOTE: schema-qualified table names (e.g. FROM public.users u) are not handled —
-    // the dot is parsed as Other('.') which disrupts the alias extraction for that table.
-    let mut map: HashMap<String, Option<String>> = HashMap::new();
-    let mut state = AliasState::Idle;
-
-    for token in tokenize(line) {
-        if let SqlToken::Other(c) = token {
-            if c.is_whitespace() {
-                continue;
-            }
-            state = match (state, SqlToken::Other(c)) {
-                (AliasState::ExpectTable, SqlToken::Other('(')) => {
-                    AliasState::InSubquery { depth: 1 }
-                }
-                (AliasState::ExpectAlias { .. }, SqlToken::Other(',')) => AliasState::ExpectTable,
-                (AliasState::PostAlias, SqlToken::Other(',')) => AliasState::ExpectTable,
-                (AliasState::InSubquery { depth }, SqlToken::Other('(')) => {
-                    AliasState::InSubquery { depth: depth + 1 }
-                }
-                (AliasState::InSubquery { depth }, SqlToken::Other(')')) => {
-                    if depth == 1 {
-                        AliasState::ExpectSubqueryAlias
-                    } else {
-                        AliasState::InSubquery { depth: depth - 1 }
-                    }
-                }
-                (AliasState::InSubquery { depth }, _) => AliasState::InSubquery { depth },
-                (s, _) => s,
-            };
-            continue;
-        }
-        state = match (state, token) {
-            (AliasState::Idle, SqlToken::Word(w))
-                if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
-            {
-                AliasState::ExpectTable
-            }
-            (AliasState::ExpectTable, SqlToken::Word(w))
-                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
-            {
-                AliasState::ExpectAlias { candidate: w.to_lowercase() }
-            }
-            (AliasState::ExpectTable, _) => AliasState::Idle,
-            (AliasState::ExpectAlias { candidate }, SqlToken::Word(w))
-                if w.to_uppercase() == "AS" =>
-            {
-                AliasState::ExpectAliasName { candidate }
-            }
-            (AliasState::ExpectAlias { candidate }, SqlToken::Word(w))
-                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
-            {
-                map.insert(w.to_lowercase(), Some(candidate));
-                AliasState::PostAlias
-            }
-            (AliasState::ExpectAlias { .. }, _) => AliasState::Idle,
-            (AliasState::ExpectAliasName { candidate }, SqlToken::Word(w)) => {
-                map.insert(w.to_lowercase(), Some(candidate));
-                AliasState::PostAlias
-            }
-            (AliasState::ExpectAliasName { .. }, _) => AliasState::Idle,
-            (AliasState::PostAlias, SqlToken::Word(w))
-                if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
-            {
-                AliasState::ExpectTable
-            }
-            (AliasState::PostAlias, _) => AliasState::Idle,
-            (AliasState::ExpectSubqueryAlias, SqlToken::Word(w))
-                if w.to_uppercase() == "AS" =>
-            {
-                AliasState::ExpectSubqueryAliasName
-            }
-            (AliasState::ExpectSubqueryAlias, SqlToken::Word(w))
-                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
-            {
-                map.insert(w.to_lowercase(), None);
-                AliasState::PostAlias
-            }
-            (AliasState::ExpectSubqueryAlias, _) => AliasState::Idle,
-            (AliasState::ExpectSubqueryAliasName, SqlToken::Word(w)) => {
-                map.insert(w.to_lowercase(), None);
-                AliasState::PostAlias
-            }
-            (AliasState::ExpectSubqueryAliasName, _) => AliasState::Idle,
-            (s, _) => s,
-        };
-    }
-
-    AliasMap { map }
-}
-
-struct JoinContext {
-    right_table: String,
-    left_tables: Vec<String>,
-}
-
-fn extract_join_context(upper_query: &str, alias_map: &AliasMap) -> Option<JoinContext> {
-    let tokens: Vec<&str> = upper_query.split_whitespace().collect();
-
-    let last_join_pos = tokens.iter().rposition(|&t| t == "JOIN")?;
-
-    let right_raw = tokens.get(last_join_pos + 1)?.to_lowercase();
-    let right_table = alias_map
-        .resolve(&right_raw)
-        .map(|s| s.to_string())
-        .unwrap_or(right_raw);
-
-    let left_tables: Vec<String> = tokens
-        .windows(2)
-        .enumerate()
-        .filter_map(|(i, w)| {
-            if (w[0] == "FROM" || w[0] == "JOIN" || w[0] == "UPDATE") && i != last_join_pos {
-                Some(w[1].to_lowercase())
-            } else {
-                None
-            }
-        })
-        .map(|raw| {
-            alias_map
-                .resolve(&raw)
-                .map(|s| s.to_string())
-                .unwrap_or(raw)
-        })
-        .filter(|t| t != &right_table)
-        .collect();
-
-    Some(JoinContext { right_table, left_tables })
-}
-
-const SQL_KEYWORDS: &[&str] = &[
-    "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
-    "ON", "AND", "OR", "NOT", "IN", "IS", "NULL", "AS", "DISTINCT",
-    "ORDER", "BY", "GROUP", "HAVING", "LIMIT", "OFFSET", "INSERT", "INTO",
-    "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "DROP", "ALTER",
-    "BEGIN", "COMMIT", "ROLLBACK",
-];
 
 const TABLE_TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE"];
 const COLUMN_TRIGGERS: &[&str] = &["SELECT", "WHERE", "ON", "SET", "BY"];
@@ -443,7 +284,7 @@ impl SqlCompleter {
             .windows(2)
             .filter_map(|w| trigger.contains(&w[0]).then_some(w[1].to_lowercase()))
             .collect();
-        for real_table in alias_map.map.values().filter_map(|v| v.as_deref()) {
+        for real_table in alias_map.real_tables() {
             if !refs.iter().any(|r| r == real_table) {
                 refs.push(real_table.to_string());
             }
@@ -951,70 +792,6 @@ mod tests {
     }
 
     #[test]
-    fn alias_map_resolve_known_alias() {
-        let mut m = AliasMap { map: std::collections::HashMap::new() };
-        m.map.insert("u".to_string(), Some("users".to_string()));
-        assert_eq!(m.resolve("u"), Some("users"));
-    }
-
-    #[test]
-    fn alias_map_resolve_unknown_returns_none() {
-        let m = AliasMap { map: std::collections::HashMap::new() };
-        assert_eq!(m.resolve("x"), None);
-    }
-
-    #[test]
-    fn alias_map_resolve_subquery_alias_returns_none() {
-        let mut m = AliasMap { map: std::collections::HashMap::new() };
-        m.map.insert("s".to_string(), None);
-        assert_eq!(m.resolve("s"), None);
-    }
-
-    #[test]
-    fn build_alias_map_from_without_as() {
-        let m = build_alias_map("SELECT * FROM users u");
-        assert_eq!(m.resolve("u"), Some("users"));
-    }
-
-    #[test]
-    fn build_alias_map_from_with_as() {
-        let m = build_alias_map("SELECT * FROM users AS u");
-        assert_eq!(m.resolve("u"), Some("users"));
-    }
-
-    #[test]
-    fn build_alias_map_join_alias() {
-        let m = build_alias_map("SELECT * FROM users u JOIN orders o ON u.id = o.user_id");
-        assert_eq!(m.resolve("u"), Some("users"));
-        assert_eq!(m.resolve("o"), Some("orders"));
-    }
-
-    #[test]
-    fn build_alias_map_table_without_alias_not_in_map() {
-        let m = build_alias_map("SELECT * FROM users");
-        assert_eq!(m.resolve("users"), None);
-    }
-
-    #[test]
-    fn build_alias_map_comma_separated() {
-        let m = build_alias_map("SELECT * FROM users u, orders o");
-        assert_eq!(m.resolve("u"), Some("users"));
-        assert_eq!(m.resolve("o"), Some("orders"));
-    }
-
-    #[test]
-    fn build_alias_map_subquery_with_as() {
-        let m = build_alias_map("SELECT * FROM (SELECT id FROM users) AS s");
-        assert_eq!(m.resolve("s"), None);
-    }
-
-    #[test]
-    fn build_alias_map_subquery_without_as() {
-        let m = build_alias_map("SELECT * FROM (SELECT id FROM users) s");
-        assert_eq!(m.resolve("s"), None);
-    }
-
-    #[test]
     fn alias_simple() {
         let schema = schema_with(&["users"], &[("users", &["id", "email", "created_at"])]);
         let c = SqlCompleter::new(schema);
@@ -1083,47 +860,6 @@ mod tests {
             results.iter().map(|(r, _)| r).collect::<Vec<_>>()
         );
         assert!(!results.iter().any(|(r, _)| r == "email"), "email from users should not appear");
-    }
-
-    #[test]
-    fn extract_join_context_finds_right_and_left_tables() {
-        let alias_map = build_alias_map("SELECT * FROM users JOIN orders ON");
-        let ctx = extract_join_context("SELECT * FROM USERS JOIN ORDERS ON", &alias_map)
-            .expect("should find join context");
-        assert_eq!(ctx.right_table, "orders");
-        assert!(ctx.left_tables.contains(&"users".to_string()), "left_tables: {:?}", ctx.left_tables);
-    }
-
-    #[test]
-    fn extract_join_context_resolves_aliases() {
-        // alias map: u -> users, o -> orders
-        let alias_map = build_alias_map("SELECT * FROM users u JOIN orders o ON");
-        // upper query passes alias tokens (u, o) not real table names
-        let ctx = extract_join_context("SELECT * FROM U JOIN O ON", &alias_map)
-            .expect("should find join context with aliases");
-        assert_eq!(ctx.right_table, "orders", "right alias 'o' should resolve to 'orders'");
-        assert!(
-            ctx.left_tables.contains(&"users".to_string()),
-            "left alias 'u' should resolve to 'users', left_tables: {:?}",
-            ctx.left_tables
-        );
-    }
-
-    #[test]
-    fn extract_join_context_no_join_returns_none() {
-        let alias_map = build_alias_map("SELECT * FROM users");
-        let ctx = extract_join_context("SELECT * FROM USERS ON", &alias_map);
-        assert!(ctx.is_none(), "expected None when no JOIN present");
-    }
-
-    #[test]
-    fn extract_join_context_multi_join_uses_last() {
-        let alias_map = build_alias_map("SELECT * FROM a JOIN b ON b.x = a.y JOIN c ON");
-        let ctx = extract_join_context("SELECT * FROM A JOIN B ON B.X = A.Y JOIN C ON", &alias_map)
-            .expect("should find context for last JOIN");
-        assert_eq!(ctx.right_table, "c");
-        assert!(ctx.left_tables.contains(&"a".to_string()), "left_tables: {:?}", ctx.left_tables);
-        assert!(ctx.left_tables.contains(&"b".to_string()), "left_tables: {:?}", ctx.left_tables);
     }
 
     #[test]

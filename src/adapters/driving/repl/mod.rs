@@ -1,3 +1,4 @@
+mod alias;
 mod completer;
 mod executor;
 mod tokenizer;
