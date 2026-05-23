@@ -2,6 +2,7 @@ mod alias;
 mod completer;
 mod executor;
 mod tokenizer;
+mod describe;
 
 use std::borrow::Cow;
 use std::io::{self, Write};
