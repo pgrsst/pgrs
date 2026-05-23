@@ -89,7 +89,7 @@ where
             password,
             database,
             tls,
-            environment: None,
+            environment: optional_option(args, "--env"),
         })?;
 
         println!("connection '{name}' added");
@@ -122,16 +122,24 @@ where
             .max()
             .unwrap_or(3)
             .max(3);
+        let env_w = connections
+            .iter()
+            .map(|c| c.environment.as_deref().unwrap_or("").len())
+            .max()
+            .unwrap_or(3)
+            .max(3);
 
         println!(
-            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  {:<tls_w$}  PASSWORD",
-            "NAME", "HOST", "PORT", "DATABASE", "USERNAME", "TLS",
+            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<env_w$}  {:<user_w$}  {:<tls_w$}  PASSWORD",
+            "NAME", "HOST", "PORT", "DATABASE", "ENV", "USERNAME", "TLS",
         );
 
         for c in &connections {
             println!(
-                "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  {:<tls_w$}  ****",
-                c.name, c.host, c.port, c.database, c.username, c.tls,
+                "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<env_w$}  {:<user_w$}  {:<tls_w$}  ****",
+                c.name, c.host, c.port, c.database,
+                c.environment.as_deref().unwrap_or(""),
+                c.username, c.tls,
             );
         }
 
@@ -189,6 +197,13 @@ where
             Some(s) => Some(parse_tls_mode(&s)?),
         };
 
+        let environment = args.iter()
+            .find(|a| a.starts_with("--env="))
+            .map(|arg| {
+                let val = arg.strip_prefix("--env=").unwrap();
+                if val.is_empty() { None } else { Some(val.to_string()) }
+            });
+
         self.connection_service.edit_connection(&name, EditConnectionInput {
             host: optional_option(args, "--host"),
             port,
@@ -196,7 +211,7 @@ where
             password: optional_option(args, "--password"),
             database: optional_option(args, "--database"),
             tls,
-            environment: None,
+            environment,
         })?;
 
         println!("connection '{name}' updated");
@@ -1092,5 +1107,42 @@ mod tests {
             cli.run(["completions".to_string(), "fish".to_string()].into_iter())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn add_with_env_flag_saves_environment() {
+        let cli = cli_with(&[]);
+        cli.run(add_args("prod", &["--env=production"])).unwrap();
+        assert_eq!(
+            cli.get_connection("prod").unwrap().environment,
+            Some("production".to_string())
+        );
+    }
+
+    #[test]
+    fn add_without_env_flag_leaves_environment_none() {
+        let cli = cli_with(&[]);
+        cli.run(add_args("prod", &[])).unwrap();
+        assert_eq!(cli.get_connection("prod").unwrap().environment, None);
+    }
+
+    #[test]
+    fn edit_env_flag_sets_environment() {
+        let cli = cli_with(&["prod"]);
+        cli.run(edit_args("prod", &["--env=staging"])).unwrap();
+        assert_eq!(
+            cli.get_connection("prod").unwrap().environment,
+            Some("staging".to_string())
+        );
+    }
+
+    #[test]
+    fn edit_empty_env_flag_clears_environment() {
+        let cli = cli_with(&["prod"]);
+        // set dulu
+        cli.run(edit_args("prod", &["--env=prod"])).unwrap();
+        // lalu clear
+        cli.run(edit_args("prod", &["--env="])).unwrap();
+        assert_eq!(cli.get_connection("prod").unwrap().environment, None);
     }
 }
