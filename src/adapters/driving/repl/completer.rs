@@ -2,7 +2,7 @@ use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Highlighter, Hinter, History, Span, StyledText, Suggestion};
 
 use crate::core::services::schema::service::SchemaService;
-use super::alias::{build_alias_map, extract_join_context, AliasMap, JoinContext, SQL_KEYWORDS};
+use super::alias::{build_alias_map, extract_join_context, AliasMap, SQL_KEYWORDS};
 use super::tokenizer::{SqlToken, tokenize};
 
 const TABLE_TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE"];
