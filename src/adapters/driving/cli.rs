@@ -184,7 +184,7 @@ where
     fn edit_connection(&self, args: &[String]) -> Result<(), String> {
         let name = args
             .first()
-            .ok_or("usage: pgrs edit <name> [--host=...] [--port=...] [--username=...] [--password=...] [--database=...] [--tls=...]")?
+            .ok_or("usage: pgrs edit <name> [--host=...] [--port=...] [--username=...] [--password=...] [--database=...] [--tls=...] [--env=...]")?
             .trim()
             .to_string();
 
@@ -1140,9 +1140,9 @@ mod tests {
     #[test]
     fn edit_empty_env_flag_clears_environment() {
         let cli = cli_with(&["prod"]);
-        // set dulu
+        // first set env
         cli.run(edit_args("prod", &["--env=prod"])).unwrap();
-        // lalu clear
+        // then clear it
         cli.run(edit_args("prod", &["--env="])).unwrap();
         assert_eq!(cli.get_connection("prod").unwrap().environment, None);
     }
