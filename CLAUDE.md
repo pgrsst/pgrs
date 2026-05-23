@@ -48,6 +48,8 @@ src/
     domain/connection.rs           — Connection struct + TlsMode enum
     ports/connection_repository.rs — ConnectionRepository trait (add, list, delete, get_connection)
     ports/db_connection.rs         — DbConnection trait (execute, list_tables, list_columns) + QueryResult
+    ports/schema_port.rs           — SchemaPort trait (list_columns → HashMap<table, Vec<col>>)
+    ports/repl_port.rs             — ReplPort = DbConnection + SchemaPort (blanket impl)
     services/connection/service.rs — ConnectionService<R>: business logic, validation
     services/schema/service.rs     — SchemaService: loads table/column metadata for REPL completion
   adapters/
@@ -55,9 +57,11 @@ src/
     driven/postgres_db.rs                — PostgresDb: implements DbConnection via postgres crate
     driving/cli.rs                       — Cli<R>: parses argv, dispatches to ConnectionService
     driving/repl/                        — interactive SQL REPL (reedline-based)
-      mod.rs      — REPL loop, backslash commands (\dt, \x, \refresh, \q), DDL auto-refresh
-      completer.rs — SqlCompleter, SqlHighlighter, SqlHinter backed by SchemaService
-      executor.rs  — formats and prints QueryResult (normal and expanded \x mode)
+      mod.rs        — REPL loop, backslash commands (\dt, \x, \refresh, \q), DDL auto-refresh
+      completer.rs  — SqlCompleter, SqlHighlighter, SqlHinter backed by SchemaService
+      executor.rs   — formats and prints QueryResult (normal and expanded \x mode)
+      tokenizer.rs  — SqlToken enum + tokenize(); handles words, string literals, numbers, comments
+      alias.rs      — AliasMap (alias→table), build_alias_map, extract_join_context for tab-completion
     driving/completions.rs / completions/ — shell completion scripts (bash, zsh, fish)
 ```
 
@@ -70,3 +74,7 @@ src/
 **`shell` vs `connect`:** `shell` opens the built-in pgrs REPL (reedline, tab-completion, `\x` expanded display). `connect` execs `psql` directly, replacing the process.
 
 **Schema refresh:** After DDL queries (`CREATE/DROP/ALTER/TRUNCATE`) the REPL auto-refreshes `SchemaService`. Manual refresh via `\refresh`.
+
+**Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers).
+
+**Tab-completion pipeline:** `tokenizer.rs` tokenizes the current line → `alias.rs` builds an `AliasMap` (alias→real table) and `JoinContext` → `completer.rs` uses those plus `SchemaService` to suggest keywords, tables, or columns depending on the preceding SQL keyword (`FROM`/`JOIN` → tables; `SELECT`/`WHERE`/`ON` → columns). Known limitation: schema-qualified names (`public.users`) partially disrupt alias extraction — the dot emits `Other('.')` which breaks the state machine for that table.
