@@ -31,6 +31,8 @@ pub struct Connection {
     pub database: String,
     #[serde(default)]
     pub tls: TlsMode,
+    #[serde(default)]
+    pub environment: Option<String>,
 }
 
 #[cfg(test)]
@@ -64,5 +66,19 @@ mod tests {
         let json = r#"{"name":"prod","host":"localhost","port":5432,"username":"u","password":"p","database":"db","tls":"require"}"#;
         let conn: Connection = serde_json::from_str(json).unwrap();
         assert_eq!(conn.tls, TlsMode::Require);
+    }
+
+    #[test]
+    fn connection_without_environment_field_deserializes_to_none() {
+        let json = r#"{"name":"prod","host":"localhost","port":5432,"username":"u","password":"p","database":"db"}"#;
+        let conn: Connection = serde_json::from_str(json).unwrap();
+        assert_eq!(conn.environment, None);
+    }
+
+    #[test]
+    fn connection_with_environment_deserializes_correctly() {
+        let json = r#"{"name":"prod","host":"localhost","port":5432,"username":"u","password":"p","database":"db","environment":"production"}"#;
+        let conn: Connection = serde_json::from_str(json).unwrap();
+        assert_eq!(conn.environment, Some("production".to_string()));
     }
 }

@@ -58,6 +58,7 @@ where
             password: input.password,
             database: input.database,
             tls: input.tls,
+            environment: None,
         };
 
         self.repository.add(connection)

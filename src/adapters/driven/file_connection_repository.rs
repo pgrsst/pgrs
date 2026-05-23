@@ -159,6 +159,7 @@ mod tests {
             password: "secret".to_string(),
             database: "mydb".to_string(),
             tls: crate::core::domain::connection::TlsMode::Disable,
+            environment: None,
         }
     }
 
