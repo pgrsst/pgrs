@@ -431,6 +431,7 @@ const COMMAND_DOCS: &[CmdDoc] = &[
             "add <name> [--url=<postgresql://user:pass@host:port/db>]",
             "           [--host=<host>] [--username=<user>] [--password=<pass>]",
             "           [--database=<db>] [--port=<port>] [--tls=disable|require|verify-full]",
+            "           [--env=<environment>]",
         ],
         desc_lines: &[
             "Add a new named connection. Use --url to specify all fields at once;",
@@ -449,7 +450,7 @@ const COMMAND_DOCS: &[CmdDoc] = &[
     CmdDoc {
         usage_lines: &[
             "edit <name> [--host=...] [--port=...] [--username=...] [--password=...]",
-            "            [--database=...] [--tls=...]",
+            "            [--database=...] [--tls=...] [--env=...]",
         ],
         desc_lines: &["Update one or more fields of a saved connection"],
     },
