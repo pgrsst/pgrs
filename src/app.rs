@@ -4,6 +4,7 @@ use crate::adapters::driven::file_connection_repository::FileConnectionRepositor
 use crate::adapters::driven::postgres_db::PostgresDb;
 use crate::adapters::driving::cli::Cli;
 use crate::adapters::driving::repl;
+use crate::core::ports::db_connection::DbConnection;
 use crate::core::services::connection::service::ConnectionService;
 
 pub fn run() -> Result<(), String> {
@@ -23,6 +24,17 @@ pub fn run() -> Result<(), String> {
         let conn = connection_service.get_connection(name)?;
         let db = PostgresDb::new(&conn)?;
         return repl::run(Box::new(db), &conn.database);
+    }
+
+    if args.first().map(String::as_str) == Some("test") {
+        let name = args.get(1).ok_or("usage: pgrs test <connection-name>")?;
+        let conn = connection_service.get_connection(name)?;
+        let db = PostgresDb::new(&conn)
+            .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
+        db.execute("SELECT 1")
+            .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
+        println!("connection '{}' ok", name);
+        return Ok(());
     }
 
     let cli = Cli::new(connection_service);

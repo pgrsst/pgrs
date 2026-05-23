@@ -639,16 +639,12 @@ mod tests {
     use std::collections::HashMap;
 
     struct TestDb {
-        tables: Vec<String>,
         columns: HashMap<String, Vec<String>>,
     }
 
     impl crate::core::ports::db_connection::DbConnection for TestDb {
         fn execute(&self, _: &str) -> Result<QueryResult, String> {
             Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None })
-        }
-        fn list_tables(&self) -> Result<Vec<String>, String> {
-            Ok(self.tables.clone())
         }
         fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
             Ok(self.columns.clone())
@@ -657,17 +653,17 @@ mod tests {
 
     fn schema_with(tables: &[&str], columns: &[(&str, &[&str])]) -> SchemaService {
         let mut col_map: HashMap<String, Vec<String>> = HashMap::new();
+        // ensure tables with no columns still appear in the schema
+        for &table in tables {
+            col_map.entry(table.to_string()).or_default();
+        }
         for (table, cols) in columns {
             col_map.insert(
                 table.to_string(),
                 cols.iter().map(|c| c.to_string()).collect(),
             );
         }
-        SchemaService::load(&TestDb {
-            tables: tables.iter().map(|t| t.to_string()).collect(),
-            columns: col_map,
-        })
-        .unwrap()
+        SchemaService::load(&TestDb { columns: col_map }).unwrap()
     }
 
     #[test]

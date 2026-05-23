@@ -9,8 +9,9 @@ pub struct SchemaService {
 
 impl SchemaService {
     pub fn load(conn: &dyn DbConnection) -> Result<Self, String> {
-        let tables = conn.list_tables()?;
         let columns = conn.list_columns()?;
+        let mut tables: Vec<String> = columns.keys().cloned().collect();
+        tables.sort();
         Ok(Self { tables, columns })
     }
 
@@ -29,17 +30,12 @@ mod tests {
     use crate::core::ports::db_connection::QueryResult;
 
     struct MockDb {
-        tables: Vec<String>,
         columns: HashMap<String, Vec<String>>,
     }
 
     impl DbConnection for MockDb {
         fn execute(&self, _: &str) -> Result<QueryResult, String> {
             Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None })
-        }
-
-        fn list_tables(&self) -> Result<Vec<String>, String> {
-            Ok(self.tables.clone())
         }
 
         fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
@@ -51,17 +47,15 @@ mod tests {
         let mut columns = HashMap::new();
         columns.insert("users".to_string(), vec!["id".to_string(), "email".to_string()]);
         columns.insert("orders".to_string(), vec!["id".to_string(), "user_id".to_string()]);
-        MockDb {
-            tables: vec!["users".to_string(), "orders".to_string()],
-            columns,
-        }
+        MockDb { columns }
     }
 
     #[test]
     fn load_populates_tables_and_columns() {
         let db = mock_db();
         let schema = SchemaService::load(&db).unwrap();
-        assert_eq!(schema.tables(), &["users", "orders"]);
+        // tables are derived from column map keys, sorted alphabetically
+        assert_eq!(schema.tables(), &["orders", "users"]);
         assert_eq!(schema.columns_for("users"), &["id", "email"]);
         assert_eq!(schema.columns_for("orders"), &["id", "user_id"]);
     }

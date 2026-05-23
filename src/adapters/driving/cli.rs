@@ -1,7 +1,7 @@
 use crate::adapters::driving::completions;
 use crate::core::domain::connection::TlsMode;
 use crate::core::ports::connection_repository::ConnectionRepository;
-use crate::core::services::connection::service::{AddConnectionInput, ConnectionService};
+use crate::core::services::connection::service::{AddConnectionInput, ConnectionService, EditConnectionInput};
 
 pub struct Cli<R>
 where
@@ -29,24 +29,44 @@ where
             Some("add") => self.add_connection(&args[1..]),
             Some("list") => self.list_connections(&args[1..]),
             Some("delete") => self.delete_connection(&args[1..]),
+            Some("edit") => self.edit_connection(&args[1..]),
+            Some("rename") => self.rename_connection(&args[1..]),
             Some("connect") => self.connect_to(&args[1..]),
             Some("completions") => self.print_completions(&args[1..]),
             Some("--version") | Some("-V") => {
                 println!("pgrs {}", env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
-            // "shell" is intercepted in app.rs before cli.run() is called
+            // both intercepted in app.rs before cli.run() is called — unreachable in normal use
+            Some("shell") => Err("usage: pgrs shell <connection-name>".to_string()),
+            Some("test") => Err("usage: pgrs test <connection-name>".to_string()),
             Some(cmd) => Err(format!("unknown command '{cmd}'. Run 'pgrs' for help.")),
         }
     }
 
     fn add_connection(&self, args: &[String]) -> Result<(), String> {
-        let name = args.first().ok_or("usage: pgrs add <name> --host=<host> --username=<username> --password=<password> --database=<database> [--port=<port>]")?.trim().to_string();
+        let name = args.first().ok_or(
+            "usage: pgrs add <name> [--url=<postgresql://...>] [--host=<host>] [--username=<user>] [--password=<pass>] [--database=<db>] [--port=<port>] [--tls=disable|require|verify-full]"
+        )?.trim().to_string();
 
-        let host = required_option(args, "--host")?;
-        let username = required_option(args, "--username")?;
-        let password = required_option(args, "--password")?;
-        let database = required_option(args, "--database")?;
+        let (url_host, url_port, url_username, url_password, url_database) =
+            optional_option(args, "--url")
+                .map(|u| parse_connection_url(&u))
+                .transpose()?
+                .unwrap_or_default();
+
+        let host = optional_option(args, "--host")
+            .or(url_host)
+            .ok_or("--host is required")?;
+        let username = optional_option(args, "--username")
+            .or(url_username)
+            .ok_or("--username is required")?;
+        let password = optional_option(args, "--password")
+            .or(url_password)
+            .ok_or("--password is required")?;
+        let database = optional_option(args, "--database")
+            .or(url_database)
+            .ok_or("--database is required")?;
         let port = optional_option(args, "--port")
             .map(|value| {
                 value
@@ -54,6 +74,7 @@ where
                     .map_err(|_| "port must be a number".to_string())
             })
             .transpose()?
+            .or(url_port)
             .unwrap_or(5432);
 
         let tls = match optional_option(args, "--tls").as_deref() {
@@ -97,40 +118,26 @@ where
             return Ok(());
         }
 
-        let name_w = connections
+        let name_w = connections.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
+        let host_w = connections.iter().map(|c| c.host.len()).max().unwrap_or(4).max(4);
+        let db_w = connections.iter().map(|c| c.database.len()).max().unwrap_or(8).max(8);
+        let user_w = connections.iter().map(|c| c.username.len()).max().unwrap_or(8).max(8);
+        let tls_w = connections
             .iter()
-            .map(|c| c.name.len())
+            .map(|c| c.tls.to_string().len())
             .max()
-            .unwrap_or(4)
-            .max(4);
-        let host_w = connections
-            .iter()
-            .map(|c| c.host.len())
-            .max()
-            .unwrap_or(4)
-            .max(4);
-        let db_w = connections
-            .iter()
-            .map(|c| c.database.len())
-            .max()
-            .unwrap_or(8)
-            .max(8);
-        let user_w = connections
-            .iter()
-            .map(|c| c.username.len())
-            .max()
-            .unwrap_or(8)
-            .max(8);
+            .unwrap_or(3)
+            .max(3);
 
         println!(
-            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  PASSWORD",
-            "NAME", "HOST", "PORT", "DATABASE", "USERNAME",
+            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  {:<tls_w$}  PASSWORD",
+            "NAME", "HOST", "PORT", "DATABASE", "USERNAME", "TLS",
         );
 
         for c in &connections {
             println!(
-                "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  ****",
-                c.name, c.host, c.port, c.database, c.username,
+                "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  {:<tls_w$}  ****",
+                c.name, c.host, c.port, c.database, c.username, c.tls,
             );
         }
 
@@ -172,12 +179,84 @@ where
         })
     }
 
+    fn edit_connection(&self, args: &[String]) -> Result<(), String> {
+        let name = args
+            .first()
+            .ok_or("usage: pgrs edit <name> [--host=...] [--port=...] [--username=...] [--password=...] [--database=...] [--tls=...]")?
+            .trim()
+            .to_string();
+
+        let port = optional_option(args, "--port")
+            .map(|v| v.parse::<u16>().map_err(|_| "port must be a number".to_string()))
+            .transpose()?;
+
+        let tls = match optional_option(args, "--tls").as_deref() {
+            None => None,
+            Some("disable") => Some(TlsMode::Disable),
+            Some("require") => Some(TlsMode::Require),
+            Some("verify-full") => Some(TlsMode::VerifyFull),
+            Some(other) => {
+                return Err(format!(
+                    "unknown tls mode '{other}' — supported: disable, require, verify-full"
+                ));
+            }
+        };
+
+        self.connection_service.edit_connection(&name, EditConnectionInput {
+            host: optional_option(args, "--host"),
+            port,
+            username: optional_option(args, "--username"),
+            password: optional_option(args, "--password"),
+            database: optional_option(args, "--database"),
+            tls,
+        })?;
+
+        println!("connection '{name}' updated");
+        Ok(())
+    }
+
+    fn rename_connection(&self, args: &[String]) -> Result<(), String> {
+        let old_name = args
+            .first()
+            .ok_or("usage: pgrs rename <old-name> <new-name>")?
+            .trim()
+            .to_string();
+        let new_name = args
+            .get(1)
+            .ok_or("usage: pgrs rename <old-name> <new-name>")?
+            .trim()
+            .to_string();
+        self.connection_service.rename_connection(&old_name, &new_name)?;
+        println!("connection '{old_name}' renamed to '{new_name}'");
+        Ok(())
+    }
+
     fn delete_connection(&self, args: &[String]) -> Result<(), String> {
         let name = args
             .first()
-            .ok_or("usage: pgrs delete <connection-name>")?
+            .ok_or("usage: pgrs delete <connection-name> [--yes]")?
             .trim()
             .to_string();
+
+        let skip_confirmation = args.iter().any(|a| a == "--yes");
+
+        if !skip_confirmation {
+            use std::io::{self, IsTerminal, Write};
+            if io::stdin().is_terminal() {
+                print!("Delete connection '{name}'? [y/N] ");
+                io::stdout().flush().map_err(|e| e.to_string())?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+            } else {
+                return Err(format!(
+                    "cowardly refusing to delete '{name}' — pass --yes to confirm"
+                ));
+            }
+        }
 
         self.connection_service.delete_connection(&name)?;
         println!("connection '{name}' deleted");
@@ -212,8 +291,62 @@ where
     }
 }
 
-fn required_option(args: &[String], key: &str) -> Result<String, String> {
-    optional_option(args, key).ok_or_else(|| format!("{key} is required"))
+// Returns (host, port, username, password, database) parsed from a postgresql:// URL.
+// Individual CLI flags take precedence over URL-parsed values.
+// Note: percent-encoded characters (e.g. %40 in passwords) are not decoded —
+// use individual flags for credentials containing special characters.
+fn parse_connection_url(
+    url: &str,
+) -> Result<(Option<String>, Option<u16>, Option<String>, Option<String>, Option<String>), String> {
+    let rest = url
+        .strip_prefix("postgresql://")
+        .or_else(|| url.strip_prefix("postgres://"))
+        .ok_or_else(|| {
+            format!("URL must start with postgresql:// or postgres://, got '{}'", url)
+        })?;
+
+    let (userinfo_str, hostinfo) = if let Some(at) = rest.rfind('@') {
+        (Some(&rest[..at]), &rest[at + 1..])
+    } else {
+        (None, rest)
+    };
+
+    let (username, password) = match userinfo_str {
+        Some(ui) => {
+            if let Some(colon) = ui.find(':') {
+                (Some(ui[..colon].to_string()), Some(ui[colon + 1..].to_string()))
+            } else {
+                (Some(ui.to_string()), None)
+            }
+        }
+        None => (None, None),
+    };
+
+    let (hostport, database) = if let Some(slash) = hostinfo.find('/') {
+        let db = &hostinfo[slash + 1..];
+        (
+            &hostinfo[..slash],
+            if db.is_empty() { None } else { Some(db.to_string()) },
+        )
+    } else {
+        (hostinfo, None)
+    };
+
+    let (host, port) = if let Some(colon) = hostport.rfind(':') {
+        let h = &hostport[..colon];
+        let p_str = &hostport[colon + 1..];
+        let p = p_str
+            .parse::<u16>()
+            .map_err(|_| format!("invalid port '{}' in URL", p_str))?;
+        (if h.is_empty() { None } else { Some(h.to_string()) }, Some(p))
+    } else {
+        (
+            if hostport.is_empty() { None } else { Some(hostport.to_string()) },
+            None,
+        )
+    };
+
+    Ok((host, port, username, password, database))
 }
 
 fn optional_option(args: &[String], key: &str) -> Option<String> {
@@ -230,15 +363,25 @@ fn welcome() -> &'static str {
         "Manage and store named PostgreSQL connections locally.\n",
         "\n",
         "Commands:\n",
-        "  add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require|verify-full]\n",
-        "             Add a new named connection\n",
+        "  add <name> [--url=<postgresql://user:pass@host:port/db>]\n",
+        "             [--host=<host>] [--username=<user>] [--password=<pass>]\n",
+        "             [--database=<db>] [--port=<port>] [--tls=disable|require|verify-full]\n",
+        "             Add a new named connection. Use --url to specify all fields at once;\n",
+        "             individual flags override URL-parsed values.\n",
         "             --tls: disable (no encryption), require (encrypt, no cert check),\n",
         "                    verify-full (encrypt + verify server certificate)\n",
         "  list         List all saved connections\n",
         "  list --names-only\n",
         "             Print connection names only, one per line (handy for scripts and shell completion)\n",
-        "  delete <name>\n",
-        "             Delete a named connection\n",
+        "  edit <name> [--host=...] [--port=...] [--username=...] [--password=...]\n",
+        "             [--database=...] [--tls=...]\n",
+        "             Update one or more fields of a saved connection\n",
+        "  delete <name> [--yes]\n",
+        "             Delete a named connection (prompts for confirmation without --yes)\n",
+        "  rename <old-name> <new-name>\n",
+        "             Rename a saved connection\n",
+        "  test <name>\n",
+        "             Verify a saved connection is reachable\n",
         "  connect <name>\n",
         "             Open an interactive psql session using a saved connection\n",
         "  shell <name>\n",
@@ -290,7 +433,12 @@ mod tests {
             Ok(self.connections.borrow().clone())
         }
         fn delete(&self, name: &str) -> Result<(), String> {
-            self.connections.borrow_mut().retain(|c| c.name != name);
+            let mut connections = self.connections.borrow_mut();
+            let before = connections.len();
+            connections.retain(|c| c.name != name);
+            if connections.len() == before {
+                return Err(format!("connection '{}' not found", name));
+            }
             Ok(())
         }
         fn get_connection(&self, name: &str) -> Result<Connection, String> {
@@ -300,6 +448,27 @@ mod tests {
                 .find(|c| c.name == name)
                 .cloned()
                 .ok_or_else(|| format!("connection '{}' not found", name))
+        }
+        fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
+            let mut connections = self.connections.borrow_mut();
+            if connections.iter().any(|c| c.name == new_name) {
+                return Err(format!("connection '{}' already exists", new_name));
+            }
+            let conn = connections
+                .iter_mut()
+                .find(|c| c.name == old_name)
+                .ok_or_else(|| format!("connection '{}' not found", old_name))?;
+            conn.name = new_name.to_string();
+            Ok(())
+        }
+        fn update(&self, connection: Connection) -> Result<(), String> {
+            let mut connections = self.connections.borrow_mut();
+            let pos = connections
+                .iter()
+                .position(|c| c.name == connection.name)
+                .ok_or_else(|| format!("connection '{}' not found", connection.name))?;
+            connections[pos] = connection;
+            Ok(())
         }
     }
 
@@ -460,9 +629,19 @@ mod tests {
     fn delete_succeeds_returns_ok() {
         let cli = cli_with(&["prod"]);
         assert!(
-            cli.run(["delete".to_string(), "prod".to_string()].into_iter())
+            cli.run(["delete".to_string(), "prod".to_string(), "--yes".to_string()].into_iter())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn delete_without_yes_in_non_tty_returns_error() {
+        // test runner is not a TTY — --yes is required
+        let cli = cli_with(&["prod"]);
+        let err = cli
+            .run(["delete".to_string(), "prod".to_string()].into_iter())
+            .unwrap_err();
+        assert!(err.contains("--yes"), "expected --yes hint, got: {err}");
     }
 
     #[test]
@@ -514,9 +693,219 @@ mod tests {
     fn welcome_lists_all_commands() {
         use super::welcome;
         let w = welcome();
-        for cmd in &["add", "list", "delete", "connect", "shell", "completions"] {
+        for cmd in &["add", "list", "edit", "delete", "rename", "test", "connect", "shell", "completions"] {
             assert!(w.contains(cmd), "welcome should mention '{cmd}', got:\n{w}");
         }
+    }
+
+    fn edit_args(name: &str, extra: &[&str]) -> impl Iterator<Item = String> {
+        let mut args = vec!["edit".to_string(), name.to_string()];
+        args.extend(extra.iter().map(|s| s.to_string()));
+        args.into_iter()
+    }
+
+    #[test]
+    fn edit_single_field_updates_database() {
+        let cli = cli_with(&["prod"]);
+        cli.run(edit_args("prod", &["--database=newdb"])).unwrap();
+        assert_eq!(cli.get_connection("prod").unwrap().database, "newdb");
+    }
+
+    #[test]
+    fn edit_multiple_fields_updates_all() {
+        let cli = cli_with(&["prod"]);
+        cli.run(edit_args("prod", &["--password=secret2", "--database=newdb"])).unwrap();
+        let conn = cli.get_connection("prod").unwrap();
+        assert_eq!(conn.password, "secret2");
+        assert_eq!(conn.database, "newdb");
+        assert_eq!(conn.host, "localhost"); // unchanged
+    }
+
+    #[test]
+    fn edit_port_parses_correctly() {
+        let cli = cli_with(&["prod"]);
+        cli.run(edit_args("prod", &["--port=5433"])).unwrap();
+        assert_eq!(cli.get_connection("prod").unwrap().port, 5433);
+    }
+
+    #[test]
+    fn edit_tls_updates_mode() {
+        let cli = cli_with(&["prod"]);
+        cli.run(edit_args("prod", &["--tls=require"])).unwrap();
+        assert_eq!(
+            cli.get_connection("prod").unwrap().tls,
+            crate::core::domain::connection::TlsMode::Require
+        );
+    }
+
+    #[test]
+    fn edit_without_fields_returns_error() {
+        let cli = cli_with(&["prod"]);
+        let err = cli.run(edit_args("prod", &[])).unwrap_err();
+        assert!(err.contains("at least one field"), "got: {err}");
+    }
+
+    #[test]
+    fn edit_missing_name_returns_error() {
+        let cli = cli_with(&[]);
+        let err = cli.run(["edit".to_string()].into_iter()).unwrap_err();
+        assert!(err.contains("edit"), "got: {err}");
+    }
+
+    #[test]
+    fn edit_not_found_returns_error() {
+        let cli = cli_with(&[]);
+        let err = cli
+            .run(edit_args("ghost", &["--password=x"]))
+            .unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn edit_with_invalid_port_returns_error() {
+        let cli = cli_with(&["prod"]);
+        let result = cli.run(edit_args("prod", &["--port=abc"]));
+        assert_eq!(result, Err("port must be a number".to_string()));
+    }
+
+    #[test]
+    fn edit_with_unknown_tls_returns_error() {
+        let cli = cli_with(&["prod"]);
+        let result = cli.run(edit_args("prod", &["--tls=starttls"]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown tls mode"));
+    }
+
+    #[test]
+    fn edit_with_empty_host_returns_error() {
+        let cli = cli_with(&["prod"]);
+        let result = cli.run(edit_args("prod", &["--host="]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("host is required"));
+    }
+
+    #[test]
+    fn rename_succeeds() {
+        let cli = cli_with(&["prod"]);
+        cli.run(["rename".to_string(), "prod".to_string(), "production".to_string()].into_iter())
+            .unwrap();
+        assert!(cli.get_connection("production").is_ok());
+        assert!(cli.get_connection("prod").is_err());
+    }
+
+    #[test]
+    fn rename_missing_new_name_returns_error() {
+        let cli = cli_with(&["prod"]);
+        let err = cli
+            .run(["rename".to_string(), "prod".to_string()].into_iter())
+            .unwrap_err();
+        assert!(err.contains("rename"), "got: {err}");
+    }
+
+    #[test]
+    fn rename_missing_args_returns_error() {
+        let cli = cli_with(&[]);
+        assert!(cli.run(["rename".to_string()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn rename_not_found_returns_error() {
+        let cli = cli_with(&[]);
+        let err = cli
+            .run(["rename".to_string(), "ghost".to_string(), "new".to_string()].into_iter())
+            .unwrap_err();
+        assert!(err.contains("not found"), "got: {err}");
+    }
+
+    #[test]
+    fn shell_command_via_cli_run_returns_error_with_usage() {
+        let cli = cli_with(&[]);
+        let err = cli
+            .run(["shell".to_string(), "prod".to_string()].into_iter())
+            .unwrap_err();
+        assert!(err.contains("shell"), "got: {err}");
+    }
+
+    #[test]
+    fn add_with_url_sets_all_fields() {
+        let cli = cli_with(&[]);
+        cli.run(
+            [
+                "add".to_string(),
+                "prod".to_string(),
+                "--url=postgresql://user:pass@localhost:5432/mydb".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        let conn = cli.get_connection("prod").unwrap();
+        assert_eq!(conn.host, "localhost");
+        assert_eq!(conn.port, 5432);
+        assert_eq!(conn.username, "user");
+        assert_eq!(conn.password, "pass");
+        assert_eq!(conn.database, "mydb");
+    }
+
+    #[test]
+    fn add_with_url_and_flag_overrides_port() {
+        let cli = cli_with(&[]);
+        cli.run(
+            [
+                "add".to_string(),
+                "prod".to_string(),
+                "--url=postgresql://user:pass@localhost/mydb".to_string(),
+                "--port=5433".to_string(),
+            ]
+            .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(cli.get_connection("prod").unwrap().port, 5433);
+    }
+
+    #[test]
+    fn add_with_url_postgres_scheme_accepted() {
+        let cli = cli_with(&[]);
+        assert!(cli
+            .run(
+                [
+                    "add".to_string(),
+                    "prod".to_string(),
+                    "--url=postgres://user:pass@localhost/mydb".to_string(),
+                ]
+                .into_iter()
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn add_with_invalid_url_scheme_returns_error() {
+        let cli = cli_with(&[]);
+        let err = cli
+            .run(
+                [
+                    "add".to_string(),
+                    "prod".to_string(),
+                    "--url=mysql://user:pass@host/db".to_string(),
+                ]
+                .into_iter()
+            )
+            .unwrap_err();
+        assert!(err.contains("postgresql://"), "got: {err}");
+    }
+
+    #[test]
+    fn add_with_url_missing_password_requires_flag() {
+        let cli = cli_with(&[]);
+        // URL has no password, no --password flag → error
+        let result = cli.run(
+            [
+                "add".to_string(),
+                "prod".to_string(),
+                "--url=postgresql://user@localhost/mydb".to_string(),
+            ]
+            .into_iter(),
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -526,6 +915,47 @@ mod tests {
             cli.run(["completions".to_string(), "zsh".to_string()].into_iter())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn parse_url_full_postgresql_scheme() {
+        let (host, port, user, pass, db) =
+            parse_connection_url("postgresql://user:pass@localhost:5432/mydb").unwrap();
+        assert_eq!(host, Some("localhost".to_string()));
+        assert_eq!(port, Some(5432));
+        assert_eq!(user, Some("user".to_string()));
+        assert_eq!(pass, Some("pass".to_string()));
+        assert_eq!(db, Some("mydb".to_string()));
+    }
+
+    #[test]
+    fn parse_url_postgres_scheme() {
+        let (host, _, user, _, db) =
+            parse_connection_url("postgres://user:pass@localhost/db").unwrap();
+        assert_eq!(host, Some("localhost".to_string()));
+        assert_eq!(user, Some("user".to_string()));
+        assert_eq!(db, Some("db".to_string()));
+    }
+
+    #[test]
+    fn parse_url_without_port_returns_none() {
+        let (_, port, _, _, _) =
+            parse_connection_url("postgresql://user:pass@localhost/db").unwrap();
+        assert!(port.is_none());
+    }
+
+    #[test]
+    fn parse_url_invalid_scheme_returns_error() {
+        let result = parse_connection_url("mysql://user:pass@host/db");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("postgresql://"));
+    }
+
+    #[test]
+    fn parse_url_invalid_port_returns_error() {
+        let result = parse_connection_url("postgresql://user:pass@host:abc/db");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("port"));
     }
 
     #[test]

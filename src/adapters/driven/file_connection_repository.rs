@@ -115,6 +115,33 @@ impl ConnectionRepository for FileConnectionRepository {
             .find(|c| c.name == name)
             .ok_or_else(|| format!("connection '{}' not found", name))
     }
+
+    fn update(&self, connection: Connection) -> Result<(), String> {
+        self.with_lock(|| {
+            let mut connections = self.read_connections()?;
+            let pos = connections
+                .iter()
+                .position(|c| c.name == connection.name)
+                .ok_or_else(|| format!("connection '{}' not found", connection.name))?;
+            connections[pos] = connection;
+            self.write_connections(&connections)
+        })
+    }
+
+    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
+        self.with_lock(|| {
+            let mut connections = self.read_connections()?;
+            if connections.iter().any(|c| c.name == new_name) {
+                return Err(format!("connection '{}' already exists", new_name));
+            }
+            let conn = connections
+                .iter_mut()
+                .find(|c| c.name == old_name)
+                .ok_or_else(|| format!("connection '{}' not found", old_name))?;
+            conn.name = new_name.to_string();
+            self.write_connections(&connections)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +279,53 @@ mod tests {
 
         let err = repo.add(sample_connection("prod")).unwrap_err();
         assert!(err.contains("connections.lock"), "should include lock path so user can remove it, got: {err}");
+    }
+
+    #[test]
+    fn update_changes_field_in_place() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        let mut updated = sample_connection("prod");
+        updated.database = "newdb".to_string();
+        repo.update(updated).unwrap();
+        let conn = repo.get_connection("prod").unwrap();
+        assert_eq!(conn.database, "newdb");
+        assert_eq!(conn.host, "localhost"); // unchanged
+    }
+
+    #[test]
+    fn update_returns_error_when_not_found() {
+        let (repo, _dir) = repo();
+        let result = repo.update(sample_connection("ghost"));
+        assert_eq!(result, Err("connection 'ghost' not found".to_string()));
+    }
+
+    #[test]
+    fn rename_updates_connection_name() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        repo.rename("prod", "production").unwrap();
+        assert!(repo.get_connection("production").is_ok());
+        assert_eq!(
+            repo.get_connection("prod"),
+            Err("connection 'prod' not found".to_string())
+        );
+    }
+
+    #[test]
+    fn rename_returns_error_when_not_found() {
+        let (repo, _dir) = repo();
+        let result = repo.rename("nonexistent", "new");
+        assert_eq!(result, Err("connection 'nonexistent' not found".to_string()));
+    }
+
+    #[test]
+    fn rename_returns_error_when_new_name_exists() {
+        let (repo, _dir) = repo();
+        repo.add(sample_connection("prod")).unwrap();
+        repo.add(sample_connection("staging")).unwrap();
+        let result = repo.rename("prod", "staging");
+        assert_eq!(result, Err("connection 'staging' already exists".to_string()));
     }
 
     #[test]

@@ -91,19 +91,6 @@ impl DbConnection for PostgresDb {
         Ok(QueryResult { columns, rows, rows_affected })
     }
 
-    fn list_tables(&self) -> Result<Vec<String>, String> {
-        let mut client = self.client.borrow_mut();
-        let rows = client
-            .query(
-                "SELECT table_name FROM information_schema.tables \
-                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE' \
-                 ORDER BY table_name",
-                &[],
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(rows.iter().map(|r| r.get::<_, String>(0)).collect())
-    }
-
     fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
         let mut client = self.client.borrow_mut();
         let rows = client

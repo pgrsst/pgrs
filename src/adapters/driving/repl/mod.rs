@@ -84,7 +84,7 @@ impl Validator for SqlValidator {
 }
 
 fn repl_help_text() -> &'static str {
-    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables\n  \\x         toggle expanded display\n  \\refresh   reload schema (after CREATE/DROP/ALTER TABLE)\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
+    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables with column count\n  \\x         toggle expanded display\n  \\timing    toggle query execution time\n  \\refresh   reload schema (after CREATE/DROP/ALTER TABLE)\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
 }
 
 fn build_reedline(schema: SchemaService) -> Reedline {
@@ -145,6 +145,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
     );
 
     let mut expanded = false;
+    let mut timing = false;
 
     loop {
         match rl.read_line(&prompt) {
@@ -158,8 +159,15 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                     continue;
                 }
                 if trimmed == "\\dt" {
-                    for table in schema.tables() {
-                        println!(" {}", table);
+                    let tables = schema.tables();
+                    if tables.is_empty() {
+                        println!("No tables.");
+                    } else {
+                        let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
+                        for table in tables {
+                            let col_count = schema.columns_for(table).len();
+                            println!(" {:<name_w$}  ({} columns)", table, col_count);
+                        }
                     }
                     continue;
                 }
@@ -169,6 +177,11 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                         "Expanded display is {}.",
                         if expanded { "on" } else { "off" }
                     );
+                    continue;
+                }
+                if trimmed == "\\timing" {
+                    timing = !timing;
+                    println!("Timing is {}.", if timing { "on" } else { "off" });
                     continue;
                 }
                 if trimmed == "\\refresh" {
@@ -185,9 +198,18 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                 if trimmed.is_empty() {
                     continue;
                 }
+                let start = std::time::Instant::now();
                 match conn.execute(trimmed) {
                     Ok(result) => {
                         print_result(&result, expanded);
+                        if timing {
+                            let ms = start.elapsed().as_secs_f64() * 1000.0;
+                            if ms >= 1000.0 {
+                                println!("Time: {:.3} s", ms / 1000.0);
+                            } else {
+                                println!("Time: {:.3} ms", ms);
+                            }
+                        }
                         if is_ddl(trimmed)
                             && let Ok(new_schema) = SchemaService::load(conn.as_ref())
                         {
@@ -279,6 +301,15 @@ mod tests {
         assert!(
             text.contains("\\refresh"),
             "help should mention \\refresh, got: {text}"
+        );
+    }
+
+    #[test]
+    fn help_text_mentions_timing_command() {
+        let text = repl_help_text();
+        assert!(
+            text.contains("\\timing"),
+            "help should mention \\timing, got: {text}"
         );
     }
 
