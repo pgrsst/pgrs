@@ -53,10 +53,6 @@ fn visible_len(s: &str) -> usize {
     len
 }
 
-pub fn print_result(result: &QueryResult, expanded: bool) {
-    print!("{}", format_result(result, expanded));
-}
-
 pub fn format_result(result: &QueryResult, expanded: bool) -> String {
     if result.columns.is_empty() {
         let count = result.rows_affected.unwrap_or(result.rows.len() as u64);

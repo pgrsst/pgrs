@@ -4,6 +4,7 @@ use crate::adapters::driven::file_connection_repository::FileConnectionRepositor
 use crate::adapters::driven::postgres_db::PostgresDb;
 use crate::adapters::driving::cli::Cli;
 use crate::adapters::driving::repl;
+use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::services::connection::service::ConnectionService;
 
@@ -29,9 +30,9 @@ pub fn run() -> Result<(), String> {
     }
 }
 
-fn run_shell(
+fn run_shell<R: ConnectionRepository>(
     args: &[String],
-    service: &ConnectionService<FileConnectionRepository>,
+    service: &ConnectionService<R>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
     let conn = service.get_connection(name)?;
@@ -39,9 +40,9 @@ fn run_shell(
     repl::run(Box::new(db), &conn.database)
 }
 
-fn run_test(
+fn run_test<R: ConnectionRepository>(
     args: &[String],
-    service: &ConnectionService<FileConnectionRepository>,
+    service: &ConnectionService<R>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs test <connection-name>")?;
     let conn = service.get_connection(name)?;

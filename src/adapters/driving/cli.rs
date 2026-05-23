@@ -37,6 +37,9 @@ where
                 println!("pgrs {}", env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
+            Some(cmd @ "shell") | Some(cmd @ "test") => Err(format!(
+                "'{cmd}' requires a connection — run 'pgrs {cmd} <connection-name>'"
+            )),
             Some(cmd) => Err(format!("unknown command '{cmd}'. Run 'pgrs' for help.")),
         }
     }
@@ -46,23 +49,22 @@ where
             "usage: pgrs add <name> [--url=<postgresql://...>] [--host=<host>] [--username=<user>] [--password=<pass>] [--database=<db>] [--port=<port>] [--tls=disable|require|verify-full]"
         )?.trim().to_string();
 
-        let (url_host, url_port, url_username, url_password, url_database) =
-            optional_option(args, "--url")
-                .map(|u| parse_connection_url(&u))
-                .transpose()?
-                .unwrap_or_default();
+        let url = optional_option(args, "--url")
+            .map(|u| parse_connection_url(&u))
+            .transpose()?
+            .unwrap_or_default();
 
         let host = optional_option(args, "--host")
-            .or(url_host)
+            .or(url.host)
             .ok_or("host is required")?;
         let username = optional_option(args, "--username")
-            .or(url_username)
+            .or(url.username)
             .ok_or("username is required")?;
         let password = optional_option(args, "--password")
-            .or(url_password)
+            .or(url.password)
             .ok_or("password is required")?;
         let database = optional_option(args, "--database")
-            .or(url_database)
+            .or(url.database)
             .ok_or("database is required")?;
         let port = optional_option(args, "--port")
             .map(|value| {
@@ -71,18 +73,12 @@ where
                     .map_err(|_| "port must be a number".to_string())
             })
             .transpose()?
-            .or(url_port)
+            .or(url.port)
             .unwrap_or(crate::core::domain::connection::DEFAULT_PORT);
 
-        let tls = match optional_option(args, "--tls").as_deref() {
-            None | Some("disable") => TlsMode::Disable,
-            Some("require") => TlsMode::Require,
-            Some("verify-full") => TlsMode::VerifyFull,
-            Some(other) => {
-                return Err(format!(
-                    "unknown tls mode '{other}' — supported: disable, require, verify-full"
-                ));
-            }
+        let tls = match optional_option(args, "--tls") {
+            None => TlsMode::Disable,
+            Some(s) => parse_tls_mode(&s)?,
         };
 
         self.connection_service.add_connection(AddConnectionInput {
@@ -187,16 +183,9 @@ where
             .map(|v| v.parse::<u16>().map_err(|_| "port must be a number".to_string()))
             .transpose()?;
 
-        let tls = match optional_option(args, "--tls").as_deref() {
+        let tls = match optional_option(args, "--tls") {
             None => None,
-            Some("disable") => Some(TlsMode::Disable),
-            Some("require") => Some(TlsMode::Require),
-            Some("verify-full") => Some(TlsMode::VerifyFull),
-            Some(other) => {
-                return Err(format!(
-                    "unknown tls mode '{other}' — supported: disable, require, verify-full"
-                ));
-            }
+            Some(s) => Some(parse_tls_mode(&s)?),
         };
 
         self.connection_service.edit_connection(&name, EditConnectionInput {
@@ -310,9 +299,15 @@ fn percent_decode(s: &str) -> String {
     out
 }
 
-type ParsedUrl = (Option<String>, Option<u16>, Option<String>, Option<String>, Option<String>);
+#[derive(Debug, Default)]
+struct ParsedUrl {
+    host: Option<String>,
+    port: Option<u16>,
+    username: Option<String>,
+    password: Option<String>,
+    database: Option<String>,
+}
 
-// Returns (host, port, username, password, database) parsed from a postgresql:// URL.
 // Individual CLI flags take precedence over URL-parsed values.
 fn parse_connection_url(url: &str) -> Result<ParsedUrl, String> {
     let rest = url
@@ -366,7 +361,18 @@ fn parse_connection_url(url: &str) -> Result<ParsedUrl, String> {
         )
     };
 
-    Ok((host, port, username, password, database))
+    Ok(ParsedUrl { host, port, username, password, database })
+}
+
+fn parse_tls_mode(value: &str) -> Result<TlsMode, String> {
+    match value {
+        "disable" => Ok(TlsMode::Disable),
+        "require" => Ok(TlsMode::Require),
+        "verify-full" => Ok(TlsMode::VerifyFull),
+        other => Err(format!(
+            "unknown tls mode '{other}' — supported: disable, require, verify-full"
+        )),
+    }
 }
 
 fn optional_option(args: &[String], key: &str) -> Option<String> {
@@ -909,29 +915,27 @@ mod tests {
 
     #[test]
     fn parse_url_full_postgresql_scheme() {
-        let (host, port, user, pass, db) =
+        let parsed =
             parse_connection_url("postgresql://user:pass@localhost:5432/mydb").unwrap();
-        assert_eq!(host, Some("localhost".to_string()));
-        assert_eq!(port, Some(5432));
-        assert_eq!(user, Some("user".to_string()));
-        assert_eq!(pass, Some("pass".to_string()));
-        assert_eq!(db, Some("mydb".to_string()));
+        assert_eq!(parsed.host, Some("localhost".to_string()));
+        assert_eq!(parsed.port, Some(5432));
+        assert_eq!(parsed.username, Some("user".to_string()));
+        assert_eq!(parsed.password, Some("pass".to_string()));
+        assert_eq!(parsed.database, Some("mydb".to_string()));
     }
 
     #[test]
     fn parse_url_postgres_scheme() {
-        let (host, _, user, _, db) =
-            parse_connection_url("postgres://user:pass@localhost/db").unwrap();
-        assert_eq!(host, Some("localhost".to_string()));
-        assert_eq!(user, Some("user".to_string()));
-        assert_eq!(db, Some("db".to_string()));
+        let parsed = parse_connection_url("postgres://user:pass@localhost/db").unwrap();
+        assert_eq!(parsed.host, Some("localhost".to_string()));
+        assert_eq!(parsed.username, Some("user".to_string()));
+        assert_eq!(parsed.database, Some("db".to_string()));
     }
 
     #[test]
     fn parse_url_without_port_returns_none() {
-        let (_, port, _, _, _) =
-            parse_connection_url("postgresql://user:pass@localhost/db").unwrap();
-        assert!(port.is_none());
+        let parsed = parse_connection_url("postgresql://user:pass@localhost/db").unwrap();
+        assert!(parsed.port.is_none());
     }
 
     #[test]
@@ -950,23 +954,62 @@ mod tests {
 
     #[test]
     fn parse_url_decodes_percent_encoded_password() {
-        let (_, _, _, pass, _) =
+        let parsed =
             parse_connection_url("postgresql://user:p%40ss%23word@localhost/db").unwrap();
-        assert_eq!(pass, Some("p@ss#word".to_string()));
+        assert_eq!(parsed.password, Some("p@ss#word".to_string()));
     }
 
     #[test]
     fn parse_url_decodes_percent_encoded_username() {
-        let (_, _, user, _, _) =
+        let parsed =
             parse_connection_url("postgresql://admin%40corp:pass@localhost/db").unwrap();
-        assert_eq!(user, Some("admin@corp".to_string()));
+        assert_eq!(parsed.username, Some("admin@corp".to_string()));
     }
 
     #[test]
     fn parse_url_decodes_percent_encoded_database() {
-        let (_, _, _, _, db) =
+        let parsed =
             parse_connection_url("postgresql://user:pass@localhost/my%20db").unwrap();
-        assert_eq!(db, Some("my db".to_string()));
+        assert_eq!(parsed.database, Some("my db".to_string()));
+    }
+
+    #[test]
+    fn parse_tls_mode_disable_returns_disable() {
+        assert_eq!(parse_tls_mode("disable"), Ok(TlsMode::Disable));
+    }
+
+    #[test]
+    fn parse_tls_mode_require_returns_require() {
+        assert_eq!(parse_tls_mode("require"), Ok(TlsMode::Require));
+    }
+
+    #[test]
+    fn parse_tls_mode_verify_full_returns_verify_full() {
+        assert_eq!(parse_tls_mode("verify-full"), Ok(TlsMode::VerifyFull));
+    }
+
+    #[test]
+    fn parse_tls_mode_unknown_returns_error_mentioning_value() {
+        let err = parse_tls_mode("starttls").unwrap_err();
+        assert!(err.contains("starttls"), "got: {err}");
+    }
+
+    #[test]
+    fn shell_command_does_not_say_unknown_command() {
+        let cli = cli_with(&[]);
+        let err = cli
+            .run(["shell".to_string(), "prod".to_string()].into_iter())
+            .unwrap_err();
+        assert!(!err.contains("unknown command"), "should give specific error for shell, got: {err}");
+    }
+
+    #[test]
+    fn test_command_does_not_say_unknown_command() {
+        let cli = cli_with(&[]);
+        let err = cli
+            .run(["test".to_string(), "prod".to_string()].into_iter())
+            .unwrap_err();
+        assert!(!err.contains("unknown command"), "should give specific error for test, got: {err}");
     }
 
     #[test]

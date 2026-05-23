@@ -8,6 +8,8 @@ pub struct SchemaService {
 }
 
 impl SchemaService {
+    // Uses `dyn SchemaPort` (not a generic) because callers pass `Box<dyn ReplPort>`,
+    // whose concrete type is already erased by the time it reaches this function.
     pub fn load(conn: &dyn SchemaPort) -> Result<Self, String> {
         let columns = conn.list_columns()?;
         let mut tables: Vec<String> = columns.keys().cloned().collect();
