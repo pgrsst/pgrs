@@ -188,12 +188,12 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                 match conn.execute(trimmed) {
                     Ok(result) => {
                         print_result(&result, expanded);
-                        if is_ddl(trimmed) {
-                            if let Ok(new_schema) = SchemaService::load(conn.as_ref()) {
-                                schema = new_schema;
-                                rl = build_reedline(schema.clone());
-                                println!("(schema refreshed)");
-                            }
+                        if is_ddl(trimmed)
+                            && let Ok(new_schema) = SchemaService::load(conn.as_ref())
+                        {
+                            schema = new_schema;
+                            rl = build_reedline(schema.clone());
+                            println!("(schema refreshed)");
                         }
                     }
                     Err(e) => eprintln!("error: {}", e),
