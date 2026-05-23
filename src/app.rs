@@ -19,24 +19,36 @@ pub fn run() -> Result<(), String> {
 
     let args: Vec<String> = env::args().skip(1).collect();
 
-    if args.first().map(String::as_str) == Some("shell") {
-        let name = args.get(1).ok_or("usage: pgrs shell <connection-name>")?;
-        let conn = connection_service.get_connection(name)?;
-        let db = PostgresDb::new(&conn)?;
-        return repl::run(Box::new(db), &conn.database);
+    match args.first().map(String::as_str) {
+        Some("shell") => run_shell(&args[1..], &connection_service),
+        Some("test") => run_test(&args[1..], &connection_service),
+        _ => {
+            let cli = Cli::new(connection_service);
+            cli.run(args)
+        }
     }
+}
 
-    if args.first().map(String::as_str) == Some("test") {
-        let name = args.get(1).ok_or("usage: pgrs test <connection-name>")?;
-        let conn = connection_service.get_connection(name)?;
-        let db = PostgresDb::new(&conn)
-            .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
-        db.execute("SELECT 1")
-            .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
-        println!("connection '{}' ok", name);
-        return Ok(());
-    }
+fn run_shell(
+    args: &[String],
+    service: &ConnectionService<FileConnectionRepository>,
+) -> Result<(), String> {
+    let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
+    let conn = service.get_connection(name)?;
+    let db = PostgresDb::new(&conn)?;
+    repl::run(Box::new(db), &conn.database)
+}
 
-    let cli = Cli::new(connection_service);
-    cli.run(args)
+fn run_test(
+    args: &[String],
+    service: &ConnectionService<FileConnectionRepository>,
+) -> Result<(), String> {
+    let name = args.first().ok_or("usage: pgrs test <connection-name>")?;
+    let conn = service.get_connection(name)?;
+    let db = PostgresDb::new(&conn)
+        .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
+    db.execute("SELECT 1")
+        .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
+    println!("connection '{}' ok", name);
+    Ok(())
 }

@@ -115,80 +115,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::domain::connection::{Connection, TlsMode};
-    use crate::core::ports::connection_repository::ConnectionRepository;
-    use std::cell::RefCell;
-
-    struct StubRepository {
-        connections: RefCell<Vec<Connection>>,
-    }
-
-    impl StubRepository {
-        fn new() -> Self {
-            Self {
-                connections: RefCell::new(vec![]),
-            }
-        }
-    }
-
-    impl ConnectionRepository for StubRepository {
-        fn add(&self, connection: Connection) -> Result<(), String> {
-            self.connections.borrow_mut().push(connection);
-            Ok(())
-        }
-
-        fn list(&self) -> Result<Vec<Connection>, String> {
-            Ok(self.connections.borrow().clone())
-        }
-
-        fn delete(&self, name: &str) -> Result<(), String> {
-            let mut connections = self.connections.borrow_mut();
-            let initial_len = connections.len();
-            connections.retain(|c| c.name != name);
-            if connections.len() == initial_len {
-                return Err(format!("connection '{}' not found", name));
-            }
-            Ok(())
-        }
-
-        fn get_connection(&self, name: &str) -> Result<Connection, String> {
-            self.connections
-                .borrow()
-                .iter()
-                .find(|c| c.name == name)
-                .cloned()
-                .ok_or_else(|| format!("connection '{}' not found", name))
-        }
-
-        fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
-            let mut connections = self.connections.borrow_mut();
-            if connections.iter().any(|c| c.name == new_name) {
-                return Err(format!("connection '{}' already exists", new_name));
-            }
-            let conn = connections
-                .iter_mut()
-                .find(|c| c.name == old_name)
-                .ok_or_else(|| format!("connection '{}' not found", old_name))?;
-            conn.name = new_name.to_string();
-            Ok(())
-        }
-
-        fn update(&self, connection: Connection) -> Result<(), String> {
-            let mut connections = self.connections.borrow_mut();
-            let pos = connections
-                .iter()
-                .position(|c| c.name == connection.name)
-                .ok_or_else(|| format!("connection '{}' not found", connection.name))?;
-            connections[pos] = connection;
-            Ok(())
-        }
-    }
+    use crate::core::domain::connection::{TlsMode, DEFAULT_PORT};
+    use crate::core::ports::connection_repository::test_support::StubConnectionRepository;
 
     fn valid_input(name: &str) -> AddConnectionInput {
         AddConnectionInput {
             name: name.to_string(),
             host: "localhost".to_string(),
-            port: 5432,
+            port: DEFAULT_PORT,
             username: "admin".to_string(),
             password: "secret".to_string(),
             database: "mydb".to_string(),
@@ -196,8 +130,8 @@ mod tests {
         }
     }
 
-    fn service() -> ConnectionService<StubRepository> {
-        ConnectionService::new(StubRepository::new())
+    fn service() -> ConnectionService<StubConnectionRepository> {
+        ConnectionService::new(StubConnectionRepository::new())
     }
 
     #[test]

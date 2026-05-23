@@ -635,17 +635,13 @@ impl Hinter for SqlHinter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ports::db_connection::QueryResult;
     use std::collections::HashMap;
 
     struct TestDb {
         columns: HashMap<String, Vec<String>>,
     }
 
-    impl crate::core::ports::db_connection::DbConnection for TestDb {
-        fn execute(&self, _: &str) -> Result<QueryResult, String> {
-            Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None })
-        }
+    impl crate::core::ports::schema_port::SchemaPort for TestDb {
         fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
             Ok(self.columns.clone())
         }

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 use crate::core::domain::connection::{Connection, TlsMode};
 use crate::core::ports::db_connection::{DbConnection, QueryResult};
+use crate::core::ports::schema_port::SchemaPort;
 
 pub struct PostgresDb {
     client: RefCell<postgres::Client>,
@@ -90,7 +91,9 @@ impl DbConnection for PostgresDb {
 
         Ok(QueryResult { columns, rows, rows_affected })
     }
+}
 
+impl SchemaPort for PostgresDb {
     fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
         let mut client = self.client.borrow_mut();
         let rows = client
@@ -111,4 +114,3 @@ impl DbConnection for PostgresDb {
         Ok(map)
     }
 }
-

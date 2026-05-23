@@ -37,9 +37,6 @@ where
                 println!("pgrs {}", env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
-            // both intercepted in app.rs before cli.run() is called — unreachable in normal use
-            Some("shell") => Err("usage: pgrs shell <connection-name>".to_string()),
-            Some("test") => Err("usage: pgrs test <connection-name>".to_string()),
             Some(cmd) => Err(format!("unknown command '{cmd}'. Run 'pgrs' for help.")),
         }
     }
@@ -57,16 +54,16 @@ where
 
         let host = optional_option(args, "--host")
             .or(url_host)
-            .ok_or("--host is required")?;
+            .ok_or("host is required")?;
         let username = optional_option(args, "--username")
             .or(url_username)
-            .ok_or("--username is required")?;
+            .ok_or("username is required")?;
         let password = optional_option(args, "--password")
             .or(url_password)
-            .ok_or("--password is required")?;
+            .ok_or("password is required")?;
         let database = optional_option(args, "--database")
             .or(url_database)
-            .ok_or("--database is required")?;
+            .ok_or("database is required")?;
         let port = optional_option(args, "--port")
             .map(|value| {
                 value
@@ -75,7 +72,7 @@ where
             })
             .transpose()?
             .or(url_port)
-            .unwrap_or(5432);
+            .unwrap_or(crate::core::domain::connection::DEFAULT_PORT);
 
         let tls = match optional_option(args, "--tls").as_deref() {
             None | Some("disable") => TlsMode::Disable,
@@ -463,84 +460,10 @@ fn welcome() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::domain::connection::Connection;
-    use crate::core::ports::connection_repository::ConnectionRepository;
-    use std::cell::RefCell;
+    use crate::core::ports::connection_repository::test_support::StubConnectionRepository;
 
-    struct StubRepository {
-        connections: RefCell<Vec<Connection>>,
-    }
-
-    impl StubRepository {
-        fn with(names: &[&str]) -> Self {
-            let connections = names
-                .iter()
-                .map(|n| Connection {
-                    name: n.to_string(),
-                    host: "localhost".to_string(),
-                    port: 5432,
-                    username: "user".to_string(),
-                    password: "pass".to_string(),
-                    database: "db".to_string(),
-                    tls: crate::core::domain::connection::TlsMode::Disable,
-                })
-                .collect();
-            Self {
-                connections: RefCell::new(connections),
-            }
-        }
-    }
-
-    impl ConnectionRepository for StubRepository {
-        fn add(&self, c: Connection) -> Result<(), String> {
-            self.connections.borrow_mut().push(c);
-            Ok(())
-        }
-        fn list(&self) -> Result<Vec<Connection>, String> {
-            Ok(self.connections.borrow().clone())
-        }
-        fn delete(&self, name: &str) -> Result<(), String> {
-            let mut connections = self.connections.borrow_mut();
-            let before = connections.len();
-            connections.retain(|c| c.name != name);
-            if connections.len() == before {
-                return Err(format!("connection '{}' not found", name));
-            }
-            Ok(())
-        }
-        fn get_connection(&self, name: &str) -> Result<Connection, String> {
-            self.connections
-                .borrow()
-                .iter()
-                .find(|c| c.name == name)
-                .cloned()
-                .ok_or_else(|| format!("connection '{}' not found", name))
-        }
-        fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
-            let mut connections = self.connections.borrow_mut();
-            if connections.iter().any(|c| c.name == new_name) {
-                return Err(format!("connection '{}' already exists", new_name));
-            }
-            let conn = connections
-                .iter_mut()
-                .find(|c| c.name == old_name)
-                .ok_or_else(|| format!("connection '{}' not found", old_name))?;
-            conn.name = new_name.to_string();
-            Ok(())
-        }
-        fn update(&self, connection: Connection) -> Result<(), String> {
-            let mut connections = self.connections.borrow_mut();
-            let pos = connections
-                .iter()
-                .position(|c| c.name == connection.name)
-                .ok_or_else(|| format!("connection '{}' not found", connection.name))?;
-            connections[pos] = connection;
-            Ok(())
-        }
-    }
-
-    fn cli_with(names: &[&str]) -> Cli<StubRepository> {
-        Cli::new(ConnectionService::new(StubRepository::with(names)))
+    fn cli_with(names: &[&str]) -> Cli<StubConnectionRepository> {
+        Cli::new(ConnectionService::new(StubConnectionRepository::with_names(names)))
     }
 
     #[test]

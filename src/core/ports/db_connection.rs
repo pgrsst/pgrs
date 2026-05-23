@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-
+#[derive(Clone)]
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<String>>,
@@ -8,6 +7,5 @@ pub struct QueryResult {
 
 pub trait DbConnection {
     fn execute(&self, query: &str) -> Result<QueryResult, String>;
-    fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String>;
 }
 

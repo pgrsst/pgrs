@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::core::ports::db_connection::DbConnection;
+use crate::core::ports::schema_port::SchemaPort;
 
 #[derive(Clone)]
 pub struct SchemaService {
@@ -8,7 +8,7 @@ pub struct SchemaService {
 }
 
 impl SchemaService {
-    pub fn load(conn: &dyn DbConnection) -> Result<Self, String> {
+    pub fn load(conn: &dyn SchemaPort) -> Result<Self, String> {
         let columns = conn.list_columns()?;
         let mut tables: Vec<String> = columns.keys().cloned().collect();
         tables.sort();
@@ -27,17 +27,13 @@ impl SchemaService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ports::db_connection::QueryResult;
+    use crate::core::ports::schema_port::SchemaPort;
 
     struct MockDb {
         columns: HashMap<String, Vec<String>>,
     }
 
-    impl DbConnection for MockDb {
-        fn execute(&self, _: &str) -> Result<QueryResult, String> {
-            Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None })
-        }
-
+    impl SchemaPort for MockDb {
         fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
             Ok(self.columns.clone())
         }
@@ -54,7 +50,6 @@ mod tests {
     fn load_populates_tables_and_columns() {
         let db = mock_db();
         let schema = SchemaService::load(&db).unwrap();
-        // tables are derived from column map keys, sorted alphabetically
         assert_eq!(schema.tables(), &["orders", "users"]);
         assert_eq!(schema.columns_for("users"), &["id", "email"]);
         assert_eq!(schema.columns_for("orders"), &["id", "user_id"]);

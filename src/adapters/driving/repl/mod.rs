@@ -10,6 +10,8 @@ use reedline::{
 };
 
 use crate::core::ports::db_connection::DbConnection;
+use crate::core::ports::repl_port::ReplPort;
+use crate::core::ports::schema_port::SchemaPort;
 use crate::core::services::schema::service::SchemaService;
 
 use completer::{SqlCompleter, SqlHighlighter, SqlHinter};
@@ -159,7 +161,75 @@ fn is_ddl(query: &str) -> bool {
     )
 }
 
-pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
+fn handle_dt(schema: &SchemaService) {
+    let tables = schema.tables();
+    if tables.is_empty() {
+        println!("No tables.");
+    } else {
+        let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
+        for table in tables {
+            let col_count = schema.columns_for(table).len();
+            println!(" {:<name_w$}  ({} columns)", table, col_count);
+        }
+    }
+}
+
+fn handle_l(conn: &dyn DbConnection, expanded: bool) {
+    match conn.execute(
+        "SELECT datname AS database \
+         FROM pg_database \
+         WHERE datistemplate = false \
+         ORDER BY datname",
+    ) {
+        Ok(result) => print_result(&result, expanded),
+        Err(e) => eprintln!("error: {}", e),
+    }
+}
+
+fn handle_refresh(conn: &dyn SchemaPort, schema: &mut SchemaService, rebuild: &mut impl FnMut(SchemaService)) {
+    match SchemaService::load(conn) {
+        Ok(new_schema) => {
+            *schema = new_schema.clone();
+            rebuild(new_schema);
+            println!("Schema refreshed.");
+        }
+        Err(e) => eprintln!("error: could not refresh schema: {}", e),
+    }
+}
+
+fn handle_sql(
+    conn: &dyn ReplPort,
+    query: &str,
+    expanded: bool,
+    timing: bool,
+    schema: &mut SchemaService,
+    rebuild: &mut impl FnMut(SchemaService),
+) {
+    let start = std::time::Instant::now();
+    match conn.execute(query) {
+        Ok(result) => {
+            print_result(&result, expanded);
+            if timing {
+                let ms = start.elapsed().as_secs_f64() * 1000.0;
+                if ms >= 1000.0 {
+                    println!("Time: {:.3} s", ms / 1000.0);
+                } else {
+                    println!("Time: {:.3} ms", ms);
+                }
+            }
+            if is_ddl(query)
+                && let Ok(new_schema) = SchemaService::load(conn)
+            {
+                *schema = new_schema.clone();
+                rebuild(new_schema);
+                println!("(schema refreshed)");
+            }
+        }
+        Err(e) => eprintln!("error: {}", e),
+    }
+}
+
+pub fn run(conn: Box<dyn ReplPort>, db_name: &str) -> Result<(), String> {
     let mut schema = SchemaService::load(conn.as_ref())?;
     let mut rl = build_reedline(schema.clone());
 
@@ -182,27 +252,8 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                 match trimmed {
                     "\\q" | "exit" => break,
                     "\\help" | "\\?" => println!("{}", repl_help_text()),
-                    "\\dt" => {
-                        let tables = schema.tables();
-                        if tables.is_empty() {
-                            println!("No tables.");
-                        } else {
-                            let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
-                            for table in tables {
-                                let col_count = schema.columns_for(table).len();
-                                println!(" {:<name_w$}  ({} columns)", table, col_count);
-                            }
-                        }
-                    }
-                    "\\l" => match conn.execute(
-                        "SELECT datname AS database \
-                         FROM pg_database \
-                         WHERE datistemplate = false \
-                         ORDER BY datname",
-                    ) {
-                        Ok(result) => print_result(&result, expanded),
-                        Err(e) => eprintln!("error: {}", e),
-                    },
+                    "\\dt" => handle_dt(&schema),
+                    "\\l" => handle_l(conn.as_ref(), expanded),
                     "\\x" => {
                         expanded = !expanded;
                         println!(
@@ -214,39 +265,9 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                         timing = !timing;
                         println!("Timing is {}.", if timing { "on" } else { "off" });
                     }
-                    "\\refresh" => match SchemaService::load(conn.as_ref()) {
-                        Ok(new_schema) => {
-                            schema = new_schema;
-                            rl = build_reedline(schema.clone());
-                            println!("Schema refreshed.");
-                        }
-                        Err(e) => eprintln!("error: could not refresh schema: {}", e),
-                    },
+                    "\\refresh" => handle_refresh(conn.as_ref(), &mut schema, &mut |s| { rl = build_reedline(s); }),
                     "" => {}
-                    _ => {
-                        let start = std::time::Instant::now();
-                        match conn.execute(trimmed) {
-                            Ok(result) => {
-                                print_result(&result, expanded);
-                                if timing {
-                                    let ms = start.elapsed().as_secs_f64() * 1000.0;
-                                    if ms >= 1000.0 {
-                                        println!("Time: {:.3} s", ms / 1000.0);
-                                    } else {
-                                        println!("Time: {:.3} ms", ms);
-                                    }
-                                }
-                                if is_ddl(trimmed)
-                                    && let Ok(new_schema) = SchemaService::load(conn.as_ref())
-                                {
-                                    schema = new_schema;
-                                    rl = build_reedline(schema.clone());
-                                    println!("(schema refreshed)");
-                                }
-                            }
-                            Err(e) => eprintln!("error: {}", e),
-                        }
-                    }
+                    _ => handle_sql(conn.as_ref(), trimmed, expanded, timing, &mut schema, &mut |s| { rl = build_reedline(s); }),
                 }
             }
             Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
@@ -262,6 +283,142 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use crate::core::ports::db_connection::QueryResult;
+
+    struct StubDb {
+        columns: HashMap<String, Vec<String>>,
+        result: Result<QueryResult, String>,
+    }
+
+    impl StubDb {
+        fn ok(rows: Vec<Vec<String>>, cols: Vec<String>) -> Self {
+            Self {
+                columns: HashMap::new(),
+                result: Ok(QueryResult { columns: cols, rows, rows_affected: None }),
+            }
+        }
+        fn err(msg: &str) -> Self {
+            Self { columns: HashMap::new(), result: Err(msg.to_string()) }
+        }
+        fn with_schema(tables: &[(&str, &[&str])]) -> Self {
+            let mut columns = HashMap::new();
+            for (table, cols) in tables {
+                columns.insert(table.to_string(), cols.iter().map(|c| c.to_string()).collect());
+            }
+            Self { columns, result: Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: Some(0) }) }
+        }
+    }
+
+    impl crate::core::ports::db_connection::DbConnection for StubDb {
+        fn execute(&self, _query: &str) -> Result<QueryResult, String> {
+            self.result.clone()
+        }
+    }
+
+    impl crate::core::ports::schema_port::SchemaPort for StubDb {
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+            Ok(self.columns.clone())
+        }
+    }
+
+    fn schema_from(tables: &[(&str, &[&str])]) -> SchemaService {
+        let stub = StubDb::with_schema(tables);
+        SchemaService::load(&stub).unwrap()
+    }
+
+    #[test]
+    fn handle_dt_prints_nothing_for_empty_schema() {
+        let schema = schema_from(&[]);
+        // should not panic
+        handle_dt(&schema);
+    }
+
+    #[test]
+    fn handle_dt_uses_schema_tables() {
+        let schema = schema_from(&[("users", &["id", "email"]), ("orders", &["id"])]);
+        // tables are populated — just verify no panic and column count is accessible
+        assert_eq!(schema.columns_for("users").len(), 2);
+        assert_eq!(schema.columns_for("orders").len(), 1);
+        handle_dt(&schema);
+    }
+
+    #[test]
+    fn handle_l_succeeds_with_stub() {
+        let stub = StubDb::ok(
+            vec![vec!["mydb".to_string()]],
+            vec!["database".to_string()],
+        );
+        // should not panic
+        handle_l(&stub, false);
+        handle_l(&stub, true);
+    }
+
+    #[test]
+    fn handle_l_handles_db_error_gracefully() {
+        let stub = StubDb::err("connection lost");
+        // should print error, not panic
+        handle_l(&stub, false);
+    }
+
+    #[test]
+    fn handle_sql_executes_query_without_panic() {
+        let stub = StubDb::ok(vec![vec!["1".to_string()]], vec!["id".to_string()]);
+        let mut schema = schema_from(&[]);
+        let mut rebuilt = false;
+        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; });
+        assert!(!rebuilt, "no DDL — schema should not be rebuilt");
+    }
+
+    #[test]
+    fn handle_sql_rebuilds_schema_after_ddl() {
+        let stub = StubDb::with_schema(&[("users", &["id"])]);
+        let mut schema = schema_from(&[]);
+        let mut rebuilt = false;
+        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, &mut schema, &mut |_| { rebuilt = true; });
+        assert!(rebuilt, "DDL should trigger schema rebuild");
+    }
+
+    #[test]
+    fn handle_sql_does_not_rebuild_on_select() {
+        let stub = StubDb::ok(vec![], vec![]);
+        let mut schema = schema_from(&[]);
+        let mut rebuilt = false;
+        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; });
+        assert!(!rebuilt);
+    }
+
+    #[test]
+    fn handle_sql_handles_error_gracefully() {
+        let stub = StubDb::err("syntax error");
+        let mut schema = schema_from(&[]);
+        handle_sql(&stub, "SELEKT *", false, false, &mut schema, &mut |_| {});
+    }
+
+    #[test]
+    fn handle_refresh_updates_schema() {
+        let stub = StubDb::with_schema(&[("products", &["id", "name"])]);
+        let mut schema = schema_from(&[]);
+        assert!(schema.tables().is_empty());
+        let mut rebuilt = false;
+        handle_refresh(&stub, &mut schema, &mut |_| { rebuilt = true; });
+        assert!(rebuilt);
+        assert!(schema.tables().contains(&"products".to_string()));
+    }
+
+    #[test]
+    fn handle_refresh_handles_error_gracefully() {
+        struct FailingDb;
+        impl crate::core::ports::schema_port::SchemaPort for FailingDb {
+            fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+                Err("connection lost".to_string())
+            }
+        }
+        let mut schema = schema_from(&[]);
+        let mut rebuilt = false;
+        handle_refresh(&FailingDb, &mut schema, &mut |_| { rebuilt = true; });
+        assert!(!rebuilt, "failed refresh must not trigger rebuild");
+    }
 
     #[test]
     fn prompt_left_includes_database_name() {
@@ -373,31 +530,26 @@ mod tests {
     // is_complete_statement — double-quoted identifier handling
     #[test]
     fn complete_unclosed_double_quoted_identifier_ending_with_semicolon_not_complete() {
-        // ';' is the last char but it's inside an unclosed "..." — not a real terminator
         assert!(!is_complete_statement(r#"SELECT "col;"#));
     }
 
     #[test]
     fn complete_closed_double_quoted_identifier_then_semicolon_is_complete() {
-        // ';' after a properly closed "..." is a real terminator
         assert!(is_complete_statement(r#"SELECT "col;name" FROM t;"#));
     }
 
     #[test]
     fn complete_double_quoted_identifier_with_escaped_double_quote() {
-        // "" inside "..." is an escaped quote, not end of identifier
         assert!(is_complete_statement(r#"SELECT "O""Brien" FROM t;"#));
     }
 
     #[test]
     fn complete_double_quote_inside_single_quote_does_not_open_identifier() {
-        // '"' inside '...' is just a character, not a double-quote identifier delimiter
         assert!(is_complete_statement(r#"SELECT '"quoted"' FROM t;"#));
     }
 
     #[test]
     fn complete_single_quote_inside_double_quote_does_not_open_string() {
-        // '\'' inside "..." is just a character, not a string delimiter
         assert!(is_complete_statement(r#"SELECT "it's" FROM t;"#));
     }
 
