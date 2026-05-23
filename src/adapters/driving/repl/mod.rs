@@ -179,28 +179,22 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         match rl.read_line(&prompt) {
             Ok(Signal::Success(line)) => {
                 let trimmed = line.trim();
-                if trimmed == "\\q" || trimmed == "exit" {
-                    break;
-                }
-                if trimmed == "\\help" || trimmed == "\\?" {
-                    println!("{}", repl_help_text());
-                    continue;
-                }
-                if trimmed == "\\dt" {
-                    let tables = schema.tables();
-                    if tables.is_empty() {
-                        println!("No tables.");
-                    } else {
-                        let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
-                        for table in tables {
-                            let col_count = schema.columns_for(table).len();
-                            println!(" {:<name_w$}  ({} columns)", table, col_count);
+                match trimmed {
+                    "\\q" | "exit" => break,
+                    "\\help" | "\\?" => println!("{}", repl_help_text()),
+                    "\\dt" => {
+                        let tables = schema.tables();
+                        if tables.is_empty() {
+                            println!("No tables.");
+                        } else {
+                            let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
+                            for table in tables {
+                                let col_count = schema.columns_for(table).len();
+                                println!(" {:<name_w$}  ({} columns)", table, col_count);
+                            }
                         }
                     }
-                    continue;
-                }
-                if trimmed == "\\l" {
-                    match conn.execute(
+                    "\\l" => match conn.execute(
                         "SELECT datname AS database \
                          FROM pg_database \
                          WHERE datistemplate = false \
@@ -208,57 +202,51 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                     ) {
                         Ok(result) => print_result(&result, expanded),
                         Err(e) => eprintln!("error: {}", e),
+                    },
+                    "\\x" => {
+                        expanded = !expanded;
+                        println!(
+                            "Expanded display is {}.",
+                            if expanded { "on" } else { "off" }
+                        );
                     }
-                    continue;
-                }
-                if trimmed == "\\x" {
-                    expanded = !expanded;
-                    println!(
-                        "Expanded display is {}.",
-                        if expanded { "on" } else { "off" }
-                    );
-                    continue;
-                }
-                if trimmed == "\\timing" {
-                    timing = !timing;
-                    println!("Timing is {}.", if timing { "on" } else { "off" });
-                    continue;
-                }
-                if trimmed == "\\refresh" {
-                    match SchemaService::load(conn.as_ref()) {
+                    "\\timing" => {
+                        timing = !timing;
+                        println!("Timing is {}.", if timing { "on" } else { "off" });
+                    }
+                    "\\refresh" => match SchemaService::load(conn.as_ref()) {
                         Ok(new_schema) => {
                             schema = new_schema;
                             rl = build_reedline(schema.clone());
                             println!("Schema refreshed.");
                         }
                         Err(e) => eprintln!("error: could not refresh schema: {}", e),
-                    }
-                    continue;
-                }
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let start = std::time::Instant::now();
-                match conn.execute(trimmed) {
-                    Ok(result) => {
-                        print_result(&result, expanded);
-                        if timing {
-                            let ms = start.elapsed().as_secs_f64() * 1000.0;
-                            if ms >= 1000.0 {
-                                println!("Time: {:.3} s", ms / 1000.0);
-                            } else {
-                                println!("Time: {:.3} ms", ms);
+                    },
+                    "" => {}
+                    _ => {
+                        let start = std::time::Instant::now();
+                        match conn.execute(trimmed) {
+                            Ok(result) => {
+                                print_result(&result, expanded);
+                                if timing {
+                                    let ms = start.elapsed().as_secs_f64() * 1000.0;
+                                    if ms >= 1000.0 {
+                                        println!("Time: {:.3} s", ms / 1000.0);
+                                    } else {
+                                        println!("Time: {:.3} ms", ms);
+                                    }
+                                }
+                                if is_ddl(trimmed)
+                                    && let Ok(new_schema) = SchemaService::load(conn.as_ref())
+                                {
+                                    schema = new_schema;
+                                    rl = build_reedline(schema.clone());
+                                    println!("(schema refreshed)");
+                                }
                             }
-                        }
-                        if is_ddl(trimmed)
-                            && let Ok(new_schema) = SchemaService::load(conn.as_ref())
-                        {
-                            schema = new_schema;
-                            rl = build_reedline(schema.clone());
-                            println!("(schema refreshed)");
+                            Err(e) => eprintln!("error: {}", e),
                         }
                     }
-                    Err(e) => eprintln!("error: {}", e),
                 }
             }
             Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
