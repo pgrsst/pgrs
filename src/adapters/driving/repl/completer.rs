@@ -3,6 +3,7 @@ use reedline::{Completer, Highlighter, Hinter, History, Span, StyledText, Sugges
 use std::collections::HashMap;
 
 use crate::core::services::schema::service::SchemaService;
+use super::tokenizer::{SqlToken, tokenize};
 
 struct AliasMap {
     map: HashMap<String, Option<String>>,
@@ -189,58 +190,6 @@ impl CompletionKind {
             CompletionKind::Column  => Style::new().fg(Color::Green),
         }
     }
-}
-
-#[derive(Debug)]
-enum SqlToken {
-    Comment(String),
-    StringLiteral(String),
-    Number(String),
-    Word(String),
-    Other(char),
-}
-
-fn tokenize(input: &str) -> Vec<SqlToken> {
-    let chars: Vec<char> = input.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-    let mut tokens = Vec::new();
-
-    while i < len {
-        if chars[i] == '-' && i + 1 < len && chars[i + 1] == '-' {
-            let start = i;
-            while i < len && chars[i] != '\n' { i += 1; }
-            tokens.push(SqlToken::Comment(chars[start..i].iter().collect()));
-        } else if chars[i] == '\'' {
-            let start = i;
-            i += 1;
-            loop {
-                if i >= len { break; }
-                if chars[i] == '\'' {
-                    i += 1;
-                    if i < len && chars[i] == '\'' { i += 1; } else { break; }
-                } else { i += 1; }
-            }
-            tokens.push(SqlToken::StringLiteral(chars[start..i].iter().collect()));
-        } else if chars[i].is_ascii_digit() {
-            let start = i;
-            let mut has_dot = false;
-            while i < len && (chars[i].is_ascii_digit() || (chars[i] == '.' && !has_dot && i + 1 < len && chars[i + 1].is_ascii_digit())) {
-                if chars[i] == '.' { has_dot = true; }
-                i += 1;
-            }
-            tokens.push(SqlToken::Number(chars[start..i].iter().collect()));
-        } else if chars[i].is_alphabetic() || chars[i] == '_' {
-            let start = i;
-            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') { i += 1; }
-            tokens.push(SqlToken::Word(chars[start..i].iter().collect()));
-        } else {
-            tokens.push(SqlToken::Other(chars[i]));
-            i += 1;
-        }
-    }
-
-    tokens
 }
 
 fn classify_word(word: &str, tables: &[String], columns: &[String]) -> Option<CompletionKind> {

@@ -1,5 +1,6 @@
 mod completer;
 mod executor;
+mod tokenizer;
 
 use std::borrow::Cow;
 use std::io::{self, Write};
