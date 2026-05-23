@@ -60,7 +60,11 @@ where
             None | Some("disable") => TlsMode::Disable,
             Some("require") => TlsMode::Require,
             Some("verify-full") => TlsMode::VerifyFull,
-            Some(other) => return Err(format!("unknown tls mode '{other}' — supported: disable, require, verify-full")),
+            Some(other) => {
+                return Err(format!(
+                    "unknown tls mode '{other}' — supported: disable, require, verify-full"
+                ));
+            }
         };
 
         self.connection_service.add_connection(AddConnectionInput {
@@ -93,10 +97,30 @@ where
             return Ok(());
         }
 
-        let name_w = connections.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
-        let host_w = connections.iter().map(|c| c.host.len()).max().unwrap_or(4).max(4);
-        let db_w = connections.iter().map(|c| c.database.len()).max().unwrap_or(8).max(8);
-        let user_w = connections.iter().map(|c| c.username.len()).max().unwrap_or(8).max(8);
+        let name_w = connections
+            .iter()
+            .map(|c| c.name.len())
+            .max()
+            .unwrap_or(4)
+            .max(4);
+        let host_w = connections
+            .iter()
+            .map(|c| c.host.len())
+            .max()
+            .unwrap_or(4)
+            .max(4);
+        let db_w = connections
+            .iter()
+            .map(|c| c.database.len())
+            .max()
+            .unwrap_or(8)
+            .max(8);
+        let user_w = connections
+            .iter()
+            .map(|c| c.username.len())
+            .max()
+            .unwrap_or(8)
+            .max(8);
 
         println!(
             "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<user_w$}  PASSWORD",
@@ -124,7 +148,10 @@ where
 
         let connection = self.connection_service.get_connection(&name)?;
 
-        eprintln!("handing off to psql for '{}' — you'll return to your shell, not pgrs, on exit", name);
+        println!(
+            "handing off to psql for '{}' — you'll return to your shell, not pgrs, on exit",
+            name
+        );
 
         let error = std::process::Command::new("psql")
             .env("PGPASSWORD", &connection.password)
@@ -158,19 +185,29 @@ where
     }
 
     fn print_completions(&self, args: &[String]) -> Result<(), String> {
-        let shell = args.first().ok_or("usage: pgrs completions <bash|zsh|fish>")?;
+        let shell = args
+            .first()
+            .ok_or("usage: pgrs completions <bash|zsh|fish>")?;
         let script = match shell.as_str() {
             "bash" => completions::bash_script(),
             "zsh" => completions::zsh_script(),
             "fish" => completions::fish_script(),
-            other => return Err(format!("unknown shell '{}' — supported: bash, zsh, fish", other)),
+            other => {
+                return Err(format!(
+                    "unknown shell '{}' — supported: bash, zsh, fish",
+                    other
+                ));
+            }
         };
         print!("{}", script);
         Ok(())
     }
 
     #[cfg(test)]
-    pub(crate) fn get_connection(&self, name: &str) -> Result<crate::core::domain::connection::Connection, String> {
+    pub(crate) fn get_connection(
+        &self,
+        name: &str,
+    ) -> Result<crate::core::domain::connection::Connection, String> {
         self.connection_service.get_connection(name)
     }
 }
@@ -212,7 +249,6 @@ fn welcome() -> &'static str {
         "             Show this help",
     )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -303,13 +339,20 @@ mod tests {
     fn add_without_name_shows_add_usage() {
         let cli = cli_with(&[]);
         let err = cli.run(["add".to_string()].into_iter()).unwrap_err();
-        assert!(err.contains("--host"), "error should show add usage, got: {err}");
-        assert!(err.contains("add"), "error should mention add command, got: {err}");
+        assert!(
+            err.contains("--host"),
+            "error should show add usage, got: {err}"
+        );
+        assert!(
+            err.contains("add"),
+            "error should mention add command, got: {err}"
+        );
     }
 
     fn add_args(name: &str, extra: &[&str]) -> impl Iterator<Item = String> {
         let mut args = vec![
-            "add".to_string(), name.to_string(),
+            "add".to_string(),
+            name.to_string(),
             "--host=localhost".to_string(),
             "--username=user".to_string(),
             "--password=pass".to_string(),
@@ -370,14 +413,20 @@ mod tests {
     fn unknown_command_error_mentions_command_name() {
         let cli = cli_with(&[]);
         let err = cli.run(["foobar".to_string()].into_iter()).unwrap_err();
-        assert!(err.contains("foobar"), "error should mention the unknown command, got: {err}");
+        assert!(
+            err.contains("foobar"),
+            "error should mention the unknown command, got: {err}"
+        );
     }
 
     #[test]
     fn unknown_command_error_does_not_show_add_usage() {
         let cli = cli_with(&[]);
         let err = cli.run(["foobar".to_string()].into_iter()).unwrap_err();
-        assert!(!err.contains("--host"), "error should not show add usage, got: {err}");
+        assert!(
+            !err.contains("--host"),
+            "error should not show add usage, got: {err}"
+        );
     }
 
     #[test]
@@ -410,7 +459,10 @@ mod tests {
     #[test]
     fn delete_succeeds_returns_ok() {
         let cli = cli_with(&["prod"]);
-        assert!(cli.run(["delete".to_string(), "prod".to_string()].into_iter()).is_ok());
+        assert!(
+            cli.run(["delete".to_string(), "prod".to_string()].into_iter())
+                .is_ok()
+        );
     }
 
     #[test]
@@ -452,7 +504,9 @@ mod tests {
     #[test]
     fn connect_to_nonexistent_connection_returns_not_found() {
         let cli = cli_with(&[]);
-        let err = cli.run(["connect".to_string(), "ghost".to_string()].into_iter()).unwrap_err();
+        let err = cli
+            .run(["connect".to_string(), "ghost".to_string()].into_iter())
+            .unwrap_err();
         assert!(err.contains("not found"), "got: {err}");
     }
 
@@ -468,12 +522,18 @@ mod tests {
     #[test]
     fn completions_zsh_returns_ok() {
         let cli = cli_with(&[]);
-        assert!(cli.run(["completions".to_string(), "zsh".to_string()].into_iter()).is_ok());
+        assert!(
+            cli.run(["completions".to_string(), "zsh".to_string()].into_iter())
+                .is_ok()
+        );
     }
 
     #[test]
     fn completions_fish_returns_ok() {
         let cli = cli_with(&[]);
-        assert!(cli.run(["completions".to_string(), "fish".to_string()].into_iter()).is_ok());
+        assert!(
+            cli.run(["completions".to_string(), "fish".to_string()].into_iter())
+                .is_ok()
+        );
     }
 }

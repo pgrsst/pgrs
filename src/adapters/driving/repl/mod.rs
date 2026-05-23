@@ -5,8 +5,8 @@ use std::borrow::Cow;
 
 use reedline::{
     ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
-    PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent, ReedlineMenu,
-    Signal, ValidationResult, Validator, default_emacs_keybindings,
+    PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent, ReedlineMenu, Signal,
+    ValidationResult, Validator, default_emacs_keybindings,
 };
 
 use crate::core::ports::db_connection::DbConnection;
@@ -74,7 +74,8 @@ struct SqlValidator;
 
 impl Validator for SqlValidator {
     fn validate(&self, line: &str) -> ValidationResult {
-        if line.trim().is_empty() || is_complete_statement(line) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('\\') || is_complete_statement(line) {
             ValidationResult::Complete
         } else {
             ValidationResult::Incomplete
@@ -83,13 +84,10 @@ impl Validator for SqlValidator {
 }
 
 fn repl_help_text() -> &'static str {
-    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables\n  \\x         toggle expanded display\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
+    "  Type any SQL and end it with ';' to run it (Enter alone continues a\n  multi-line statement until the ';').\n\n  \\dt        list tables\n  \\x         toggle expanded display\n  \\refresh   reload schema (after CREATE/DROP/ALTER TABLE)\n  \\help, \\?  show this help\n  \\q, exit   quit (or Ctrl+D)"
 }
 
-pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
-    let schema = SchemaService::load(conn.as_ref())?;
-    let tables_for_dt: Vec<String> = schema.tables().to_vec();
-
+fn build_reedline(schema: SchemaService) -> Reedline {
     let highlighter = SqlHighlighter::new(schema.clone());
     let hinter = SqlHinter::new(schema.clone());
     let completer = SqlCompleter::new(schema);
@@ -110,7 +108,7 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         ]),
     );
 
-    let mut rl = Reedline::create()
+    Reedline::create()
         .with_completer(Box::new(completer))
         .with_hinter(Box::new(hinter))
         .with_highlighter(Box::new(highlighter))
@@ -118,9 +116,28 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
         .with_quick_completions(true)
         .with_partial_completions(true)
-        .with_edit_mode(Box::new(Emacs::new(keybindings)));
+        .with_edit_mode(Box::new(Emacs::new(keybindings)))
+}
 
-    let prompt = PgrsPrompt { db_name: db_name.to_string() };
+fn is_ddl(query: &str) -> bool {
+    matches!(
+        query
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_uppercase()
+            .as_str(),
+        "CREATE" | "DROP" | "ALTER" | "TRUNCATE"
+    )
+}
+
+pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
+    let mut schema = SchemaService::load(conn.as_ref())?;
+    let mut rl = build_reedline(schema.clone());
+
+    let prompt = PgrsPrompt {
+        db_name: db_name.to_string(),
+    };
 
     println!(
         "Connected to '{}'. Type \\help for commands, \\q or Ctrl+D to exit.",
@@ -141,21 +158,44 @@ pub fn run(conn: Box<dyn DbConnection>, db_name: &str) -> Result<(), String> {
                     continue;
                 }
                 if trimmed == "\\dt" {
-                    for table in &tables_for_dt {
+                    for table in schema.tables() {
                         println!(" {}", table);
                     }
                     continue;
                 }
                 if trimmed == "\\x" {
                     expanded = !expanded;
-                    println!("Expanded display is {}.", if expanded { "on" } else { "off" });
+                    println!(
+                        "Expanded display is {}.",
+                        if expanded { "on" } else { "off" }
+                    );
+                    continue;
+                }
+                if trimmed == "\\refresh" {
+                    match SchemaService::load(conn.as_ref()) {
+                        Ok(new_schema) => {
+                            schema = new_schema;
+                            rl = build_reedline(schema.clone());
+                            println!("Schema refreshed.");
+                        }
+                        Err(e) => eprintln!("error: could not refresh schema: {}", e),
+                    }
                     continue;
                 }
                 if trimmed.is_empty() {
                     continue;
                 }
                 match conn.execute(trimmed) {
-                    Ok(result) => print_result(&result, expanded),
+                    Ok(result) => {
+                        print_result(&result, expanded);
+                        if is_ddl(trimmed) {
+                            if let Ok(new_schema) = SchemaService::load(conn.as_ref()) {
+                                schema = new_schema;
+                                rl = build_reedline(schema.clone());
+                                println!("(schema refreshed)");
+                            }
+                        }
+                    }
                     Err(e) => eprintln!("error: {}", e),
                 }
             }
@@ -175,14 +215,21 @@ mod tests {
 
     #[test]
     fn prompt_left_includes_database_name() {
-        let prompt = PgrsPrompt { db_name: "mydb".to_string() };
+        let prompt = PgrsPrompt {
+            db_name: "mydb".to_string(),
+        };
         let left = prompt.render_prompt_left();
-        assert!(left.contains("mydb"), "prompt should include db name, got: {left}");
+        assert!(
+            left.contains("mydb"),
+            "prompt should include db name, got: {left}"
+        );
     }
 
     #[test]
     fn prompt_left_format_is_pgrs_parens_name() {
-        let prompt = PgrsPrompt { db_name: "production".to_string() };
+        let prompt = PgrsPrompt {
+            db_name: "production".to_string(),
+        };
         let left = prompt.render_prompt_left();
         assert_eq!(left.as_ref(), "pgrs (production)");
     }
@@ -196,24 +243,71 @@ mod tests {
     #[test]
     fn help_text_mentions_dt_command() {
         let text = repl_help_text();
-        assert!(text.contains("\\dt"), "help should mention \\dt, got: {text}");
+        assert!(
+            text.contains("\\dt"),
+            "help should mention \\dt, got: {text}"
+        );
     }
 
     #[test]
     fn help_text_mentions_help_command() {
         let text = repl_help_text();
-        assert!(text.contains("\\help"), "help should mention \\help itself, got: {text}");
+        assert!(
+            text.contains("\\help"),
+            "help should mention \\help itself, got: {text}"
+        );
     }
 
     #[test]
     fn help_text_mentions_exit_alias() {
         let text = repl_help_text();
-        assert!(text.contains("exit"), "help should mention exit alias, got: {text}");
+        assert!(
+            text.contains("exit"),
+            "help should mention exit alias, got: {text}"
+        );
     }
 
     #[test]
     fn help_text_mentions_x_command() {
         let text = repl_help_text();
         assert!(text.contains("\\x"), "help should mention \\x, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_refresh_command() {
+        let text = repl_help_text();
+        assert!(
+            text.contains("\\refresh"),
+            "help should mention \\refresh, got: {text}"
+        );
+    }
+
+    #[test]
+    fn is_ddl_detects_create() {
+        assert!(is_ddl("CREATE TABLE foo (id int);"));
+        assert!(is_ddl("create table foo (id int);"));
+    }
+
+    #[test]
+    fn is_ddl_detects_drop() {
+        assert!(is_ddl("DROP TABLE foo;"));
+    }
+
+    #[test]
+    fn is_ddl_detects_alter() {
+        assert!(is_ddl("ALTER TABLE foo ADD COLUMN bar text;"));
+    }
+
+    #[test]
+    fn is_ddl_detects_truncate() {
+        assert!(is_ddl("TRUNCATE TABLE foo;"));
+    }
+
+    #[test]
+    fn is_ddl_returns_false_for_select() {
+        assert!(!is_ddl("SELECT * FROM foo;"));
+        assert!(!is_ddl("INSERT INTO foo VALUES (1);"));
+        assert!(!is_ddl("UPDATE foo SET x = 1;"));
+        assert!(!is_ddl("DELETE FROM foo;"));
     }
 }
