@@ -1,3 +1,4 @@
+use nu_ansi_term::{Color, Style};
 use unicode_width::UnicodeWidthChar;
 
 use crate::core::ports::db_connection::QueryResult;
@@ -28,11 +29,11 @@ fn truncate_middle(val: &str) -> String {
 fn colorize_cell(val: &str) -> String {
     let display = normalize_val(val);
     if display.eq_ignore_ascii_case("true") {
-        format!("\x1b[1;32m{}\x1b[0m", display)
+        Style::new().fg(Color::Green).bold().paint(display).to_string()
     } else if display.eq_ignore_ascii_case("false") {
-        format!("\x1b[1;31m{}\x1b[0m", display)
+        Style::new().fg(Color::Red).bold().paint(display).to_string()
     } else if display.eq_ignore_ascii_case("null") {
-        format!("\x1b[2m{}\x1b[0m", display)
+        Style::new().dimmed().paint(display).to_string()
     } else {
         display.to_string()
     }
@@ -82,7 +83,8 @@ fn format_expanded(result: &QueryResult) -> String {
         out.push('\n');
 
         for (i, col) in result.columns.iter().enumerate() {
-            let colored = colorize_cell(&row[i]);
+            let val = row.get(i).map(String::as_str).unwrap_or("NULL");
+            let colored = colorize_cell(val);
             out.push_str(&format!("{:<width$} | {}\n", col, colored, width = label_width));
         }
     }
@@ -110,7 +112,7 @@ fn format_minimal(result: &QueryResult) -> String {
         .iter()
         .enumerate()
         .map(|(i, col)| {
-            let max_val = cells.iter().map(|r| visible_len(&r[i])).max().unwrap_or(0);
+            let max_val = cells.iter().map(|r| r.get(i).map_or(0, |v| visible_len(v))).max().unwrap_or(0);
             col.len().max(max_val)
         })
         .collect();
@@ -252,44 +254,43 @@ mod tests {
     #[test]
     fn colorize_true_bold_green() {
         let result = colorize_cell("true");
-        assert!(result.contains("\x1b[1;32m"), "expected bold green for true");
-        assert!(result.contains("true"));
-        assert!(result.contains("\x1b[0m"));
+        let expected = Style::new().fg(Color::Green).bold().paint("true").to_string();
+        assert_eq!(result, expected);
     }
 
     #[test]
     fn colorize_false_bold_red() {
         let result = colorize_cell("false");
-        assert!(result.contains("\x1b[1;31m"), "expected bold red for false");
-        assert!(result.contains("false"));
+        let expected = Style::new().fg(Color::Red).bold().paint("false").to_string();
+        assert_eq!(result, expected);
     }
 
     #[test]
     fn colorize_null_dim() {
         let result = colorize_cell("null");
-        assert!(result.contains("\x1b[2m"), "expected dim for null");
-        assert!(result.contains("null"));
+        let expected = Style::new().dimmed().paint("null").to_string();
+        assert_eq!(result, expected);
     }
 
     #[test]
     fn colorize_null_case_insensitive() {
         let result = colorize_cell("NULL");
-        assert!(result.contains("\x1b[2m"), "expected dim for NULL");
+        let expected = Style::new().dimmed().paint("NULL").to_string();
+        assert_eq!(result, expected);
     }
 
     #[test]
     fn colorize_t_translates_to_true() {
         let result = colorize_cell("t");
-        assert!(result.contains("\x1b[1;32m"), "expected bold green for t");
-        assert!(result.contains("true"), "expected 't' translated to 'true'");
-        assert!(!result.contains("\x1b[1;32mt\x1b[0m"), "should not show raw 't'");
+        let expected = Style::new().fg(Color::Green).bold().paint("true").to_string();
+        assert_eq!(result, expected, "'t' should be normalized to 'true' and colorized green");
     }
 
     #[test]
     fn colorize_f_translates_to_false() {
         let result = colorize_cell("f");
-        assert!(result.contains("\x1b[1;31m"), "expected bold red for f");
-        assert!(result.contains("false"), "expected 'f' translated to 'false'");
+        let expected = Style::new().fg(Color::Red).bold().paint("false").to_string();
+        assert_eq!(result, expected, "'f' should be normalized to 'false' and colorized red");
     }
 
     #[test]
@@ -300,8 +301,8 @@ mod tests {
 
     #[test]
     fn visible_len_strips_ansi() {
-        let colored = "\x1b[1;32mtrue\x1b[0m";
-        assert_eq!(visible_len(colored), 4);
+        let colored = colorize_cell("true");
+        assert_eq!(visible_len(&colored), 4);
     }
 
     #[test]

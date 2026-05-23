@@ -28,6 +28,7 @@ enum AliasState {
     Idle,
     ExpectTable,
     ExpectAlias { candidate: String },
+    ExpectQualifiedTable,  // saw "schema.", now expect the actual table name
     ExpectAliasName { candidate: String },
     PostAlias,
     InSubquery { depth: usize },
@@ -46,16 +47,13 @@ pub fn build_alias_map(line: &str) -> AliasMap {
             if c.is_whitespace() {
                 continue;
             }
-            state = match (state, SqlToken::Other(c)) {
-                (AliasState::ExpectTable, SqlToken::Other('(')) => {
-                    AliasState::InSubquery { depth: 1 }
-                }
-                (AliasState::ExpectAlias { .. }, SqlToken::Other(',')) => AliasState::ExpectTable,
-                (AliasState::PostAlias, SqlToken::Other(',')) => AliasState::ExpectTable,
-                (AliasState::InSubquery { depth }, SqlToken::Other('(')) => {
-                    AliasState::InSubquery { depth: depth + 1 }
-                }
-                (AliasState::InSubquery { depth }, SqlToken::Other(')')) => {
+            state = match (state, c) {
+                (AliasState::ExpectTable, '(') => AliasState::InSubquery { depth: 1 },
+                (AliasState::ExpectAlias { .. }, '.') => AliasState::ExpectQualifiedTable,
+                (AliasState::ExpectAlias { .. }, ',') => AliasState::ExpectTable,
+                (AliasState::PostAlias, ',') => AliasState::ExpectTable,
+                (AliasState::InSubquery { depth }, '(') => AliasState::InSubquery { depth: depth + 1 },
+                (AliasState::InSubquery { depth }, ')') => {
                     if depth == 1 {
                         AliasState::ExpectSubqueryAlias
                     } else {
@@ -91,6 +89,13 @@ pub fn build_alias_map(line: &str) -> AliasMap {
                 AliasState::PostAlias
             }
             (AliasState::ExpectAlias { .. }, _) => AliasState::Idle,
+            // After "schema.", the next word is the actual table name.
+            (AliasState::ExpectQualifiedTable, SqlToken::Word(w))
+                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
+            {
+                AliasState::ExpectAlias { candidate: w.to_lowercase() }
+            }
+            (AliasState::ExpectQualifiedTable, _) => AliasState::Idle,
             (AliasState::ExpectAliasName { candidate }, SqlToken::Word(w)) => {
                 map.insert(w.to_lowercase(), Some(candidate));
                 AliasState::PostAlias
@@ -137,17 +142,21 @@ pub fn extract_join_context(upper_query: &str, alias_map: &AliasMap) -> Option<J
     let last_join_pos = tokens.iter().rposition(|&t| t == "JOIN")?;
 
     let right_raw = tokens.get(last_join_pos + 1)?.to_lowercase();
+    // Strip schema prefix: "public.orders" → "orders"
+    let right_base = right_raw.rsplit('.').next().unwrap_or(&right_raw);
     let right_table = alias_map
-        .resolve(&right_raw)
+        .resolve(right_base)
         .map(|s| s.to_string())
-        .unwrap_or(right_raw);
+        .unwrap_or_else(|| right_base.to_string());
 
     let left_tables: Vec<String> = tokens
         .windows(2)
         .enumerate()
         .filter_map(|(i, w)| {
             if (w[0] == "FROM" || w[0] == "JOIN" || w[0] == "UPDATE") && i != last_join_pos {
-                Some(w[1].to_lowercase())
+                let raw = w[1].to_lowercase();
+                let base = raw.rsplit('.').next().unwrap_or(&raw).to_string();
+                Some(base)
             } else {
                 None
             }
@@ -270,6 +279,36 @@ mod tests {
             &map,
         )
         .unwrap();
+        assert_eq!(ctx.right_table, "orders");
+        assert!(ctx.left_tables.contains(&"users".to_string()));
+    }
+
+    #[test]
+    fn build_alias_map_schema_qualified_table_with_alias() {
+        let map = build_alias_map("SELECT * FROM public.users u");
+        assert_eq!(map.resolve("u"), Some("users"), "alias 'u' should resolve to 'users', not 'public'");
+    }
+
+    #[test]
+    fn build_alias_map_schema_qualified_table_with_as_alias() {
+        let map = build_alias_map("SELECT * FROM public.users AS u");
+        assert_eq!(map.resolve("u"), Some("users"));
+    }
+
+    #[test]
+    fn build_alias_map_schema_qualified_join() {
+        let map = build_alias_map("SELECT * FROM public.users u JOIN public.orders o ON u.id = o.user_id");
+        assert_eq!(map.resolve("u"), Some("users"));
+        assert_eq!(map.resolve("o"), Some("orders"));
+    }
+
+    #[test]
+    fn extract_join_context_schema_qualified_tables() {
+        let map = build_alias_map("SELECT * FROM public.users JOIN public.orders ON users.id = orders.user_id");
+        let ctx = extract_join_context(
+            "SELECT * FROM PUBLIC.USERS JOIN PUBLIC.ORDERS ON USERS.ID = ORDERS.USER_ID",
+            &map,
+        ).unwrap();
         assert_eq!(ctx.right_table, "orders");
         assert!(ctx.left_tables.contains(&"users".to_string()));
     }

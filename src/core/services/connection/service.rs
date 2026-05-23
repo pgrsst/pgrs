@@ -141,6 +141,14 @@ mod tests {
     }
 
     #[test]
+    fn add_connection_returns_error_on_duplicate_name() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        let result = svc.add_connection(valid_input("prod"));
+        assert_eq!(result, Err("connection 'prod' already exists".to_string()));
+    }
+
+    #[test]
     fn add_connection_rejects_empty_name() {
         let svc = service();
         let result = svc.add_connection(AddConnectionInput {

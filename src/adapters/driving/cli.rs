@@ -279,7 +279,7 @@ where
 
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
+    let mut decoded: Vec<u8> = Vec::with_capacity(s.len());
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%'
@@ -289,14 +289,18 @@ fn percent_decode(s: &str) -> String {
                 (bytes[i + 2] as char).to_digit(16),
             )
         {
-            out.push((hi * 16 + lo) as u8 as char);
+            decoded.push((hi * 16 + lo) as u8);
             i += 3;
             continue;
         }
-        out.push(bytes[i] as char);
+        decoded.push(bytes[i]);
         i += 1;
     }
-    out
+    String::from_utf8(decoded).unwrap_or_else(|e| {
+        // Invalid UTF-8: return the lossy conversion so the caller gets a
+        // user-readable error from the service layer rather than a panic.
+        String::from_utf8_lossy(e.as_bytes()).into_owned()
+    })
 }
 
 #[derive(Debug, Default)]
@@ -347,7 +351,25 @@ fn parse_connection_url(url: &str) -> Result<ParsedUrl, String> {
         (hostinfo, None)
     };
 
-    let (host, port) = if let Some(colon) = hostport.rfind(':') {
+    let (host, port) = if hostport.starts_with('[') {
+        // IPv6 bracket notation: [::1] or [::1]:5432
+        let bracket_end = hostport
+            .find(']')
+            .ok_or_else(|| format!("unclosed '[' in URL host '{}'", hostport))?;
+        let h = &hostport[1..bracket_end];
+        let rest = &hostport[bracket_end + 1..];
+        let port = if let Some(port_str) = rest.strip_prefix(':') {
+            let p = port_str
+                .parse::<u16>()
+                .map_err(|_| format!("invalid port '{}' in URL", port_str))?;
+            Some(p)
+        } else if rest.is_empty() {
+            None
+        } else {
+            return Err(format!("unexpected content after IPv6 address: '{}'", rest));
+        };
+        (if h.is_empty() { None } else { Some(h.to_string()) }, port)
+    } else if let Some(colon) = hostport.rfind(':') {
         let h = &hostport[..colon];
         let p_str = &hostport[colon + 1..];
         let p = p_str
@@ -376,10 +398,8 @@ fn parse_tls_mode(value: &str) -> Result<TlsMode, String> {
 }
 
 fn optional_option(args: &[String], key: &str) -> Option<String> {
-    let prefix = format!("{key}=");
-
     args.iter()
-        .find_map(|arg| arg.strip_prefix(&prefix).map(ToString::to_string))
+        .find_map(|arg| arg.strip_prefix(key).and_then(|r| r.strip_prefix('=')).map(ToString::to_string))
 }
 
 struct CmdDoc {
@@ -939,6 +959,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_url_ipv6_with_port() {
+        let parsed = parse_connection_url("postgresql://user:pass@[::1]:5432/mydb").unwrap();
+        assert_eq!(parsed.host, Some("::1".to_string()));
+        assert_eq!(parsed.port, Some(5432));
+        assert_eq!(parsed.database, Some("mydb".to_string()));
+    }
+
+    #[test]
+    fn parse_url_ipv6_without_port() {
+        let parsed = parse_connection_url("postgresql://user:pass@[::1]/mydb").unwrap();
+        assert_eq!(parsed.host, Some("::1".to_string()));
+        assert!(parsed.port.is_none());
+    }
+
+    #[test]
+    fn parse_url_ipv6_full_address() {
+        let parsed = parse_connection_url("postgresql://user:pass@[2001:db8::1]:5433/db").unwrap();
+        assert_eq!(parsed.host, Some("2001:db8::1".to_string()));
+        assert_eq!(parsed.port, Some(5433));
+    }
+
+    #[test]
     fn parse_url_invalid_scheme_returns_error() {
         let result = parse_connection_url("mysql://user:pass@host/db");
         assert!(result.is_err());
@@ -1020,6 +1062,25 @@ mod tests {
     #[test]
     fn percent_decode_leaves_plain_text_unchanged() {
         assert_eq!(percent_decode("plaintext"), "plaintext");
+    }
+
+    #[test]
+    fn percent_decode_multibyte_utf8_accent() {
+        // %C3%A9 is the UTF-8 encoding of é (U+00E9)
+        assert_eq!(percent_decode("%C3%A9"), "é");
+    }
+
+    #[test]
+    fn percent_decode_multibyte_utf8_in_password() {
+        // postgresql://user:caf%C3%A9@host/db — password should decode to "café"
+        let parsed = parse_connection_url("postgresql://user:caf%C3%A9@host/db").unwrap();
+        assert_eq!(parsed.password, Some("café".to_string()));
+    }
+
+    #[test]
+    fn percent_decode_multibyte_three_byte_sequence() {
+        // %E2%82%AC is the UTF-8 encoding of € (U+20AC)
+        assert_eq!(percent_decode("%E2%82%AC"), "€");
     }
 
     #[test]

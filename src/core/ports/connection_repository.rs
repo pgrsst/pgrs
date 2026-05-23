@@ -16,7 +16,7 @@ pub mod test_support {
     use std::cell::RefCell;
 
     pub struct StubConnectionRepository {
-        pub connections: RefCell<Vec<Connection>>,
+        connections: RefCell<Vec<Connection>>,
     }
 
     impl StubConnectionRepository {
@@ -43,7 +43,11 @@ pub mod test_support {
 
     impl ConnectionRepository for StubConnectionRepository {
         fn add(&self, connection: Connection) -> Result<(), String> {
-            self.connections.borrow_mut().push(connection);
+            let mut connections = self.connections.borrow_mut();
+            if connections.iter().any(|c| c.name == connection.name) {
+                return Err(format!("connection '{}' already exists", connection.name));
+            }
+            connections.push(connection);
             Ok(())
         }
 

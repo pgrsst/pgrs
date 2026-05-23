@@ -173,7 +173,7 @@ impl SqlCompleter {
             (CompletionKind::Keyword, CompletionKind::Keyword) => a.0.cmp(&b.0),
             _ => a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)),
         });
-        results.dedup_by(|a, b| a.0 == b.0);
+        results.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
         results
     }
 
@@ -288,7 +288,12 @@ impl SqlCompleter {
         let trigger = ["FROM", "JOIN", "UPDATE"];
         let mut refs: Vec<String> = tokens
             .windows(2)
-            .filter_map(|w| trigger.contains(&w[0]).then_some(w[1].to_lowercase()))
+            .filter_map(|w| {
+                if !trigger.contains(&w[0]) { return None; }
+                let raw = w[1].to_lowercase();
+                // Strip schema prefix: "public.users" → "users"
+                Some(raw.rsplit('.').next().unwrap_or(&raw).to_string())
+            })
             .collect();
         for real_table in alias_map.real_tables() {
             if !refs.iter().any(|r| r == real_table) {
@@ -526,6 +531,34 @@ mod tests {
         let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
         let unique: std::collections::HashSet<_> = names.iter().collect();
         assert_eq!(names.len(), unique.len(), "duplicates found: {:?}", names);
+    }
+
+    #[test]
+    fn dedup_removes_same_name_same_kind_from_multiple_tables() {
+        // Both "users" and "orders" have an "id" column — should appear once in suggestions
+        let schema = schema_with(
+            &["users", "orders"],
+            &[("users", &["id", "email"]), ("orders", &["id", "status"])],
+        );
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("SELECT  FROM users JOIN orders ON users.id = orders.id", 7);
+        let id_count = results.iter().filter(|(r, _)| r == "id").count();
+        assert_eq!(id_count, 1, "id should appear once, not once per joined table");
+    }
+
+    #[test]
+    fn schema_qualified_from_suggests_columns() {
+        let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
+        let c = SqlCompleter::new(schema);
+        // "public.users" — schema prefix should be stripped so columns are found
+        let input = "SELECT  FROM public.users";
+        let results = c.complete_input(input, 7);
+        assert!(
+            results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
+            "expected id column after schema-qualified FROM, got: {:?}",
+            results.iter().map(|(r, _)| r).collect::<Vec<_>>()
+        );
+        assert!(results.iter().any(|(r, _)| r == "email"));
     }
 
     #[test]

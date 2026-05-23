@@ -96,4 +96,9 @@ mod tests {
         assert_eq!(tokens[0], SqlToken::Number("10".to_string()));
         assert_eq!(tokens[1], SqlToken::Other('.'));
     }
+
+    #[test]
+    fn tokenize_empty_input_returns_empty() {
+        assert_eq!(tokenize(""), vec![]);
+    }
 }
