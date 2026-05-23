@@ -89,6 +89,7 @@ where
             password,
             database,
             tls,
+            environment: None,
         })?;
 
         println!("connection '{name}' added");
@@ -195,6 +196,7 @@ where
             password: optional_option(args, "--password"),
             database: optional_option(args, "--database"),
             tls,
+            environment: None,
         })?;
 
         println!("connection '{name}' updated");

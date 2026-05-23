@@ -15,6 +15,7 @@ pub struct EditConnectionInput {
     pub password: Option<String>,
     pub database: Option<String>,
     pub tls: Option<TlsMode>,
+    pub environment: Option<Option<String>>,
 }
 
 pub struct AddConnectionInput {
@@ -25,6 +26,7 @@ pub struct AddConnectionInput {
     pub password: String,
     pub database: String,
     pub tls: TlsMode,
+    pub environment: Option<String>,
 }
 
 fn require_field(label: &str, value: &str) -> Result<(), String> {
@@ -58,7 +60,7 @@ where
             password: input.password,
             database: input.database,
             tls: input.tls,
-            environment: None,
+            environment: input.environment,
         };
 
         self.repository.add(connection)
@@ -87,6 +89,7 @@ where
             && input.password.is_none()
             && input.database.is_none()
             && input.tls.is_none()
+            && input.environment.is_none()
         {
             return Err("at least one field must be specified".to_string());
         }
@@ -103,6 +106,7 @@ where
         if let Some(v) = input.password { conn.password = v; }
         if let Some(v) = input.database { conn.database = v; }
         if let Some(v) = input.tls { conn.tls = v; }
+        if let Some(v) = input.environment { conn.environment = v; }
         self.repository.update(conn)
     }
 
@@ -128,6 +132,7 @@ mod tests {
             password: "secret".to_string(),
             database: "mydb".to_string(),
             tls: TlsMode::Disable,
+            environment: None,
         }
     }
 
@@ -255,6 +260,7 @@ mod tests {
             password: None,
             database: None,
             tls: None,
+            environment: None,
         }
     }
 
@@ -385,5 +391,81 @@ mod tests {
         svc.add_connection(valid_input("prod")).unwrap();
         let result = svc.rename_connection("prod", "  ");
         assert_eq!(result, Err("new connection name is required".to_string()));
+    }
+
+    #[test]
+    fn add_connection_saves_environment() {
+        let svc = service();
+        svc.add_connection(AddConnectionInput {
+            environment: Some("production".to_string()),
+            ..valid_input("prod")
+        }).unwrap();
+        assert_eq!(
+            svc.get_connection("prod").unwrap().environment,
+            Some("production".to_string())
+        );
+    }
+
+    #[test]
+    fn add_connection_without_environment_saves_none() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        assert_eq!(svc.get_connection("prod").unwrap().environment, None);
+    }
+
+    #[test]
+    fn edit_connection_sets_environment() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        svc.edit_connection("prod", EditConnectionInput {
+            environment: Some(Some("staging".to_string())),
+            ..edit_input()
+        }).unwrap();
+        assert_eq!(
+            svc.get_connection("prod").unwrap().environment,
+            Some("staging".to_string())
+        );
+    }
+
+    #[test]
+    fn edit_connection_clears_environment() {
+        let svc = service();
+        svc.add_connection(AddConnectionInput {
+            environment: Some("production".to_string()),
+            ..valid_input("prod")
+        }).unwrap();
+        svc.edit_connection("prod", EditConnectionInput {
+            environment: Some(None),
+            ..edit_input()
+        }).unwrap();
+        assert_eq!(svc.get_connection("prod").unwrap().environment, None);
+    }
+
+    #[test]
+    fn edit_connection_with_only_environment_succeeds() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        let result = svc.edit_connection("prod", EditConnectionInput {
+            environment: Some(Some("dev".to_string())),
+            ..edit_input()
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn edit_connection_without_environment_does_not_change_it() {
+        let svc = service();
+        svc.add_connection(AddConnectionInput {
+            environment: Some("prod".to_string()),
+            ..valid_input("prod")
+        }).unwrap();
+        svc.edit_connection("prod", EditConnectionInput {
+            database: Some("otherdb".to_string()),
+            ..edit_input()
+        }).unwrap();
+        assert_eq!(
+            svc.get_connection("prod").unwrap().environment,
+            Some("prod".to_string())
+        );
     }
 }
