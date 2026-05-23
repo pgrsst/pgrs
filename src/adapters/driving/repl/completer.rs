@@ -110,8 +110,13 @@ impl SqlCompleter {
     }
 
     pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
-        let alias_map = build_alias_map(line);
         let input = &line[..pos];
+
+        if let Some(result) = self.try_complete_describe_arg(input) {
+            return result;
+        }
+
+        let alias_map = build_alias_map(line);
 
         if let Some(result) = self.try_complete_qualified(input, &alias_map) {
             return result;
@@ -138,6 +143,23 @@ impl SqlCompleter {
             .to_lowercase();
         let col_prefix = token[dot_pos + 1..].to_uppercase();
         Some(self.complete_qualified(&table_name, &col_prefix, alias_map))
+    }
+
+    fn try_complete_describe_arg(&self, input: &str) -> Option<Vec<(String, CompletionKind)>> {
+        let table_prefix = if input.starts_with("\\d+ ") {
+            &input["\\d+ ".len()..]
+        } else if input.starts_with("\\d ") {
+            &input["\\d ".len()..]
+        } else {
+            return None;
+        };
+
+        let results = self.schema.tables()
+            .iter()
+            .filter(|t| t.to_lowercase().starts_with(&table_prefix.to_lowercase()))
+            .map(|t| (t.clone(), CompletionKind::Table))
+            .collect();
+        Some(results)
     }
 
     fn filter_and_sort(
@@ -1149,5 +1171,35 @@ mod tests {
         let history = empty_history();
         let hint = h.handle("SELECT * FROM use", 17, &history, false, "");
         assert_eq!(hint, "r", "hint should be the common prefix suffix 'r'");
+    }
+
+    #[test]
+    fn completes_table_name_after_backslash_d() {
+        let schema = schema_with(&["users", "user_roles", "orders"], &[]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("\\d use", 6);
+        let names: Vec<_> = results.iter().map(|(s, _)| s.as_str()).collect();
+        assert!(names.contains(&"users"), "got: {names:?}");
+        assert!(names.contains(&"user_roles"), "got: {names:?}");
+        assert!(!names.contains(&"orders"), "orders should be filtered out, got: {names:?}");
+    }
+
+    #[test]
+    fn completes_table_name_after_backslash_d_plus() {
+        let schema = schema_with(&["users", "orders"], &[]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("\\d+ ord", 7);
+        let names: Vec<_> = results.iter().map(|(s, _)| s.as_str()).collect();
+        assert!(names.contains(&"orders"), "got: {names:?}");
+        assert!(!names.contains(&"users"), "got: {names:?}");
+    }
+
+    #[test]
+    fn completions_for_backslash_d_are_table_kind() {
+        let schema = schema_with(&["users"], &[]);
+        let c = SqlCompleter::new(schema);
+        let results = c.complete_input("\\d ", 3);
+        let kinds: Vec<_> = results.iter().map(|(_, k)| k).collect();
+        assert!(kinds.iter().all(|k| matches!(k, CompletionKind::Table)), "got: {kinds:?}");
     }
 }
