@@ -27,8 +27,8 @@ where
                 Ok(())
             }
             Some("add") => self.add_connection(&args[1..]),
-            Some("list") => self.list_connections(&args[1..]),
-            Some("delete") => self.delete_connection(&args[1..]),
+            Some("list") | Some("ls") => self.list_connections(&args[1..]),
+            Some("delete") | Some("del") | Some("rm") => self.delete_connection(&args[1..]),
             Some("edit") => self.edit_connection(&args[1..]),
             Some("rename") => self.rename_connection(&args[1..]),
             Some("connect") => self.connect_to(&args[1..]),
@@ -445,7 +445,7 @@ const COMMAND_DOCS: &[CmdDoc] = &[
         ],
     },
     CmdDoc {
-        usage_lines: &["list [--names-only]"],
+        usage_lines: &["list|ls [--names-only]"],
         desc_lines: &[
             "List all saved connections.",
             "--names-only: print only names, one per line (handy for scripts and shell completion)",
@@ -459,7 +459,7 @@ const COMMAND_DOCS: &[CmdDoc] = &[
         desc_lines: &["Update one or more fields of a saved connection"],
     },
     CmdDoc {
-        usage_lines: &["delete <name> [--yes]"],
+        usage_lines: &["delete|del|rm <name> [--yes]"],
         desc_lines: &["Delete a named connection (prompts for confirmation without --yes)"],
     },
     CmdDoc {
