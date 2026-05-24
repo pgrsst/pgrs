@@ -103,7 +103,8 @@ impl Validator for SqlValidator {
 
 // To add a new REPL command: append one (&str, &str) entry here.
 const REPL_COMMANDS: &[(&str, &str)] = &[
-    ("\\dt",       "list tables with column count"),
+    ("\\d",          "list all tables"),
+    ("\\dt",         "list all tables with extended information (column count)"),
     ("\\d <table>",  "describe table (columns, indexes, constraints)"),
     ("\\d+ <table>", "describe table (extended: + storage, triggers, comments)"),
     ("\\l",        "list databases"),
@@ -170,6 +171,17 @@ fn is_ddl(query: &str) -> bool {
             .as_str(),
         "CREATE" | "DROP" | "ALTER" | "TRUNCATE"
     )
+}
+
+fn handle_d(schema: &SchemaService, writer: &mut impl Write) {
+    let tables = schema.tables();
+    if tables.is_empty() {
+        writeln!(writer, "No tables.").ok();
+    } else {
+        for table in tables {
+            writeln!(writer, " {}", table).ok();
+        }
+    }
 }
 
 fn handle_dt(schema: &SchemaService, writer: &mut impl Write) {
@@ -299,7 +311,7 @@ pub fn run(conn: Box<dyn ReplPort>, db_name: &str, environment: Option<&str>) ->
                         } else if trimmed == "\\d+" {
                             println!("Usage: \\d+ <table>");
                         } else if trimmed == "\\d" {
-                            println!("Usage: \\d <table>");
+                            handle_d(&schema, &mut stdout);
                         } else {
                             handle_sql(conn.as_ref(), trimmed, expanded, timing, &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout)
                         }
@@ -562,6 +574,26 @@ mod tests {
             text.contains("\\dt"),
             "help should mention \\dt, got: {text}"
         );
+    }
+
+    #[test]
+    fn handle_d_prints_nothing_for_empty_schema() {
+        let schema = schema_from(&[]);
+        let mut out = Vec::new();
+        handle_d(&schema, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("No tables."));
+    }
+
+    #[test]
+    fn handle_d_lists_table_names_without_column_count() {
+        let schema = schema_from(&[("users", &["id", "email"]), ("orders", &["id"])]);
+        let mut out = Vec::new();
+        handle_d(&schema, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("users"), "expected 'users' in output, got: {text}");
+        assert!(text.contains("orders"), "expected 'orders' in output, got: {text}");
+        assert!(!text.contains("columns"), "handle_d should not show column count, got: {text}");
     }
 
     #[test]
