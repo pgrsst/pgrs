@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS query_history (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     db_name     TEXT    NOT NULL,
     query       TEXT    NOT NULL,
-    executed_at INTEGER NOT NULL
+    executed_at INTEGER NOT NULL,
+    UNIQUE(db_name, query)
 );
 CREATE INDEX IF NOT EXISTS idx_history_db ON query_history(db_name, executed_at);
 
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS schema_columns (
     PRIMARY KEY (db_name, table_name, column_name)
 );
 ";
+
 
 pub struct SqliteRepository {
     pub(crate) conn: Mutex<Connection>,
@@ -178,10 +180,15 @@ impl AnalyticsPort for SqliteRepository {
 
         if let Err(e) = (|| -> Result<(), rusqlite::Error> {
             conn.execute(
-                "INSERT INTO query_history (db_name, query, executed_at) VALUES (?1, ?2, ?3)",
+                "INSERT INTO query_history (db_name, query, executed_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(db_name, query) DO UPDATE SET executed_at = excluded.executed_at",
                 rusqlite::params![db_name, query, now],
             )?;
-            let query_id = conn.last_insert_rowid();
+            let query_id: i64 = conn.query_row(
+                "SELECT id FROM query_history WHERE db_name = ?1 AND query = ?2",
+                rusqlite::params![db_name, query],
+                |r| r.get(0),
+            )?;
 
             for table in tables {
                 conn.execute(
@@ -377,6 +384,28 @@ mod tests {
         let history = repo.get_history("mydb");
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].query, "SELECT 2");
+    }
+
+    #[test]
+    fn record_query_deduplicates_same_query() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.record_query("mydb", "SELECT * FROM users", &[], &[]);
+        repo.record_query("mydb", "SELECT * FROM users", &[], &[]);
+        repo.record_query("mydb", "SELECT * FROM users", &[], &[]);
+
+        let history = repo.get_history("mydb");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].query, "SELECT * FROM users");
+    }
+
+    #[test]
+    fn record_query_dedup_updates_executed_at() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.record_query("mydb", "SELECT 1", &[], &[]);
+        repo.record_query("mydb", "SELECT 1", &[], &[]);
+
+        let history = repo.get_history("mydb");
+        assert_eq!(history.len(), 1);
     }
 
     #[test]
