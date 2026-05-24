@@ -147,11 +147,98 @@ impl SqliteRepository {
             conn.pragma_update(None, "user_version", 1)?;
         }
         if version < 2 {
+            // SCHEMA_V2 uses DROP TABLE IF EXISTS + CREATE TABLE, so it is safe to re-run
+            // if the process is killed between execute_batch and pragma_update.
+            eprintln!("pgrs: migrating database schema (v1 → v2): query history will be cleared.");
             conn.execute_batch(SCHEMA_V2)?;
             conn.pragma_update(None, "user_version", 2)?;
         }
         Ok(())
     }
+
+    fn tls_from_str(s: &str) -> crate::core::domain::connection::TlsMode {
+        use crate::core::domain::connection::TlsMode;
+        match s {
+            "require" => TlsMode::Require,
+            "verify-full" => TlsMode::VerifyFull,
+            _ => TlsMode::Disable,
+        }
+    }
+
+    fn connection_id_for(conn: &rusqlite::Connection, name: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT id FROM connections WHERE name = ?1",
+            rusqlite::params![name],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+}
+
+fn save_schema_inner(
+    conn: &rusqlite::Connection,
+    connection_id: i64,
+    schema: &HashMap<String, Vec<String>>,
+    now: i64,
+) -> Result<(), rusqlite::Error> {
+    conn.execute_batch("BEGIN")?;
+    conn.execute(
+        "DELETE FROM schema_columns WHERE connection_id = ?1",
+        rusqlite::params![connection_id],
+    )?;
+    conn.execute(
+        "DELETE FROM schema_tables WHERE connection_id = ?1",
+        rusqlite::params![connection_id],
+    )?;
+    for (table, columns) in schema {
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_tables (connection_id, table_name, cached_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![connection_id, table, now],
+        )?;
+        for col in columns {
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_columns (connection_id, table_name, column_name, cached_at) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![connection_id, table, col, now],
+            )?;
+        }
+    }
+    conn.execute_batch("COMMIT")
+}
+
+fn record_query_inner(
+    conn: &rusqlite::Connection,
+    connection_id: i64,
+    query: &str,
+    tables: &[String],
+    columns: &[(String, String)],
+    now: i64,
+) -> Result<(), rusqlite::Error> {
+    conn.execute_batch("BEGIN")?;
+    conn.execute(
+        "INSERT INTO query_history (connection_id, query, executed_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(connection_id, query) DO UPDATE SET executed_at = excluded.executed_at",
+        rusqlite::params![connection_id, query, now],
+    )?;
+    let query_id: i64 = conn.query_row(
+        "SELECT id FROM query_history WHERE connection_id = ?1 AND query = ?2",
+        rusqlite::params![connection_id, query],
+        |r| r.get(0),
+    )?;
+    for table in tables {
+        conn.execute(
+            "INSERT INTO table_access (connection_id, table_name, query_id, accessed_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![connection_id, table, query_id, now],
+        )?;
+    }
+    for (table, column) in columns {
+        conn.execute(
+            "INSERT INTO column_access (connection_id, table_name, column_name, query_id, accessed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![connection_id, table, column, query_id, now],
+        )?;
+    }
+    conn.execute_batch("COMMIT")
 }
 
 impl SchemaCachePort for SqliteRepository {
@@ -166,31 +253,8 @@ impl SchemaCachePort for SqliteRepository {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        if let Err(e) = (|| -> Result<(), rusqlite::Error> {
-            conn.execute_batch("BEGIN")?;
-            conn.execute(
-                "DELETE FROM schema_columns WHERE connection_id = ?1",
-                rusqlite::params![connection_id],
-            )?;
-            conn.execute(
-                "DELETE FROM schema_tables WHERE connection_id = ?1",
-                rusqlite::params![connection_id],
-            )?;
-            for (table, columns) in schema {
-                conn.execute(
-                    "INSERT OR REPLACE INTO schema_tables (connection_id, table_name, cached_at) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![connection_id, table, now],
-                )?;
-                for col in columns {
-                    conn.execute(
-                        "INSERT OR REPLACE INTO schema_columns (connection_id, table_name, column_name, cached_at) VALUES (?1, ?2, ?3, ?4)",
-                        rusqlite::params![connection_id, table, col, now],
-                    )?;
-                }
-            }
-            conn.execute_batch("COMMIT")?;
-            Ok(())
-        })() {
+        if let Err(e) = save_schema_inner(&conn, connection_id, schema, now) {
+            conn.execute_batch("ROLLBACK").ok();
             eprintln!("pgrs: schema cache write failed: {e}");
         }
     }
@@ -264,33 +328,8 @@ impl AnalyticsPort for SqliteRepository {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        if let Err(e) = (|| -> Result<(), rusqlite::Error> {
-            conn.execute(
-                "INSERT INTO query_history (connection_id, query, executed_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(connection_id, query) DO UPDATE SET executed_at = excluded.executed_at",
-                rusqlite::params![connection_id, query, now],
-            )?;
-            let query_id: i64 = conn.query_row(
-                "SELECT id FROM query_history WHERE connection_id = ?1 AND query = ?2",
-                rusqlite::params![connection_id, query],
-                |r| r.get(0),
-            )?;
-            for table in tables {
-                conn.execute(
-                    "INSERT INTO table_access (connection_id, table_name, query_id, accessed_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    rusqlite::params![connection_id, table, query_id, now],
-                )?;
-            }
-            for (table, column) in columns {
-                conn.execute(
-                    "INSERT INTO column_access (connection_id, table_name, column_name, query_id, accessed_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![connection_id, table, column, query_id, now],
-                )?;
-            }
-            Ok(())
-        })() {
+        if let Err(e) = record_query_inner(&conn, connection_id, query, tables, columns, now) {
+            conn.execute_batch("ROLLBACK").ok();
             eprintln!("pgrs: analytics write failed: {e}");
         }
     }
@@ -366,26 +405,6 @@ impl AnalyticsPort for SqliteRepository {
                 vec![]
             }
         }
-    }
-}
-
-impl SqliteRepository {
-    fn tls_from_str(s: &str) -> crate::core::domain::connection::TlsMode {
-        use crate::core::domain::connection::TlsMode;
-        match s {
-            "require" => TlsMode::Require,
-            "verify-full" => TlsMode::VerifyFull,
-            _ => TlsMode::Disable,
-        }
-    }
-
-    fn connection_id_for(conn: &rusqlite::Connection, name: &str) -> Option<i64> {
-        conn.query_row(
-            "SELECT id FROM connections WHERE name = ?1",
-            rusqlite::params![name],
-            |r| r.get(0),
-        )
-        .ok()
     }
 }
 
