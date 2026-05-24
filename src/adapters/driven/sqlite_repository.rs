@@ -305,7 +305,6 @@ impl SqliteRepository {
         }
     }
 
-    #[allow(dead_code)]
     fn connection_id_for(conn: &rusqlite::Connection, name: &str) -> Option<i64> {
         conn.query_row(
             "SELECT id FROM connections WHERE name = ?1",
@@ -753,6 +752,18 @@ mod tests {
         repo.add(sample_conn("staging")).unwrap();
         let err = repo.rename("prod", "staging").unwrap_err();
         assert_eq!(err, "connection 'staging' already exists");
+    }
+
+    #[test]
+    fn list_returns_connections_sorted_by_name() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("zebra")).unwrap();
+        repo.add(sample_conn("alpha")).unwrap();
+        repo.add(sample_conn("middle")).unwrap();
+        let list = repo.list().unwrap();
+        assert_eq!(list[0].name, "alpha");
+        assert_eq!(list[1].name, "middle");
+        assert_eq!(list[2].name, "zebra");
     }
 
     #[test]
