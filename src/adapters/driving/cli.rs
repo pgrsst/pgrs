@@ -130,13 +130,14 @@ where
             .max(3);
 
         println!(
-            "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<env_w$}  {:<user_w$}  {:<tls_w$}  PASSWORD",
-            "NAME", "HOST", "PORT", "DATABASE", "ENV", "USERNAME", "TLS",
+            "{:<8}  {:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<env_w$}  {:<user_w$}  {:<tls_w$}  PASSWORD",
+            "ID", "NAME", "HOST", "PORT", "DATABASE", "ENV", "USERNAME", "TLS",
         );
 
         for c in &connections {
             println!(
-                "{:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<env_w$}  {:<user_w$}  {:<tls_w$}  ****",
+                "{:<8}  {:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<env_w$}  {:<user_w$}  {:<tls_w$}  ****",
+                c.id.as_deref().unwrap_or("-"),
                 c.name, c.host, c.port, c.database,
                 c.environment.as_deref().unwrap_or(""),
                 c.username, c.tls,
