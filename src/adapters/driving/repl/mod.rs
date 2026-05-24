@@ -14,7 +14,6 @@ use reedline::{
     ValidationResult, Validator, default_emacs_keybindings,
 };
 
-use crate::core::domain::analytics::FreqEntry;
 use crate::core::ports::analytics_port::AnalyticsPort;
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::ports::repl_port::ReplPort;
@@ -273,7 +272,7 @@ fn extract_column_refs(query: &str, schema: &SchemaService) -> Vec<(String, Stri
         if let SqlToken::Word(w) = token {
             let upper = w.to_uppercase();
             if upper == "SELECT" { in_select = true; continue; }
-            if upper == "FROM" { in_select = false; break; }
+            if upper == "FROM" { break; }
             if in_select && !SQL_KEYWORDS.contains(&upper.as_str()) && w != "*" {
                 candidates.push(w.to_lowercase());
             }
