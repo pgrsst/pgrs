@@ -167,6 +167,7 @@ impl SchemaCachePort for SqliteRepository {
             .as_secs() as i64;
 
         if let Err(e) = (|| -> Result<(), rusqlite::Error> {
+            conn.execute_batch("BEGIN")?;
             conn.execute(
                 "DELETE FROM schema_columns WHERE connection_id = ?1",
                 rusqlite::params![connection_id],
@@ -187,6 +188,7 @@ impl SchemaCachePort for SqliteRepository {
                     )?;
                 }
             }
+            conn.execute_batch("COMMIT")?;
             Ok(())
         })() {
             eprintln!("pgrs: schema cache write failed: {e}");
@@ -543,12 +545,12 @@ mod tests {
         let conn = repo.conn.lock().unwrap();
         let count: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('query_history','connections')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \n             ('connections','query_history','table_access','column_access','schema_tables','schema_columns')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 2);
+        assert_eq!(count, 6);
     }
 
     #[test]
@@ -622,6 +624,30 @@ mod tests {
     }
 
     #[test]
+    fn schema_cache_isolated_per_connection() {
+        use std::collections::HashMap;
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        add_conn(&repo, "db1");
+        add_conn(&repo, "db2");
+
+        let mut schema1 = HashMap::new();
+        schema1.insert("users".to_string(), vec!["id".to_string()]);
+        repo.save_schema("db1", &schema1);
+
+        let mut schema2 = HashMap::new();
+        schema2.insert("products".to_string(), vec!["sku".to_string()]);
+        repo.save_schema("db2", &schema2);
+
+        let loaded1 = repo.load_schema("db1").unwrap();
+        assert!(loaded1.contains_key("users"), "db1 schema should have users");
+        assert!(!loaded1.contains_key("products"), "db1 schema should not have db2's products");
+
+        let loaded2 = repo.load_schema("db2").unwrap();
+        assert!(loaded2.contains_key("products"), "db2 schema should have products");
+        assert!(!loaded2.contains_key("users"), "db2 schema should not have db1's users");
+    }
+
+    #[test]
     fn save_schema_overwrites_existing() {
         use std::collections::HashMap;
         let repo = SqliteRepository::open_in_memory().unwrap();
@@ -665,6 +691,7 @@ mod tests {
 
         let history = repo.get_history("mydb");
         assert_eq!(history.len(), 1);
+        assert_eq!(history[0].query, "SELECT * FROM users");
     }
 
     #[test]
@@ -727,6 +754,8 @@ mod tests {
         let freq = repo.get_frequent_columns("mydb", "users");
         assert_eq!(freq[0].name, "email");
         assert_eq!(freq[0].count, 2);
+        assert_eq!(freq[1].name, "id");
+        assert_eq!(freq[1].count, 1);
     }
 
     #[test]
