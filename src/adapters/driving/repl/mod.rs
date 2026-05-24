@@ -633,7 +633,7 @@ mod tests {
         assert!(schema.tables().is_empty());
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&stub, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
+        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
         assert!(rebuilt);
         assert!(schema.tables().contains(&"products".to_string()));
     }
@@ -643,7 +643,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("t", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_refresh(&stub, "mydb", &mut schema, &mut |_| {}, None, &mut out);
+        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| {}, None, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("refreshed"), "expected refresh confirmation, got: {text}");
     }
@@ -659,7 +659,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&FailingDb, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
+        handle_refresh(&FailingDb, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
         assert!(!rebuilt, "failed refresh must not trigger rebuild");
     }
 
@@ -881,6 +881,49 @@ mod tests {
         fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> {
             vec![FreqEntry { name: "email".to_string(), count: 3 }]
         }
+    }
+
+    #[test]
+    fn handle_sql_records_analytics_with_connection_name() {
+        struct CapturingAnalytics {
+            recorded: RwLock<Vec<(String, String)>>,
+        }
+        impl CapturingAnalytics {
+            fn new() -> Self { Self { recorded: RwLock::new(vec![]) } }
+        }
+        impl AnalyticsPort for CapturingAnalytics {
+            fn record_query(&self, connection_name: &str, query: &str, _: &[String], _: &[(String, String)]) {
+                self.recorded.write().unwrap().push((connection_name.to_string(), query.to_string()));
+            }
+            fn get_history(&self, _: &str) -> Vec<HistoryEntry> { vec![] }
+            fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> { vec![] }
+            fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> { vec![] }
+        }
+
+        let stub = StubDb::ok(vec![vec!["1".to_string()]], vec!["id".to_string()]);
+        let analytics = CapturingAnalytics::new();
+        let mut schema = schema_from(&[]);
+        let mut out = Vec::new();
+
+        handle_sql(
+            &stub,
+            "SELECT 1",
+            &SqlOptions {
+                expanded: false,
+                timing: false,
+                connection_name: "my-conn",
+                analytics: Some(&analytics),
+                schema_cache: None,
+            },
+            &mut schema,
+            &mut |_| {},
+            &mut out,
+        );
+
+        let recorded = analytics.recorded.read().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].0, "my-conn", "connection_name must reach analytics, not db_name");
+        assert_eq!(recorded[0].1, "SELECT 1");
     }
 
     #[test]
