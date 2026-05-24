@@ -1,6 +1,8 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use crate::core::domain::connection::Connection;
 use crate::core::ports::connection_repository::ConnectionRepository;
@@ -44,6 +46,7 @@ impl FileConnectionRepository {
 
         let tmp_path = self.path.with_extension("tmp");
         fs::write(&tmp_path, &content).map_err(|error| error.to_string())?;
+        #[cfg(unix)]
         fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))
             .map_err(|error| error.to_string())?;
         fs::rename(&tmp_path, &self.path).map_err(|error| error.to_string())
@@ -148,6 +151,7 @@ impl ConnectionRepository for FileConnectionRepository {
 mod tests {
     use super::*;
     use crate::core::ports::connection_repository::ConnectionRepository;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn sample_connection(name: &str) -> Connection {
@@ -217,6 +221,7 @@ mod tests {
         assert_eq!(result, Err("connection 'nonexistent' not found".to_string()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn write_sets_file_permissions_to_0600() {
         let (repo, dir) = repo();

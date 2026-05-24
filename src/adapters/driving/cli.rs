@@ -148,8 +148,6 @@ where
     }
 
     fn connect_to(&self, args: &[String]) -> Result<(), String> {
-        use std::os::unix::process::CommandExt;
-
         let name = args
             .first()
             .ok_or("usage: pgrs connect <connection-name>")?
@@ -163,8 +161,8 @@ where
             connection.name
         );
 
-        let error = std::process::Command::new("psql")
-            .env("PGPASSWORD", &connection.password)
+        let mut cmd = std::process::Command::new("psql");
+        cmd.env("PGPASSWORD", &connection.password)
             .arg("-h")
             .arg(&connection.host)
             .arg("-p")
@@ -172,14 +170,29 @@ where
             .arg("-U")
             .arg(&connection.username)
             .arg("-d")
-            .arg(&connection.database)
-            .exec();
+            .arg(&connection.database);
 
-        Err(if error.kind() == std::io::ErrorKind::NotFound {
-            "psql not found — is it installed?".to_string()
-        } else {
-            error.to_string()
-        })
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            let error = cmd.exec();
+            return Err(if error.kind() == std::io::ErrorKind::NotFound {
+                "psql not found — is it installed?".to_string()
+            } else {
+                error.to_string()
+            });
+        }
+
+        #[cfg(not(unix))]
+        {
+            match cmd.status() {
+                Ok(_) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err("psql not found — is it installed?".to_string())
+                }
+                Err(e) => Err(e.to_string()),
+            }
+        }
     }
 
     fn edit_connection(&self, args: &[String]) -> Result<(), String> {
