@@ -89,6 +89,14 @@ where
         self.repository.get_connection(name)
     }
 
+    pub fn find_connection(&self, input: &str) -> Result<Connection, String> {
+        let connections = self.repository.list()?;
+        connections
+            .into_iter()
+            .find(|c| c.id.as_deref() == Some(input) || c.name == input)
+            .ok_or_else(|| format!("connection '{}' not found", input))
+    }
+
     pub fn edit_connection(&self, name: &str, input: EditConnectionInput) -> Result<(), String> {
         require_field("connection name", name)?;
 
@@ -503,5 +511,29 @@ mod tests {
         let id = svc.get_connection("prod").unwrap().id.unwrap();
         assert_eq!(id.len(), 8, "id should be 8 characters, got: {id}");
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "id should be hex, got: {id}");
+    }
+
+    #[test]
+    fn find_connection_by_name() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        let conn = svc.find_connection("prod").unwrap();
+        assert_eq!(conn.name, "prod");
+    }
+
+    #[test]
+    fn find_connection_by_id() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        let id = svc.get_connection("prod").unwrap().id.unwrap();
+        let conn = svc.find_connection(&id).unwrap();
+        assert_eq!(conn.name, "prod");
+    }
+
+    #[test]
+    fn find_connection_returns_error_when_not_found() {
+        let svc = service();
+        let result = svc.find_connection("ghost");
+        assert_eq!(result, Err("connection 'ghost' not found".to_string()));
     }
 }
