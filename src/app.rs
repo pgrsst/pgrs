@@ -41,7 +41,7 @@ fn run_shell<R: ConnectionRepository>(
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
     let conn = service.find_connection(name)?;
     let db = PostgresDb::new(&conn)?;
-    repl::run(Box::new(db), &conn.database, conn.environment.as_deref())
+    repl::run(Box::new(db), &conn.database, conn.environment.as_deref(), None, None)
 }
 
 fn run_test<R: ConnectionRepository>(

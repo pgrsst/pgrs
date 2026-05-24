@@ -6,6 +6,7 @@ mod describe;
 
 use std::borrow::Cow;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use reedline::{
     ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
@@ -13,11 +14,15 @@ use reedline::{
     ValidationResult, Validator, default_emacs_keybindings,
 };
 
+use crate::core::domain::analytics::FreqEntry;
+use crate::core::ports::analytics_port::AnalyticsPort;
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::ports::repl_port::ReplPort;
+use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::ports::schema_port::SchemaPort;
 use crate::core::services::schema::service::SchemaService;
 
+use alias::extract_referenced_tables;
 use completer::{SqlCompleter, SqlHighlighter, SqlHinter};
 use describe::describe_table;
 use executor::format_result;
@@ -103,16 +108,19 @@ impl Validator for SqlValidator {
 
 // To add a new REPL command: append one (&str, &str) entry here.
 const REPL_COMMANDS: &[(&str, &str)] = &[
-    ("\\d",          "list all tables"),
-    ("\\dt",         "list all tables with extended information (column count)"),
-    ("\\d <table>",  "describe table (columns, indexes, constraints)"),
-    ("\\d+ <table>", "describe table (extended: + storage, triggers, comments)"),
-    ("\\l",        "list databases"),
-    ("\\x",        "toggle expanded display"),
-    ("\\timing",   "toggle query execution time"),
-    ("\\refresh",  "reload schema (after CREATE/DROP/ALTER TABLE)"),
-    ("\\help, \\?","show this help"),
-    ("\\q, exit",  "quit (or Ctrl+D)"),
+    ("\\d",              "list all tables"),
+    ("\\dt",             "list all tables with extended information (column count)"),
+    ("\\d <table>",      "describe table (columns, indexes, constraints)"),
+    ("\\d+ <table>",     "describe table (extended: + storage, triggers, comments)"),
+    ("\\l",              "list databases"),
+    ("\\x",              "toggle expanded display"),
+    ("\\timing",         "toggle query execution time"),
+    ("\\refresh",        "reload schema (after CREATE/DROP/ALTER TABLE)"),
+    ("\\history",        "show recent query history"),
+    ("\\stats",          "show most frequently queried tables"),
+    ("\\stats <table>",  "show most frequently queried columns for table"),
+    ("\\help, \\?",      "show this help"),
+    ("\\q, exit",        "quit (or Ctrl+D)"),
 ];
 
 fn repl_help_text() -> String {
@@ -210,20 +218,78 @@ fn handle_l(conn: &dyn DbConnection, expanded: bool, writer: &mut impl Write) {
     };
 }
 
-fn handle_refresh(
-    conn: &dyn SchemaPort,
-    schema: &mut SchemaService,
-    rebuild: &mut impl FnMut(SchemaService),
+fn handle_history(db_name: &str, analytics: &dyn AnalyticsPort, writer: &mut impl Write) {
+    let history = analytics.get_history(db_name);
+    if history.is_empty() {
+        writeln!(writer, "No query history.").ok();
+        return;
+    }
+    for entry in &history {
+        writeln!(writer, "  {}", entry.query).ok();
+    }
+    writeln!(writer, "({} entries)", history.len()).ok();
+}
+
+fn handle_stats(
+    db_name: &str,
+    table: Option<&str>,
+    analytics: &dyn AnalyticsPort,
     writer: &mut impl Write,
 ) {
-    match SchemaService::load(conn) {
-        Ok(new_schema) => {
-            *schema = new_schema.clone();
-            rebuild(new_schema);
-            writeln!(writer, "Schema refreshed.").ok();
+    match table {
+        None => {
+            let freq = analytics.get_frequent_tables(db_name);
+            if freq.is_empty() {
+                writeln!(writer, "No table statistics yet.").ok();
+                return;
+            }
+            let name_w = freq.iter().map(|e| e.name.len()).max().unwrap_or(0);
+            for entry in &freq {
+                writeln!(writer, "  {:<name_w$}  {}", entry.name, entry.count).ok();
+            }
         }
-        Err(e) => eprintln!("error: could not refresh schema: {}", e),
+        Some(tbl) => {
+            let freq = analytics.get_frequent_columns(db_name, tbl);
+            if freq.is_empty() {
+                writeln!(writer, "No column statistics for '{}'.", tbl).ok();
+                return;
+            }
+            let name_w = freq.iter().map(|e| e.name.len()).max().unwrap_or(0);
+            for entry in &freq {
+                writeln!(writer, "  {:<name_w$}  {}", entry.name, entry.count).ok();
+            }
+        }
     }
+}
+
+fn extract_column_refs(query: &str, schema: &SchemaService) -> Vec<(String, String)> {
+    use tokenizer::{SqlToken, tokenize};
+    use alias::SQL_KEYWORDS;
+
+    let mut in_select = false;
+    let mut candidates: Vec<String> = Vec::new();
+
+    for token in tokenize(query) {
+        if let SqlToken::Word(w) = token {
+            let upper = w.to_uppercase();
+            if upper == "SELECT" { in_select = true; continue; }
+            if upper == "FROM" { in_select = false; break; }
+            if in_select && !SQL_KEYWORDS.contains(&upper.as_str()) && w != "*" {
+                candidates.push(w.to_lowercase());
+            }
+        }
+    }
+
+    let mut refs = Vec::new();
+    for col in candidates {
+        for table in schema.tables() {
+            if schema.columns_for(table).iter().any(|c| c == &col) {
+                refs.push((table.to_string(), col.clone()));
+                break;
+            }
+        }
+    }
+    refs
 }
 
 fn handle_sql(
@@ -231,8 +297,11 @@ fn handle_sql(
     query: &str,
     expanded: bool,
     timing: bool,
+    db_name: &str,
     schema: &mut SchemaService,
     rebuild: &mut impl FnMut(SchemaService),
+    analytics: Option<&dyn AnalyticsPort>,
+    schema_cache: Option<&dyn SchemaCachePort>,
     writer: &mut impl Write,
 ) {
     let start = std::time::Instant::now();
@@ -247,8 +316,15 @@ fn handle_sql(
                     writeln!(writer, "Time: {:.3} ms", ms).ok();
                 }
             }
+
+            if let Some(analytics) = analytics {
+                let tables = extract_referenced_tables(query);
+                let columns = extract_column_refs(query, schema);
+                analytics.record_query(db_name, query, &tables, &columns);
+            }
+
             if is_ddl(query)
-                && let Ok(new_schema) = SchemaService::load(conn)
+                && let Ok(new_schema) = SchemaService::load_with_cache(conn, db_name, schema_cache)
             {
                 *schema = new_schema.clone();
                 rebuild(new_schema);
@@ -259,8 +335,39 @@ fn handle_sql(
     }
 }
 
-pub fn run(conn: Box<dyn ReplPort>, db_name: &str, environment: Option<&str>) -> Result<(), String> {
-    let mut schema = SchemaService::load(conn.as_ref())?;
+fn handle_refresh(
+    conn: &dyn SchemaPort,
+    db_name: &str,
+    schema: &mut SchemaService,
+    rebuild: &mut impl FnMut(SchemaService),
+    schema_cache: Option<&dyn SchemaCachePort>,
+    writer: &mut impl Write,
+) {
+    if let Some(cache) = schema_cache {
+        cache.invalidate(db_name);
+    }
+    match SchemaService::load_with_cache(conn, db_name, schema_cache) {
+        Ok(new_schema) => {
+            *schema = new_schema.clone();
+            rebuild(new_schema);
+            writeln!(writer, "Schema refreshed.").ok();
+        }
+        Err(e) => eprintln!("error: could not refresh schema: {}", e),
+    }
+}
+
+pub fn run(
+    conn: Box<dyn ReplPort>,
+    db_name: &str,
+    environment: Option<&str>,
+    analytics: Option<Arc<dyn AnalyticsPort>>,
+    schema_cache: Option<Arc<dyn SchemaCachePort>>,
+) -> Result<(), String> {
+    let mut schema = SchemaService::load_with_cache(
+        conn.as_ref(),
+        db_name,
+        schema_cache.as_deref(),
+    )?;
     let mut rl = build_reedline(schema.clone());
 
     let prompt = PgrsPrompt {
@@ -288,16 +395,32 @@ pub fn run(conn: Box<dyn ReplPort>, db_name: &str, environment: Option<&str>) ->
                     "\\l" => handle_l(conn.as_ref(), expanded, &mut stdout),
                     "\\x" => {
                         expanded = !expanded;
-                        println!(
-                            "Expanded display is {}.",
-                            if expanded { "on" } else { "off" }
-                        );
+                        println!("Expanded display is {}.", if expanded { "on" } else { "off" });
                     }
                     "\\timing" => {
                         timing = !timing;
                         println!("Timing is {}.", if timing { "on" } else { "off" });
                     }
-                    "\\refresh" => handle_refresh(conn.as_ref(), &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout),
+                    "\\refresh" => handle_refresh(
+                        conn.as_ref(),
+                        db_name,
+                        &mut schema,
+                        &mut |s| { rl = build_reedline(s); },
+                        schema_cache.as_deref(),
+                        &mut stdout,
+                    ),
+                    "\\history" => {
+                        match analytics.as_deref() {
+                            Some(a) => handle_history(db_name, a, &mut stdout),
+                            None => { writeln!(stdout, "Analytics not available.").ok(); }
+                        }
+                    }
+                    "\\stats" => {
+                        match analytics.as_deref() {
+                            Some(a) => handle_stats(db_name, None, a, &mut stdout),
+                            None => { writeln!(stdout, "Analytics not available.").ok(); }
+                        }
+                    }
                     "" => {}
                     _ => {
                         if let Some(name) = trimmed.strip_prefix("\\d+ ") {
@@ -312,8 +435,24 @@ pub fn run(conn: Box<dyn ReplPort>, db_name: &str, environment: Option<&str>) ->
                             println!("Usage: \\d+ <table>");
                         } else if trimmed == "\\d" {
                             handle_d(&schema, &mut stdout);
+                        } else if let Some(tbl) = trimmed.strip_prefix("\\stats ") {
+                            match analytics.as_deref() {
+                                Some(a) => handle_stats(db_name, Some(tbl), a, &mut stdout),
+                                None => { writeln!(stdout, "Analytics not available.").ok(); }
+                            }
                         } else {
-                            handle_sql(conn.as_ref(), trimmed, expanded, timing, &mut schema, &mut |s| { rl = build_reedline(s); }, &mut stdout)
+                            handle_sql(
+                                conn.as_ref(),
+                                trimmed,
+                                expanded,
+                                timing,
+                                db_name,
+                                &mut schema,
+                                &mut |s| { rl = build_reedline(s); },
+                                analytics.as_deref(),
+                                schema_cache.as_deref(),
+                                &mut stdout,
+                            );
                         }
                     }
                 }
@@ -429,7 +568,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "SELECT 1", false, false, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, None, &mut out);
         assert!(!rebuilt, "no DDL — schema should not be rebuilt");
     }
 
@@ -438,7 +577,7 @@ mod tests {
         let stub = StubDb::ok(vec![vec!["42".to_string()]], vec!["id".to_string()]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 42", false, false, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "SELECT 42", false, false, "mydb", &mut schema, &mut |_| {}, None, None, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("42"), "expected result value in output, got: {text}");
     }
@@ -449,7 +588,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, None, &mut out);
         assert!(rebuilt, "DDL should trigger schema rebuild");
     }
 
@@ -458,7 +597,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("users", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, "mydb", &mut schema, &mut |_| {}, None, None, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("schema refreshed"), "expected refresh notice, got: {text}");
     }
@@ -469,7 +608,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", false, false, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "SELECT 1", false, false, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, None, &mut out);
         assert!(!rebuilt);
     }
 
@@ -478,7 +617,7 @@ mod tests {
         let stub = StubDb::err("syntax error");
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELEKT *", false, false, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "SELEKT *", false, false, "mydb", &mut schema, &mut |_| {}, None, None, &mut out);
     }
 
     #[test]
@@ -488,7 +627,7 @@ mod tests {
         assert!(schema.tables().is_empty());
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&stub, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_refresh(&stub, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
         assert!(rebuilt);
         assert!(schema.tables().contains(&"products".to_string()));
     }
@@ -498,7 +637,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("t", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_refresh(&stub, &mut schema, &mut |_| {}, &mut out);
+        handle_refresh(&stub, "mydb", &mut schema, &mut |_| {}, None, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("refreshed"), "expected refresh confirmation, got: {text}");
     }
@@ -514,7 +653,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&FailingDb, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_refresh(&FailingDb, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
         assert!(!rebuilt, "failed refresh must not trigger rebuild");
     }
 
@@ -708,5 +847,63 @@ mod tests {
     fn help_text_mentions_backslash_d() {
         let text = repl_help_text();
         assert!(text.contains("\\d"), "help should mention \\d, got: {text}");
+    }
+
+    use std::sync::RwLock;
+    use crate::core::domain::analytics::{FreqEntry, HistoryEntry};
+    use crate::core::ports::analytics_port::AnalyticsPort;
+
+    struct RecordingAnalytics {
+        recorded: RwLock<Vec<(String, String)>>,
+    }
+    impl RecordingAnalytics {
+        fn new() -> Self { Self { recorded: RwLock::new(vec![]) } }
+    }
+    impl AnalyticsPort for RecordingAnalytics {
+        fn record_query(&self, db_name: &str, query: &str, _: &[String], _: &[(String, String)]) {
+            self.recorded.write().unwrap().push((db_name.to_string(), query.to_string()));
+        }
+        fn get_history(&self, _: &str) -> Vec<HistoryEntry> {
+            vec![
+                HistoryEntry { query: "SELECT 1".to_string(), executed_at: 1000 },
+                HistoryEntry { query: "SELECT 2".to_string(), executed_at: 999 },
+            ]
+        }
+        fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> {
+            vec![FreqEntry { name: "users".to_string(), count: 5 }]
+        }
+        fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> {
+            vec![FreqEntry { name: "email".to_string(), count: 3 }]
+        }
+    }
+
+    #[test]
+    fn handle_history_shows_queries() {
+        let analytics = RecordingAnalytics::new();
+        let mut out = Vec::new();
+        handle_history("mydb", &analytics, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("SELECT 1"), "expected query in history, got: {text}");
+        assert!(text.contains("SELECT 2"), "expected query in history, got: {text}");
+    }
+
+    #[test]
+    fn handle_stats_no_table_shows_tables() {
+        let analytics = RecordingAnalytics::new();
+        let mut out = Vec::new();
+        handle_stats("mydb", None, &analytics, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("users"), "expected table name, got: {text}");
+        assert!(text.contains("5"), "expected count, got: {text}");
+    }
+
+    #[test]
+    fn handle_stats_with_table_shows_columns() {
+        let analytics = RecordingAnalytics::new();
+        let mut out = Vec::new();
+        handle_stats("mydb", Some("users"), &analytics, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("email"), "expected column name, got: {text}");
+        assert!(text.contains("3"), "expected count, got: {text}");
     }
 }
