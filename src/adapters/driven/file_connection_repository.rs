@@ -160,6 +160,7 @@ mod tests {
             database: "mydb".to_string(),
             tls: crate::core::domain::connection::TlsMode::Disable,
             environment: None,
+            id: None,
         }
     }
 

@@ -33,6 +33,8 @@ pub struct Connection {
     pub tls: TlsMode,
     #[serde(default)]
     pub environment: Option<String>,
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 #[cfg(test)]
@@ -80,5 +82,19 @@ mod tests {
         let json = r#"{"name":"prod","host":"localhost","port":5432,"username":"u","password":"p","database":"db","environment":"production"}"#;
         let conn: Connection = serde_json::from_str(json).unwrap();
         assert_eq!(conn.environment, Some("production".to_string()));
+    }
+
+    #[test]
+    fn connection_without_id_field_deserializes_to_none() {
+        let json = r#"{"name":"prod","host":"localhost","port":5432,"username":"u","password":"p","database":"db"}"#;
+        let conn: Connection = serde_json::from_str(json).unwrap();
+        assert_eq!(conn.id, None);
+    }
+
+    #[test]
+    fn connection_with_id_deserializes_correctly() {
+        let json = r#"{"name":"prod","host":"localhost","port":5432,"username":"u","password":"p","database":"db","id":"a3f9c2d1"}"#;
+        let conn: Connection = serde_json::from_str(json).unwrap();
+        assert_eq!(conn.id, Some("a3f9c2d1".to_string()));
     }
 }

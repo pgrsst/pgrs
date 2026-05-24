@@ -61,6 +61,7 @@ where
             database: input.database,
             tls: input.tls,
             environment: input.environment,
+            id: None,
         };
 
         self.repository.add(connection)

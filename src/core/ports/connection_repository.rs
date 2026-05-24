@@ -36,6 +36,7 @@ pub mod test_support {
                     database: "db".to_string(),
                     tls: TlsMode::Disable,
                     environment: None,
+                    id: None,
                 })
                 .collect();
             Self { connections: RefCell::new(connections) }
