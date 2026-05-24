@@ -37,6 +37,14 @@ fn require_field(label: &str, value: &str) -> Result<(), String> {
     }
 }
 
+fn generate_id() -> String {
+    use std::io::Read;
+    let mut file = std::fs::File::open("/dev/urandom").expect("failed to open /dev/urandom");
+    let mut bytes = [0u8; 4];
+    file.read_exact(&mut bytes).expect("failed to read /dev/urandom");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 impl<R> ConnectionService<R>
 where
     R: ConnectionRepository,
@@ -61,7 +69,7 @@ where
             database: input.database,
             tls: input.tls,
             environment: input.environment,
-            id: None,
+            id: Some(generate_id()),
         };
 
         self.repository.add(connection)
@@ -468,5 +476,32 @@ mod tests {
             svc.get_connection("prod").unwrap().environment,
             Some("prod".to_string())
         );
+    }
+
+    #[test]
+    fn add_connection_assigns_non_none_id() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        let conn = svc.get_connection("prod").unwrap();
+        assert!(conn.id.is_some(), "id should be assigned on add");
+    }
+
+    #[test]
+    fn add_connection_assigns_unique_ids() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        svc.add_connection(valid_input("staging")).unwrap();
+        let id1 = svc.get_connection("prod").unwrap().id;
+        let id2 = svc.get_connection("staging").unwrap().id;
+        assert_ne!(id1, id2, "each connection should get a unique id");
+    }
+
+    #[test]
+    fn add_connection_assigns_8_char_hex_id() {
+        let svc = service();
+        svc.add_connection(valid_input("prod")).unwrap();
+        let id = svc.get_connection("prod").unwrap().id.unwrap();
+        assert_eq!(id.len(), 8, "id should be 8 characters, got: {id}");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "id should be hex, got: {id}");
     }
 }
