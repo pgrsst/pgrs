@@ -217,8 +217,8 @@ fn handle_l(conn: &dyn DbConnection, expanded: bool, writer: &mut impl Write) {
     };
 }
 
-fn handle_history(db_name: &str, analytics: &dyn AnalyticsPort, writer: &mut impl Write) {
-    let history = analytics.get_history(db_name);
+fn handle_history(connection_name: &str, analytics: &dyn AnalyticsPort, writer: &mut impl Write) {
+    let history = analytics.get_history(connection_name);
     if history.is_empty() {
         writeln!(writer, "No query history.").ok();
         return;
@@ -230,14 +230,14 @@ fn handle_history(db_name: &str, analytics: &dyn AnalyticsPort, writer: &mut imp
 }
 
 fn handle_stats(
-    db_name: &str,
+    connection_name: &str,
     table: Option<&str>,
     analytics: &dyn AnalyticsPort,
     writer: &mut impl Write,
 ) {
     match table {
         None => {
-            let freq = analytics.get_frequent_tables(db_name);
+            let freq = analytics.get_frequent_tables(connection_name);
             if freq.is_empty() {
                 writeln!(writer, "No table statistics yet.").ok();
                 return;
@@ -248,7 +248,7 @@ fn handle_stats(
             }
         }
         Some(tbl) => {
-            let freq = analytics.get_frequent_columns(db_name, tbl);
+            let freq = analytics.get_frequent_columns(connection_name, tbl);
             if freq.is_empty() {
                 writeln!(writer, "No column statistics for '{}'.", tbl).ok();
                 return;
@@ -294,7 +294,7 @@ fn extract_column_refs(query: &str, schema: &SchemaService) -> Vec<(String, Stri
 struct SqlOptions<'a> {
     expanded: bool,
     timing: bool,
-    db_name: &'a str,
+    connection_name: &'a str,
     analytics: Option<&'a dyn AnalyticsPort>,
     schema_cache: Option<&'a dyn SchemaCachePort>,
 }
@@ -323,11 +323,11 @@ fn handle_sql(
             if let Some(analytics) = opts.analytics {
                 let tables = extract_referenced_tables(query);
                 let columns = extract_column_refs(query, schema);
-                analytics.record_query(opts.db_name, query, &tables, &columns);
+                analytics.record_query(opts.connection_name, query, &tables, &columns);
             }
 
             if is_ddl(query)
-                && let Ok(new_schema) = SchemaService::load_with_cache(conn, opts.db_name, opts.schema_cache)
+                && let Ok(new_schema) = SchemaService::load_with_cache(conn, opts.connection_name, opts.schema_cache)
             {
                 *schema = new_schema.clone();
                 rebuild(new_schema);
@@ -340,16 +340,16 @@ fn handle_sql(
 
 fn handle_refresh(
     conn: &dyn SchemaPort,
-    db_name: &str,
+    connection_name: &str,
     schema: &mut SchemaService,
     rebuild: &mut impl FnMut(SchemaService),
     schema_cache: Option<&dyn SchemaCachePort>,
     writer: &mut impl Write,
 ) {
     if let Some(cache) = schema_cache {
-        cache.invalidate(db_name);
+        cache.invalidate(connection_name);
     }
-    match SchemaService::load_with_cache(conn, db_name, schema_cache) {
+    match SchemaService::load_with_cache(conn, connection_name, schema_cache) {
         Ok(new_schema) => {
             *schema = new_schema.clone();
             rebuild(new_schema);
@@ -362,13 +362,14 @@ fn handle_refresh(
 pub fn run(
     conn: Box<dyn ReplPort>,
     db_name: &str,
+    connection_name: &str,
     environment: Option<&str>,
     analytics: Option<Arc<dyn AnalyticsPort>>,
     schema_cache: Option<Arc<dyn SchemaCachePort>>,
 ) -> Result<(), String> {
     let mut schema = SchemaService::load_with_cache(
         conn.as_ref(),
-        db_name,
+        connection_name,
         schema_cache.as_deref(),
     )?;
     let mut rl = build_reedline(schema.clone());
@@ -406,7 +407,7 @@ pub fn run(
                     }
                     "\\refresh" => handle_refresh(
                         conn.as_ref(),
-                        db_name,
+                        connection_name,
                         &mut schema,
                         &mut |s| { rl = build_reedline(s); },
                         schema_cache.as_deref(),
@@ -414,13 +415,13 @@ pub fn run(
                     ),
                     "\\history" => {
                         match analytics.as_deref() {
-                            Some(a) => handle_history(db_name, a, &mut stdout),
+                            Some(a) => handle_history(connection_name, a, &mut stdout),
                             None => { writeln!(stdout, "Analytics not available.").ok(); }
                         }
                     }
                     "\\stats" => {
                         match analytics.as_deref() {
-                            Some(a) => handle_stats(db_name, None, a, &mut stdout),
+                            Some(a) => handle_stats(connection_name, None, a, &mut stdout),
                             None => { writeln!(stdout, "Analytics not available.").ok(); }
                         }
                     }
@@ -440,7 +441,7 @@ pub fn run(
                             handle_d(&schema, &mut stdout);
                         } else if let Some(tbl) = trimmed.strip_prefix("\\stats ") {
                             match analytics.as_deref() {
-                                Some(a) => handle_stats(db_name, Some(tbl), a, &mut stdout),
+                                Some(a) => handle_stats(connection_name, Some(tbl), a, &mut stdout),
                                 None => { writeln!(stdout, "Analytics not available.").ok(); }
                             }
                         } else {
@@ -450,7 +451,7 @@ pub fn run(
                                 &SqlOptions {
                                     expanded,
                                     timing,
-                                    db_name,
+                                    connection_name,
                                     analytics: analytics.as_deref(),
                                     schema_cache: schema_cache.as_deref(),
                                 },
@@ -573,7 +574,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "no DDL — schema should not be rebuilt");
     }
 
@@ -582,7 +583,7 @@ mod tests {
         let stub = StubDb::ok(vec![vec!["42".to_string()]], vec!["id".to_string()]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 42", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "SELECT 42", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("42"), "expected result value in output, got: {text}");
     }
@@ -593,7 +594,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt, "DDL should trigger schema rebuild");
     }
 
@@ -602,7 +603,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("users", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("schema refreshed"), "expected refresh notice, got: {text}");
     }
@@ -613,7 +614,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt);
     }
 
@@ -622,7 +623,7 @@ mod tests {
         let stub = StubDb::err("syntax error");
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELEKT *", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "SELEKT *", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
     }
 
     #[test]
