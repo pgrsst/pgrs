@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::domain::analytics::{FreqEntry, HistoryEntry};
 use crate::core::ports::analytics_port::AnalyticsPort;
+use crate::core::domain::connection::Connection as DomainConnection;
+use crate::core::domain::error::DomainError;
 
 const SCHEMA_V1: &str = "
 CREATE TABLE IF NOT EXISTS connections (
@@ -407,8 +409,7 @@ impl AnalyticsPort for SqliteRepository {
 }
 
 impl crate::core::ports::connection_repository::ConnectionRepository for SqliteRepository {
-    fn add(&self, connection: crate::core::domain::connection::Connection) -> Result<(), crate::core::domain::error::DomainError> {
-        use crate::core::domain::error::DomainError;
+    fn add(&self, connection: DomainConnection) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO connections (name, host, port, username, password, database, tls, environment, uuid)
@@ -435,9 +436,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<crate::core::domain::connection::Connection>, crate::core::domain::error::DomainError> {
-        use crate::core::domain::connection::Connection;
-        use crate::core::domain::error::DomainError;
+    fn list(&self) -> Result<Vec<DomainConnection>, DomainError> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -448,7 +447,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         let rows = stmt
             .query_map([], |r| {
                 let tls_str: String = r.get(6)?;
-                Ok(Connection {
+                Ok(DomainConnection {
                     name: r.get(0)?,
                     host: r.get(1)?,
                     port: r.get::<_, i64>(2)? as u16,
@@ -465,8 +464,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
             .map_err(|e| DomainError::StorageError(e.to_string()))
     }
 
-    fn delete(&self, name: &str) -> Result<(), crate::core::domain::error::DomainError> {
-        use crate::core::domain::error::DomainError;
+    fn delete(&self, name: &str) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
         let n = conn
             .execute("DELETE FROM connections WHERE name = ?1", rusqlite::params![name])
@@ -477,9 +475,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         Ok(())
     }
 
-    fn get_connection(&self, name: &str) -> Result<crate::core::domain::connection::Connection, crate::core::domain::error::DomainError> {
-        use crate::core::domain::connection::Connection;
-        use crate::core::domain::error::DomainError;
+    fn get_connection(&self, name: &str) -> Result<DomainConnection, DomainError> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT name, host, port, username, password, database, tls, environment, uuid
@@ -487,7 +483,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
             rusqlite::params![name],
             |r| {
                 let tls_str: String = r.get(6)?;
-                Ok(Connection {
+                Ok(DomainConnection {
                     name: r.get(0)?,
                     host: r.get(1)?,
                     port: r.get::<_, i64>(2)? as u16,
@@ -509,8 +505,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         })
     }
 
-    fn update(&self, connection: crate::core::domain::connection::Connection) -> Result<(), crate::core::domain::error::DomainError> {
-        use crate::core::domain::error::DomainError;
+    fn update(&self, connection: DomainConnection) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
         let n = conn
             .execute(
@@ -535,8 +530,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         Ok(())
     }
 
-    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), crate::core::domain::error::DomainError> {
-        use crate::core::domain::error::DomainError;
+    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
         let n = conn
             .execute(
