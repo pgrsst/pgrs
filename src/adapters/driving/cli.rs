@@ -307,7 +307,7 @@ where
         &self,
         name: &str,
     ) -> Result<crate::core::domain::connection::Connection, String> {
-        self.connection_service.get_connection(name)
+        self.connection_service.get_connection(name).map_err(|e| e.to_string())
     }
 }
 

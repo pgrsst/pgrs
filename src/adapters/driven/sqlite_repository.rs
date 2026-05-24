@@ -176,74 +176,74 @@ impl SqliteRepository {
 }
 
 fn save_schema_inner(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     connection_id: i64,
     schema: &HashMap<String, Vec<String>>,
     now: i64,
 ) -> Result<(), rusqlite::Error> {
-    conn.execute_batch("BEGIN")?;
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "DELETE FROM schema_columns WHERE connection_id = ?1",
         rusqlite::params![connection_id],
     )?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM schema_tables WHERE connection_id = ?1",
         rusqlite::params![connection_id],
     )?;
     for (table, columns) in schema {
-        conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO schema_tables (connection_id, table_name, cached_at) VALUES (?1, ?2, ?3)",
             rusqlite::params![connection_id, table, now],
         )?;
         for col in columns {
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO schema_columns (connection_id, table_name, column_name, cached_at) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![connection_id, table, col, now],
             )?;
         }
     }
-    conn.execute_batch("COMMIT")
+    tx.commit()
 }
 
 fn record_query_inner(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     connection_id: i64,
     query: &str,
     tables: &[String],
     columns: &[(String, String)],
     now: i64,
 ) -> Result<(), rusqlite::Error> {
-    conn.execute_batch("BEGIN")?;
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "INSERT INTO query_history (connection_id, query, executed_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(connection_id, query) DO UPDATE SET executed_at = excluded.executed_at",
         rusqlite::params![connection_id, query, now],
     )?;
-    let query_id: i64 = conn.query_row(
+    let query_id: i64 = tx.query_row(
         "SELECT id FROM query_history WHERE connection_id = ?1 AND query = ?2",
         rusqlite::params![connection_id, query],
         |r| r.get(0),
     )?;
     for table in tables {
-        conn.execute(
+        tx.execute(
             "INSERT INTO table_access (connection_id, table_name, query_id, accessed_at)
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![connection_id, table, query_id, now],
         )?;
     }
     for (table, column) in columns {
-        conn.execute(
+        tx.execute(
             "INSERT INTO column_access (connection_id, table_name, column_name, query_id, accessed_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![connection_id, table, column, query_id, now],
         )?;
     }
-    conn.execute_batch("COMMIT")
+    tx.commit()
 }
 
 impl SchemaCachePort for SqliteRepository {
     fn save_schema(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>) {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
         let Some(connection_id) = Self::connection_id_for(&conn, connection_name) else {
             eprintln!("pgrs: schema cache: unknown connection '{connection_name}'");
             return;
@@ -253,8 +253,7 @@ impl SchemaCachePort for SqliteRepository {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        if let Err(e) = save_schema_inner(&conn, connection_id, schema, now) {
-            conn.execute_batch("ROLLBACK").ok();
+        if let Err(e) = save_schema_inner(&mut conn, connection_id, schema, now) {
             eprintln!("pgrs: schema cache write failed: {e}");
         }
     }
@@ -318,7 +317,7 @@ impl AnalyticsPort for SqliteRepository {
         tables: &[String],
         columns: &[(String, String)],
     ) {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
         let Some(connection_id) = Self::connection_id_for(&conn, connection_name) else {
             eprintln!("pgrs: analytics: unknown connection '{connection_name}'");
             return;
@@ -328,8 +327,7 @@ impl AnalyticsPort for SqliteRepository {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        if let Err(e) = record_query_inner(&conn, connection_id, query, tables, columns, now) {
-            conn.execute_batch("ROLLBACK").ok();
+        if let Err(e) = record_query_inner(&mut conn, connection_id, query, tables, columns, now) {
             eprintln!("pgrs: analytics write failed: {e}");
         }
     }
@@ -409,7 +407,8 @@ impl AnalyticsPort for SqliteRepository {
 }
 
 impl crate::core::ports::connection_repository::ConnectionRepository for SqliteRepository {
-    fn add(&self, connection: crate::core::domain::connection::Connection) -> Result<(), String> {
+    fn add(&self, connection: crate::core::domain::connection::Connection) -> Result<(), crate::core::domain::error::DomainError> {
+        use crate::core::domain::error::DomainError;
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO connections (name, host, port, username, password, database, tls, environment, uuid)
@@ -428,23 +427,24 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         )
         .map_err(|e| {
             if e.to_string().contains("UNIQUE constraint failed") {
-                format!("connection '{}' already exists", connection.name)
+                DomainError::AlreadyExists(format!("connection '{}' already exists", connection.name))
             } else {
-                e.to_string()
+                DomainError::StorageError(e.to_string())
             }
         })?;
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<crate::core::domain::connection::Connection>, String> {
+    fn list(&self) -> Result<Vec<crate::core::domain::connection::Connection>, crate::core::domain::error::DomainError> {
         use crate::core::domain::connection::Connection;
+        use crate::core::domain::error::DomainError;
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
                 "SELECT name, host, port, username, password, database, tls, environment, uuid
                  FROM connections ORDER BY name",
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| DomainError::StorageError(e.to_string()))?;
         let rows = stmt
             .query_map([], |r| {
                 let tls_str: String = r.get(6)?;
@@ -460,23 +460,26 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
                     id: r.get(8)?,
                 })
             })
-            .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+            .map_err(|e| DomainError::StorageError(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| DomainError::StorageError(e.to_string()))
     }
 
-    fn delete(&self, name: &str) -> Result<(), String> {
+    fn delete(&self, name: &str) -> Result<(), crate::core::domain::error::DomainError> {
+        use crate::core::domain::error::DomainError;
         let conn = self.conn.lock().unwrap();
         let n = conn
             .execute("DELETE FROM connections WHERE name = ?1", rusqlite::params![name])
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| DomainError::StorageError(e.to_string()))?;
         if n == 0 {
-            return Err(format!("connection '{}' not found", name));
+            return Err(DomainError::NotFound(format!("connection '{}' not found", name)));
         }
         Ok(())
     }
 
-    fn get_connection(&self, name: &str) -> Result<crate::core::domain::connection::Connection, String> {
+    fn get_connection(&self, name: &str) -> Result<crate::core::domain::connection::Connection, crate::core::domain::error::DomainError> {
         use crate::core::domain::connection::Connection;
+        use crate::core::domain::error::DomainError;
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT name, host, port, username, password, database, tls, environment, uuid
@@ -499,14 +502,15 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         )
         .map_err(|e| {
             if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
-                format!("connection '{}' not found", name)
+                DomainError::NotFound(format!("connection '{}' not found", name))
             } else {
-                e.to_string()
+                DomainError::StorageError(e.to_string())
             }
         })
     }
 
-    fn update(&self, connection: crate::core::domain::connection::Connection) -> Result<(), String> {
+    fn update(&self, connection: crate::core::domain::connection::Connection) -> Result<(), crate::core::domain::error::DomainError> {
+        use crate::core::domain::error::DomainError;
         let conn = self.conn.lock().unwrap();
         let n = conn
             .execute(
@@ -524,14 +528,15 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
                     connection.name,
                 ],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| DomainError::StorageError(e.to_string()))?;
         if n == 0 {
-            return Err(format!("connection '{}' not found", connection.name));
+            return Err(DomainError::NotFound(format!("connection '{}' not found", connection.name)));
         }
         Ok(())
     }
 
-    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
+    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), crate::core::domain::error::DomainError> {
+        use crate::core::domain::error::DomainError;
         let conn = self.conn.lock().unwrap();
         let n = conn
             .execute(
@@ -540,13 +545,13 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
             )
             .map_err(|e| {
                 if e.to_string().contains("UNIQUE constraint failed") {
-                    format!("connection '{}' already exists", new_name)
+                    DomainError::AlreadyExists(format!("connection '{}' already exists", new_name))
                 } else {
-                    e.to_string()
+                    DomainError::StorageError(e.to_string())
                 }
             })?;
         if n == 0 {
-            return Err(format!("connection '{}' not found", old_name));
+            return Err(DomainError::NotFound(format!("connection '{}' not found", old_name)));
         }
         Ok(())
     }
@@ -555,6 +560,7 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::domain::error::DomainError;
     use crate::core::ports::schema_cache_port::SchemaCachePort;
     use crate::core::ports::analytics_port::AnalyticsPort;
 
@@ -664,6 +670,44 @@ mod tests {
         let loaded2 = repo.load_schema("db2").unwrap();
         assert!(loaded2.contains_key("products"), "db2 schema should have products");
         assert!(!loaded2.contains_key("users"), "db2 schema should not have db1's users");
+    }
+
+    #[test]
+    fn save_schema_is_atomic_on_failure() {
+        // Verifies that a failed save does not partially modify the schema.
+        // We install a trigger that fires after the DELETEs but before the INSERTs,
+        // simulating a mid-transaction failure.  The original schema must be intact.
+        use std::collections::HashMap;
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        add_conn(&repo, "mydb");
+
+        let mut initial = HashMap::new();
+        initial.insert("users".to_string(), vec!["id".to_string()]);
+        repo.save_schema("mydb", &initial);
+
+        // Trigger causes INSERT INTO schema_tables to fail
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER fail_schema_insert BEFORE INSERT ON schema_tables \
+                 BEGIN SELECT RAISE(FAIL, 'simulated failure'); END;",
+            )
+            .unwrap();
+        }
+
+        let mut new_schema = HashMap::new();
+        new_schema.insert("products".to_string(), vec!["sku".to_string()]);
+        repo.save_schema("mydb", &new_schema); // expected to silently fail
+
+        // Remove trigger so load_schema can work
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute_batch("DROP TRIGGER fail_schema_insert").unwrap();
+        }
+
+        let loaded = repo.load_schema("mydb").unwrap();
+        assert!(loaded.contains_key("users"), "rollback must restore original schema");
+        assert!(!loaded.contains_key("products"), "failed save must not partially commit");
     }
 
     #[test]
@@ -829,7 +873,7 @@ mod tests {
         let repo = SqliteRepository::open_in_memory().unwrap();
         repo.add(sample_conn("prod")).unwrap();
         let err = repo.add(sample_conn("prod")).unwrap_err();
-        assert_eq!(err, "connection 'prod' already exists");
+        assert!(matches!(err, DomainError::AlreadyExists(_)));
     }
 
     #[test]
@@ -850,7 +894,7 @@ mod tests {
     fn delete_returns_error_when_not_found() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         let err = repo.delete("ghost").unwrap_err();
-        assert_eq!(err, "connection 'ghost' not found");
+        assert!(matches!(err, DomainError::NotFound(_)));
     }
 
     #[test]
@@ -866,7 +910,7 @@ mod tests {
     fn get_connection_returns_error_when_not_found() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         let err = repo.get_connection("ghost").unwrap_err();
-        assert_eq!(err, "connection 'ghost' not found");
+        assert!(matches!(err, DomainError::NotFound(_)));
     }
 
     #[test]
@@ -885,7 +929,7 @@ mod tests {
     fn update_returns_error_when_not_found() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         let err = repo.update(sample_conn("ghost")).unwrap_err();
-        assert_eq!(err, "connection 'ghost' not found");
+        assert!(matches!(err, DomainError::NotFound(_)));
     }
 
     #[test]
@@ -894,14 +938,14 @@ mod tests {
         repo.add(sample_conn("prod")).unwrap();
         repo.rename("prod", "production").unwrap();
         assert!(repo.get_connection("production").is_ok());
-        assert_eq!(repo.get_connection("prod").unwrap_err(), "connection 'prod' not found");
+        assert!(matches!(repo.get_connection("prod").unwrap_err(), DomainError::NotFound(_)));
     }
 
     #[test]
     fn rename_returns_error_when_not_found() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         let err = repo.rename("ghost", "new").unwrap_err();
-        assert_eq!(err, "connection 'ghost' not found");
+        assert!(matches!(err, DomainError::NotFound(_)));
     }
 
     #[test]
@@ -910,7 +954,7 @@ mod tests {
         repo.add(sample_conn("prod")).unwrap();
         repo.add(sample_conn("staging")).unwrap();
         let err = repo.rename("prod", "staging").unwrap_err();
-        assert_eq!(err, "connection 'staging' already exists");
+        assert!(matches!(err, DomainError::AlreadyExists(_)));
     }
 
     #[test]

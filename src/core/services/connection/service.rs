@@ -1,4 +1,5 @@
 use crate::core::domain::connection::{Connection, TlsMode};
+use crate::core::domain::error::DomainError;
 use crate::core::ports::connection_repository::ConnectionRepository;
 
 pub struct ConnectionService<R>
@@ -29,9 +30,9 @@ pub struct AddConnectionInput {
     pub environment: Option<String>,
 }
 
-fn require_field(label: &str, value: &str) -> Result<(), String> {
+fn require_field(label: &str, value: &str) -> Result<(), DomainError> {
     if value.trim().is_empty() {
-        Err(format!("{label} is required"))
+        Err(DomainError::ValidationError(format!("{label} is required")))
     } else {
         Ok(())
     }
@@ -49,7 +50,7 @@ where
         Self { repository }
     }
 
-    pub fn add_connection(&self, input: AddConnectionInput) -> Result<(), String> {
+    pub fn add_connection(&self, input: AddConnectionInput) -> Result<(), DomainError> {
         require_field("connection name", &input.name)?;
         require_field("host", &input.host)?;
         require_field("database", &input.database)?;
@@ -71,30 +72,30 @@ where
         self.repository.add(connection)
     }
 
-    pub fn list_connections(&self) -> Result<Vec<Connection>, String> {
+    pub fn list_connections(&self) -> Result<Vec<Connection>, DomainError> {
         self.repository.list()
     }
 
-    pub fn delete_connection(&self, name: &str) -> Result<(), String> {
+    pub fn delete_connection(&self, name: &str) -> Result<(), DomainError> {
         require_field("connection name", name)?;
         self.repository.delete(name)
     }
 
     #[cfg(test)]
-    pub fn get_connection(&self, name: &str) -> Result<Connection, String> {
+    pub fn get_connection(&self, name: &str) -> Result<Connection, DomainError> {
         require_field("connection name", name)?;
         self.repository.get_connection(name)
     }
 
-    pub fn find_connection(&self, input: &str) -> Result<Connection, String> {
+    pub fn find_connection(&self, input: &str) -> Result<Connection, DomainError> {
         let connections = self.repository.list()?;
         connections
             .into_iter()
             .find(|c| c.id.as_deref() == Some(input) || c.name == input)
-            .ok_or_else(|| format!("connection '{}' not found", input))
+            .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", input)))
     }
 
-    pub fn edit_connection(&self, name: &str, input: EditConnectionInput) -> Result<(), String> {
+    pub fn edit_connection(&self, name: &str, input: EditConnectionInput) -> Result<(), DomainError> {
         require_field("connection name", name)?;
 
         if input.host.is_none()
@@ -105,7 +106,7 @@ where
             && input.tls.is_none()
             && input.environment.is_none()
         {
-            return Err("at least one field must be specified".to_string());
+            return Err(DomainError::ValidationError("at least one field must be specified".to_string()));
         }
 
         if let Some(ref v) = input.host { require_field("host", v)?; }
@@ -124,7 +125,7 @@ where
         self.repository.update(conn)
     }
 
-    pub fn rename_connection(&self, old_name: &str, new_name: &str) -> Result<(), String> {
+    pub fn rename_connection(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
         require_field("old connection name", old_name)?;
         require_field("new connection name", new_name)?;
         self.repository.rename(old_name, new_name)
@@ -135,6 +136,7 @@ where
 mod tests {
     use super::*;
     use crate::core::domain::connection::{TlsMode, DEFAULT_PORT};
+    use crate::core::domain::error::DomainError;
     use crate::core::ports::connection_repository::test_support::StubConnectionRepository;
 
     fn valid_input(name: &str) -> AddConnectionInput {
@@ -165,7 +167,7 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let result = svc.add_connection(valid_input("prod"));
-        assert_eq!(result, Err("connection 'prod' already exists".to_string()));
+        assert!(matches!(result, Err(DomainError::AlreadyExists(_))));
     }
 
     #[test]
@@ -175,7 +177,7 @@ mod tests {
             name: "  ".to_string(),
             ..valid_input("x")
         });
-        assert_eq!(result, Err("connection name is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -185,7 +187,7 @@ mod tests {
             host: "".to_string(),
             ..valid_input("prod")
         });
-        assert_eq!(result, Err("host is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -195,7 +197,7 @@ mod tests {
             database: "".to_string(),
             ..valid_input("prod")
         });
-        assert_eq!(result, Err("database is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -205,7 +207,7 @@ mod tests {
             username: "".to_string(),
             ..valid_input("prod")
         });
-        assert_eq!(result, Err("username is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -215,7 +217,7 @@ mod tests {
             password: "".to_string(),
             ..valid_input("prod")
         });
-        assert_eq!(result, Err("password is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -241,7 +243,7 @@ mod tests {
     fn delete_connection_rejects_empty_name() {
         let svc = service();
         let result = svc.delete_connection("  ");
-        assert_eq!(result, Err("connection name is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -256,14 +258,14 @@ mod tests {
     fn get_connection_returns_error_when_not_found() {
         let svc = service();
         let result = svc.get_connection("missing");
-        assert_eq!(result, Err("connection 'missing' not found".to_string()));
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 
     #[test]
     fn get_connection_rejects_empty_name() {
         let svc = service();
         let result = svc.get_connection("  ");
-        assert_eq!(result, Err("connection name is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     fn edit_input() -> EditConnectionInput {
@@ -311,7 +313,7 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let result = svc.edit_connection("prod", edit_input());
-        assert_eq!(result, Err("at least one field must be specified".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -321,7 +323,7 @@ mod tests {
             host: Some("h".to_string()),
             ..edit_input()
         });
-        assert_eq!(result, Err("connection name is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -332,7 +334,7 @@ mod tests {
             host: Some("".to_string()),
             ..edit_input()
         });
-        assert_eq!(result, Err("host is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -342,7 +344,7 @@ mod tests {
             host: Some("h".to_string()),
             ..edit_input()
         });
-        assert_eq!(result, Err("connection 'missing' not found".to_string()));
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 
     #[test]
@@ -380,7 +382,7 @@ mod tests {
     fn rename_connection_returns_error_when_not_found() {
         let svc = service();
         let result = svc.rename_connection("missing", "new");
-        assert_eq!(result, Err("connection 'missing' not found".to_string()));
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 
     #[test]
@@ -389,14 +391,14 @@ mod tests {
         svc.add_connection(valid_input("prod")).unwrap();
         svc.add_connection(valid_input("staging")).unwrap();
         let result = svc.rename_connection("prod", "staging");
-        assert_eq!(result, Err("connection 'staging' already exists".to_string()));
+        assert!(matches!(result, Err(DomainError::AlreadyExists(_))));
     }
 
     #[test]
     fn rename_connection_rejects_empty_old_name() {
         let svc = service();
         let result = svc.rename_connection("  ", "new");
-        assert_eq!(result, Err("old connection name is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -404,7 +406,7 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let result = svc.rename_connection("prod", "  ");
-        assert_eq!(result, Err("new connection name is required".to_string()));
+        assert!(matches!(result, Err(DomainError::ValidationError(_))));
     }
 
     #[test]
@@ -531,6 +533,6 @@ mod tests {
     fn find_connection_returns_error_when_not_found() {
         let svc = service();
         let result = svc.find_connection("ghost");
-        assert_eq!(result, Err("connection 'ghost' not found".to_string()));
+        assert!(matches!(result, Err(DomainError::NotFound(_))));
     }
 }
