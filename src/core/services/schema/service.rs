@@ -20,11 +20,11 @@ impl SchemaService {
 
     pub fn load_with_cache(
         conn: &dyn SchemaPort,
-        db_name: &str,
+        connection_name: &str,
         cache: Option<&dyn SchemaCachePort>,
     ) -> Result<Self, String> {
         if let Some(cache) = cache
-            && let Some(columns) = cache.load_schema(db_name)
+            && let Some(columns) = cache.load_schema(connection_name)
         {
             let mut tables: Vec<String> = columns.keys().cloned().collect();
             tables.sort();
@@ -32,7 +32,7 @@ impl SchemaService {
         }
         let result = Self::load(conn)?;
         if let Some(cache) = cache {
-            cache.save_schema(db_name, &result.columns);
+            cache.save_schema(connection_name, &result.columns);
         }
         Ok(result)
     }
@@ -101,13 +101,13 @@ mod tests {
     }
 
     impl SchemaCachePort for MockCache {
-        fn save_schema(&self, _db: &str, schema: &HashMap<String, Vec<String>>) {
+        fn save_schema(&self, _connection_name: &str, schema: &HashMap<String, Vec<String>>) {
             *self.stored.write().unwrap() = Some(schema.clone());
         }
-        fn load_schema(&self, _db: &str) -> Option<HashMap<String, Vec<String>>> {
+        fn load_schema(&self, _connection_name: &str) -> Option<HashMap<String, Vec<String>>> {
             self.stored.read().unwrap().clone()
         }
-        fn invalidate(&self, _db: &str) {
+        fn invalidate(&self, _connection_name: &str) {
             *self.stored.write().unwrap() = None;
         }
     }

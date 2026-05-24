@@ -865,8 +865,8 @@ mod tests {
         fn new() -> Self { Self { recorded: RwLock::new(vec![]) } }
     }
     impl AnalyticsPort for RecordingAnalytics {
-        fn record_query(&self, db_name: &str, query: &str, _: &[String], _: &[(String, String)]) {
-            self.recorded.write().unwrap().push((db_name.to_string(), query.to_string()));
+        fn record_query(&self, connection_name: &str, query: &str, _: &[String], _: &[(String, String)]) {
+            self.recorded.write().unwrap().push((connection_name.to_string(), query.to_string()));
         }
         fn get_history(&self, _: &str) -> Vec<HistoryEntry> {
             vec![
