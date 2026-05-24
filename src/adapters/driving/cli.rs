@@ -176,11 +176,11 @@ where
         {
             use std::os::unix::process::CommandExt;
             let error = cmd.exec();
-            return Err(if error.kind() == std::io::ErrorKind::NotFound {
+            Err(if error.kind() == std::io::ErrorKind::NotFound {
                 "psql not found — is it installed?".to_string()
             } else {
                 error.to_string()
-            });
+            })
         }
 
         #[cfg(not(unix))]
