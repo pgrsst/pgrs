@@ -533,27 +533,6 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
     }
 }
 
-impl crate::core::ports::connection_repository::ConnectionRepository for std::sync::Arc<SqliteRepository> {
-    fn add(&self, connection: crate::core::domain::connection::Connection) -> Result<(), String> {
-        (**self).add(connection)
-    }
-    fn list(&self) -> Result<Vec<crate::core::domain::connection::Connection>, String> {
-        (**self).list()
-    }
-    fn delete(&self, name: &str) -> Result<(), String> {
-        (**self).delete(name)
-    }
-    fn get_connection(&self, name: &str) -> Result<crate::core::domain::connection::Connection, String> {
-        (**self).get_connection(name)
-    }
-    fn update(&self, connection: crate::core::domain::connection::Connection) -> Result<(), String> {
-        (**self).update(connection)
-    }
-    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
-        (**self).rename(old_name, new_name)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,6 +9,27 @@ pub trait ConnectionRepository {
     fn update(&self, connection: Connection) -> Result<(), String>;
 }
 
+impl<T: ConnectionRepository> ConnectionRepository for std::sync::Arc<T> {
+    fn add(&self, connection: Connection) -> Result<(), String> {
+        (**self).add(connection)
+    }
+    fn list(&self) -> Result<Vec<Connection>, String> {
+        (**self).list()
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        (**self).delete(name)
+    }
+    fn get_connection(&self, name: &str) -> Result<Connection, String> {
+        (**self).get_connection(name)
+    }
+    fn update(&self, connection: Connection) -> Result<(), String> {
+        (**self).update(connection)
+    }
+    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
+        (**self).rename(old_name, new_name)
+    }
+}
+
 #[cfg(test)]
 pub mod test_support {
     use crate::core::domain::connection::{Connection, TlsMode, DEFAULT_PORT};
