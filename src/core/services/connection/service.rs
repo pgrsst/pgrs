@@ -37,12 +37,12 @@ fn require_field(label: &str, value: &str) -> Result<(), String> {
     }
 }
 
-fn generate_id() -> String {
+fn generate_id() -> Result<String, String> {
     use std::io::Read;
-    let mut file = std::fs::File::open("/dev/urandom").expect("failed to open /dev/urandom");
+    let mut file = std::fs::File::open("/dev/urandom").map_err(|e| e.to_string())?;
     let mut bytes = [0u8; 4];
-    file.read_exact(&mut bytes).expect("failed to read /dev/urandom");
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 impl<R> ConnectionService<R>
@@ -69,7 +69,7 @@ where
             database: input.database,
             tls: input.tls,
             environment: input.environment,
-            id: Some(generate_id()),
+            id: Some(generate_id()?),
         };
 
         self.repository.add(connection)
