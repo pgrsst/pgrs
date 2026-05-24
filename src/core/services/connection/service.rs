@@ -38,11 +38,22 @@ fn require_field(label: &str, value: &str) -> Result<(), String> {
 }
 
 fn generate_id() -> Result<String, String> {
-    use std::io::Read;
-    let mut file = std::fs::File::open("/dev/urandom").map_err(|e| e.to_string())?;
-    let mut bytes = [0u8; 4];
-    file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .subsec_nanos();
+
+    let thread_id = std::thread::current().id();
+    let mut hasher = DefaultHasher::new();
+    nanos.hash(&mut hasher);
+    thread_id.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    Ok(format!("{:08x}", hash & 0xFFFF_FFFF))
 }
 
 impl<R> ConnectionService<R>
