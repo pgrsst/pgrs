@@ -84,6 +84,7 @@ where
         self.repository.delete(name)
     }
 
+    #[cfg(test)]
     pub fn get_connection(&self, name: &str) -> Result<Connection, String> {
         require_field("connection name", name)?;
         self.repository.get_connection(name)
