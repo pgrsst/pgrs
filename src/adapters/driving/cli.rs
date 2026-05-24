@@ -159,7 +159,7 @@ where
 
         println!(
             "handing off to psql for '{}' — you'll return to your shell, not pgrs, on exit",
-            name
+            connection.name
         );
 
         let error = std::process::Command::new("psql")

@@ -50,11 +50,12 @@ fn run_test<R: ConnectionRepository>(
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs test <connection-name>")?;
     let conn = service.find_connection(name)?;
+    let conn_name = &conn.name;
     let db = PostgresDb::new(&conn)
-        .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
+        .map_err(|e| format!("connection '{}' failed: {}", conn_name, e))?;
     db.execute("SELECT 1")
-        .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
-    println!("connection '{}' ok", name);
+        .map_err(|e| format!("connection '{}' failed: {}", conn_name, e))?;
+    println!("connection '{}' ok", conn_name);
     Ok(())
 }
 
