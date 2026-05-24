@@ -155,7 +155,7 @@ where
             .trim()
             .to_string();
 
-        let connection = self.connection_service.get_connection(&name)?;
+        let connection = self.connection_service.find_connection(&name)?;
 
         println!(
             "handing off to psql for '{}' — you'll return to your shell, not pgrs, on exit",
@@ -204,7 +204,8 @@ where
                 if val.is_empty() { None } else { Some(val.to_string()) }
             });
 
-        self.connection_service.edit_connection(&name, EditConnectionInput {
+        let resolved_name = self.connection_service.find_connection(&name)?.name;
+        self.connection_service.edit_connection(&resolved_name, EditConnectionInput {
             host: optional_option(args, "--host"),
             port,
             username: optional_option(args, "--username"),
@@ -214,7 +215,7 @@ where
             environment,
         })?;
 
-        println!("connection '{name}' updated");
+        println!("connection '{resolved_name}' updated");
         Ok(())
     }
 
@@ -229,8 +230,9 @@ where
             .ok_or("usage: pgrs rename <old-name> <new-name>")?
             .trim()
             .to_string();
-        self.connection_service.rename_connection(&old_name, &new_name)?;
-        println!("connection '{old_name}' renamed to '{new_name}'");
+        let resolved_old = self.connection_service.find_connection(&old_name)?.name;
+        self.connection_service.rename_connection(&resolved_old, &new_name)?;
+        println!("connection '{resolved_old}' renamed to '{new_name}'");
         Ok(())
     }
 
@@ -261,8 +263,9 @@ where
             }
         }
 
-        self.connection_service.delete_connection(&name)?;
-        println!("connection '{name}' deleted");
+        let resolved_name = self.connection_service.find_connection(&name)?.name;
+        self.connection_service.delete_connection(&resolved_name)?;
+        println!("connection '{resolved_name}' deleted");
         Ok(())
     }
 

@@ -39,7 +39,7 @@ fn run_shell<R: ConnectionRepository>(
     service: &ConnectionService<R>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
-    let conn = service.get_connection(name)?;
+    let conn = service.find_connection(name)?;
     let db = PostgresDb::new(&conn)?;
     repl::run(Box::new(db), &conn.database, conn.environment.as_deref())
 }
@@ -49,7 +49,7 @@ fn run_test<R: ConnectionRepository>(
     service: &ConnectionService<R>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs test <connection-name>")?;
-    let conn = service.get_connection(name)?;
+    let conn = service.find_connection(name)?;
     let db = PostgresDb::new(&conn)
         .map_err(|e| format!("connection '{}' failed: {}", name, e))?;
     db.execute("SELECT 1")
