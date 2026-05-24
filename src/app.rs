@@ -33,7 +33,12 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
     let connection_service = ConnectionService::new(Arc::clone(&sqlite));
 
     match args.first().map(String::as_str) {
-        Some("shell") => run_shell(&args[1..], &connection_service, Arc::clone(&sqlite)),
+        Some("shell") => run_shell(
+            &args[1..],
+            &connection_service,
+            Some(Arc::clone(&sqlite) as Arc<dyn AnalyticsPort>),
+            Some(Arc::clone(&sqlite) as Arc<dyn SchemaCachePort>),
+        ),
         Some("test") => run_test(&args[1..], &connection_service),
         _ => {
             let cli = Cli::new(connection_service);
@@ -45,16 +50,12 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
 fn run_shell<R: ConnectionRepository>(
     args: &[String],
     service: &ConnectionService<R>,
-    sqlite: Arc<SqliteRepository>,
+    analytics: Option<Arc<dyn AnalyticsPort>>,
+    schema_cache: Option<Arc<dyn SchemaCachePort>>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
     let conn = service.find_connection(name)?;
     let db = PostgresDb::new(&conn)?;
-
-    let analytics: Option<Arc<dyn AnalyticsPort>> =
-        Some(Arc::clone(&sqlite) as Arc<dyn AnalyticsPort>);
-    let schema_cache: Option<Arc<dyn SchemaCachePort>> =
-        Some(Arc::clone(&sqlite) as Arc<dyn SchemaCachePort>);
 
     repl::run(
         Box::new(db),
