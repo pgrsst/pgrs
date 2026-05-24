@@ -23,12 +23,12 @@ impl SchemaService {
         db_name: &str,
         cache: Option<&dyn SchemaCachePort>,
     ) -> Result<Self, String> {
-        if let Some(cache) = cache {
-            if let Some(columns) = cache.load_schema(db_name) {
-                let mut tables: Vec<String> = columns.keys().cloned().collect();
-                tables.sort();
-                return Ok(Self { tables, columns });
-            }
+        if let Some(cache) = cache
+            && let Some(columns) = cache.load_schema(db_name)
+        {
+            let mut tables: Vec<String> = columns.keys().cloned().collect();
+            tables.sort();
+            return Ok(Self { tables, columns });
         }
         let result = Self::load(conn)?;
         if let Some(cache) = cache {

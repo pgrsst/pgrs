@@ -291,23 +291,27 @@ fn extract_column_refs(query: &str, schema: &SchemaService) -> Vec<(String, Stri
     refs
 }
 
+struct SqlOptions<'a> {
+    expanded: bool,
+    timing: bool,
+    db_name: &'a str,
+    analytics: Option<&'a dyn AnalyticsPort>,
+    schema_cache: Option<&'a dyn SchemaCachePort>,
+}
+
 fn handle_sql(
     conn: &dyn ReplPort,
     query: &str,
-    expanded: bool,
-    timing: bool,
-    db_name: &str,
+    opts: &SqlOptions<'_>,
     schema: &mut SchemaService,
     rebuild: &mut impl FnMut(SchemaService),
-    analytics: Option<&dyn AnalyticsPort>,
-    schema_cache: Option<&dyn SchemaCachePort>,
     writer: &mut impl Write,
 ) {
     let start = std::time::Instant::now();
     match conn.execute(query) {
         Ok(result) => {
-            write!(writer, "{}", format_result(&result, expanded)).ok();
-            if timing {
+            write!(writer, "{}", format_result(&result, opts.expanded)).ok();
+            if opts.timing {
                 let ms = start.elapsed().as_secs_f64() * 1000.0;
                 if ms >= 1000.0 {
                     writeln!(writer, "Time: {:.3} s", ms / 1000.0).ok();
@@ -316,14 +320,14 @@ fn handle_sql(
                 }
             }
 
-            if let Some(analytics) = analytics {
+            if let Some(analytics) = opts.analytics {
                 let tables = extract_referenced_tables(query);
                 let columns = extract_column_refs(query, schema);
-                analytics.record_query(db_name, query, &tables, &columns);
+                analytics.record_query(opts.db_name, query, &tables, &columns);
             }
 
             if is_ddl(query)
-                && let Ok(new_schema) = SchemaService::load_with_cache(conn, db_name, schema_cache)
+                && let Ok(new_schema) = SchemaService::load_with_cache(conn, opts.db_name, opts.schema_cache)
             {
                 *schema = new_schema.clone();
                 rebuild(new_schema);
@@ -443,13 +447,15 @@ pub fn run(
                             handle_sql(
                                 conn.as_ref(),
                                 trimmed,
-                                expanded,
-                                timing,
-                                db_name,
+                                &SqlOptions {
+                                    expanded,
+                                    timing,
+                                    db_name,
+                                    analytics: analytics.as_deref(),
+                                    schema_cache: schema_cache.as_deref(),
+                                },
                                 &mut schema,
                                 &mut |s| { rl = build_reedline(s); },
-                                analytics.as_deref(),
-                                schema_cache.as_deref(),
                                 &mut stdout,
                             );
                         }
@@ -567,7 +573,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", false, false, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, None, &mut out);
+        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "no DDL — schema should not be rebuilt");
     }
 
@@ -576,7 +582,7 @@ mod tests {
         let stub = StubDb::ok(vec![vec!["42".to_string()]], vec!["id".to_string()]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 42", false, false, "mydb", &mut schema, &mut |_| {}, None, None, &mut out);
+        handle_sql(&stub, "SELECT 42", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("42"), "expected result value in output, got: {text}");
     }
@@ -587,7 +593,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, None, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt, "DDL should trigger schema rebuild");
     }
 
@@ -596,7 +602,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("users", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", false, false, "mydb", &mut schema, &mut |_| {}, None, None, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("schema refreshed"), "expected refresh notice, got: {text}");
     }
@@ -607,7 +613,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", false, false, "mydb", &mut schema, &mut |_| { rebuilt = true; }, None, None, &mut out);
+        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt);
     }
 
@@ -616,7 +622,7 @@ mod tests {
         let stub = StubDb::err("syntax error");
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELEKT *", false, false, "mydb", &mut schema, &mut |_| {}, None, None, &mut out);
+        handle_sql(&stub, "SELEKT *", &SqlOptions { expanded: false, timing: false, db_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
     }
 
     #[test]

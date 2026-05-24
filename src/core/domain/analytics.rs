@@ -1,6 +1,7 @@
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
     pub query: String,
+    #[allow(dead_code)]
     pub executed_at: i64,
 }
 

@@ -62,6 +62,7 @@ impl SqliteRepository {
         Ok(repo)
     }
 
+    #[cfg(test)]
     pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
         let conn = Connection::open_in_memory()?;
         let repo = Self { conn: Mutex::new(conn) };
@@ -74,7 +75,7 @@ impl SqliteRepository {
         let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version < 1 {
             conn.execute_batch(SCHEMA_V1)?;
-            conn.pragma_update(None, "user_version", &1)?;
+            conn.pragma_update(None, "user_version", 1)?;
         }
         Ok(())
     }
