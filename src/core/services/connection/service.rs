@@ -37,23 +37,8 @@ fn require_field(label: &str, value: &str) -> Result<(), String> {
     }
 }
 
-fn generate_id() -> Result<String, String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .subsec_nanos();
-
-    let thread_id = std::thread::current().id();
-    let mut hasher = DefaultHasher::new();
-    nanos.hash(&mut hasher);
-    thread_id.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    Ok(format!("{:08x}", hash & 0xFFFF_FFFF))
+fn generate_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
 
 impl<R> ConnectionService<R>
@@ -80,7 +65,7 @@ where
             database: input.database,
             tls: input.tls,
             environment: input.environment,
-            id: Some(generate_id()?),
+            id: Some(generate_id()),
         };
 
         self.repository.add(connection)
