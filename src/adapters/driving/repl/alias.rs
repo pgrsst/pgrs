@@ -131,6 +131,100 @@ pub fn build_alias_map(line: &str) -> AliasMap {
     AliasMap { map }
 }
 
+pub fn extract_referenced_tables(line: &str) -> Vec<String> {
+    let mut tables: Vec<String> = Vec::new();
+    let mut state = AliasState::Idle;
+
+    for token in tokenize(line) {
+        if let SqlToken::Other(c) = token {
+            if c.is_whitespace() {
+                continue;
+            }
+            state = match (state, c) {
+                (AliasState::ExpectTable, '(') => AliasState::InSubquery { depth: 1 },
+                (AliasState::ExpectAlias { .. }, '.') => AliasState::ExpectQualifiedTable,
+                (AliasState::ExpectAlias { candidate }, ',') => {
+                    tables.push(candidate);
+                    AliasState::ExpectTable
+                }
+                (AliasState::PostAlias, ',') => AliasState::ExpectTable,
+                (AliasState::InSubquery { depth }, '(') => AliasState::InSubquery { depth: depth + 1 },
+                (AliasState::InSubquery { depth }, ')') => {
+                    if depth == 1 {
+                        AliasState::ExpectSubqueryAlias
+                    } else {
+                        AliasState::InSubquery { depth: depth - 1 }
+                    }
+                }
+                (AliasState::InSubquery { depth }, _) => AliasState::InSubquery { depth },
+                (s, _) => s,
+            };
+            continue;
+        }
+        state = match (state, token) {
+            (AliasState::Idle, SqlToken::Word(w))
+                if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
+            {
+                AliasState::ExpectTable
+            }
+            (AliasState::ExpectTable, SqlToken::Word(w))
+                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
+            {
+                AliasState::ExpectAlias { candidate: w.to_lowercase() }
+            }
+            (AliasState::ExpectTable, _) => AliasState::Idle,
+            (AliasState::ExpectAlias { candidate }, SqlToken::Word(w))
+                if w.to_uppercase() == "AS" =>
+            {
+                tables.push(candidate.clone());
+                AliasState::ExpectAliasName { candidate }
+            }
+            (AliasState::ExpectAlias { candidate }, SqlToken::Word(w))
+                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
+            {
+                tables.push(candidate);
+                AliasState::PostAlias
+            }
+            (AliasState::ExpectAlias { candidate }, _) => {
+                tables.push(candidate);
+                AliasState::Idle
+            }
+            (AliasState::ExpectQualifiedTable, SqlToken::Word(w))
+                if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
+            {
+                AliasState::ExpectAlias { candidate: w.to_lowercase() }
+            }
+            (AliasState::ExpectQualifiedTable, _) => AliasState::Idle,
+            (AliasState::ExpectAliasName { .. }, SqlToken::Word(_)) => AliasState::PostAlias,
+            (AliasState::ExpectAliasName { .. }, _) => AliasState::Idle,
+            (AliasState::PostAlias, SqlToken::Word(w))
+                if matches!(w.to_uppercase().as_str(), "FROM" | "JOIN" | "UPDATE" | "INTO") =>
+            {
+                AliasState::ExpectTable
+            }
+            (AliasState::PostAlias, _) => AliasState::Idle,
+            (AliasState::ExpectSubqueryAlias, SqlToken::Word(w))
+                if w.to_uppercase() == "AS" =>
+            {
+                AliasState::ExpectSubqueryAliasName
+            }
+            (AliasState::ExpectSubqueryAlias, SqlToken::Word(_)) => AliasState::PostAlias,
+            (AliasState::ExpectSubqueryAlias, _) => AliasState::Idle,
+            (AliasState::ExpectSubqueryAliasName, SqlToken::Word(_)) => AliasState::PostAlias,
+            (AliasState::ExpectSubqueryAliasName, _) => AliasState::Idle,
+            (s, _) => s,
+        };
+    }
+
+    // Flush any table name pending at end of input (no alias followed)
+    if let AliasState::ExpectAlias { candidate } = state {
+        tables.push(candidate);
+    }
+
+    tables.dedup();
+    tables
+}
+
 pub struct JoinContext {
     pub right_table: String,
     pub left_tables: Vec<String>,
@@ -311,5 +405,36 @@ mod tests {
         ).unwrap();
         assert_eq!(ctx.right_table, "orders");
         assert!(ctx.left_tables.contains(&"users".to_string()));
+    }
+
+    #[test]
+    fn extract_referenced_tables_simple_from() {
+        let tables = extract_referenced_tables("SELECT * FROM users");
+        assert_eq!(tables, vec!["users"]);
+    }
+
+    #[test]
+    fn extract_referenced_tables_with_alias() {
+        let tables = extract_referenced_tables("SELECT * FROM users u");
+        assert_eq!(tables, vec!["users"]);
+    }
+
+    #[test]
+    fn extract_referenced_tables_join() {
+        let mut tables = extract_referenced_tables("SELECT * FROM users u JOIN orders o ON u.id = o.user_id");
+        tables.sort();
+        assert_eq!(tables, vec!["orders", "users"]);
+    }
+
+    #[test]
+    fn extract_referenced_tables_no_from_returns_empty() {
+        let tables = extract_referenced_tables("SELECT 1");
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn extract_referenced_tables_schema_qualified() {
+        let tables = extract_referenced_tables("SELECT * FROM public.users");
+        assert_eq!(tables, vec!["users"]);
     }
 }
