@@ -6,6 +6,19 @@ use crate::core::domain::analytics::{FreqEntry, HistoryEntry};
 use crate::core::ports::analytics_port::AnalyticsPort;
 
 const SCHEMA_V1: &str = "
+CREATE TABLE IF NOT EXISTS connections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE,
+    host        TEXT    NOT NULL,
+    port        INTEGER NOT NULL DEFAULT 5432,
+    username    TEXT    NOT NULL,
+    password    TEXT    NOT NULL,
+    database    TEXT    NOT NULL,
+    tls         TEXT    NOT NULL DEFAULT 'disable',
+    environment TEXT,
+    uuid        TEXT
+);
+
 CREATE TABLE IF NOT EXISTS query_history (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     db_name     TEXT    NOT NULL,
@@ -282,6 +295,171 @@ impl AnalyticsPort for SqliteRepository {
     }
 }
 
+impl SqliteRepository {
+    fn tls_from_str(s: &str) -> crate::core::domain::connection::TlsMode {
+        use crate::core::domain::connection::TlsMode;
+        match s {
+            "require" => TlsMode::Require,
+            "verify-full" => TlsMode::VerifyFull,
+            _ => TlsMode::Disable,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn connection_id_for(conn: &rusqlite::Connection, name: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT id FROM connections WHERE name = ?1",
+            rusqlite::params![name],
+            |r| r.get(0),
+        )
+        .ok()
+    }
+}
+
+impl crate::core::ports::connection_repository::ConnectionRepository for SqliteRepository {
+    fn add(&self, connection: crate::core::domain::connection::Connection) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO connections (name, host, port, username, password, database, tls, environment, uuid)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                connection.name,
+                connection.host,
+                connection.port as i64,
+                connection.username,
+                connection.password,
+                connection.database,
+                connection.tls.to_string(),
+                connection.environment,
+                connection.id,
+            ],
+        )
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                format!("connection '{}' already exists", connection.name)
+            } else {
+                e.to_string()
+            }
+        })?;
+        Ok(())
+    }
+
+    fn list(&self) -> Result<Vec<crate::core::domain::connection::Connection>, String> {
+        use crate::core::domain::connection::Connection;
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT name, host, port, username, password, database, tls, environment, uuid
+                 FROM connections ORDER BY name",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                let tls_str: String = r.get(6)?;
+                Ok(Connection {
+                    name: r.get(0)?,
+                    host: r.get(1)?,
+                    port: r.get::<_, i64>(2)? as u16,
+                    username: r.get(3)?,
+                    password: r.get(4)?,
+                    database: r.get(5)?,
+                    tls: SqliteRepository::tls_from_str(&tls_str),
+                    environment: r.get(7)?,
+                    id: r.get(8)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    fn delete(&self, name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute("DELETE FROM connections WHERE name = ?1", rusqlite::params![name])
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("connection '{}' not found", name));
+        }
+        Ok(())
+    }
+
+    fn get_connection(&self, name: &str) -> Result<crate::core::domain::connection::Connection, String> {
+        use crate::core::domain::connection::Connection;
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT name, host, port, username, password, database, tls, environment, uuid
+             FROM connections WHERE name = ?1",
+            rusqlite::params![name],
+            |r| {
+                let tls_str: String = r.get(6)?;
+                Ok(Connection {
+                    name: r.get(0)?,
+                    host: r.get(1)?,
+                    port: r.get::<_, i64>(2)? as u16,
+                    username: r.get(3)?,
+                    password: r.get(4)?,
+                    database: r.get(5)?,
+                    tls: SqliteRepository::tls_from_str(&tls_str),
+                    environment: r.get(7)?,
+                    id: r.get(8)?,
+                })
+            },
+        )
+        .map_err(|e| {
+            if matches!(e, rusqlite::Error::QueryReturnedNoRows) {
+                format!("connection '{}' not found", name)
+            } else {
+                e.to_string()
+            }
+        })
+    }
+
+    fn update(&self, connection: crate::core::domain::connection::Connection) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE connections SET host=?1, port=?2, username=?3, password=?4,
+                 database=?5, tls=?6, environment=?7, uuid=?8 WHERE name=?9",
+                rusqlite::params![
+                    connection.host,
+                    connection.port as i64,
+                    connection.username,
+                    connection.password,
+                    connection.database,
+                    connection.tls.to_string(),
+                    connection.environment,
+                    connection.id,
+                    connection.name,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("connection '{}' not found", connection.name));
+        }
+        Ok(())
+    }
+
+    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE connections SET name = ?1 WHERE name = ?2",
+                rusqlite::params![new_name, old_name],
+            )
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    format!("connection '{}' already exists", new_name)
+                } else {
+                    e.to_string()
+                }
+            })?;
+        if n == 0 {
+            return Err(format!("connection '{}' not found", old_name));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,12 +472,12 @@ mod tests {
         let conn = repo.conn.lock().unwrap();
         let count: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='query_history'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('query_history','connections')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -457,5 +635,145 @@ mod tests {
     fn get_frequent_tables_returns_empty_for_unknown_db() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         assert!(repo.get_frequent_tables("ghost").is_empty());
+    }
+
+    // --- ConnectionRepository tests ---
+
+    use crate::core::domain::connection::{Connection, TlsMode};
+    use crate::core::ports::connection_repository::ConnectionRepository;
+
+    fn sample_conn(name: &str) -> Connection {
+        Connection {
+            name: name.to_string(),
+            host: "localhost".to_string(),
+            port: 5432,
+            username: "user".to_string(),
+            password: "pass".to_string(),
+            database: "db".to_string(),
+            tls: TlsMode::Disable,
+            environment: None,
+            id: None,
+        }
+    }
+
+    #[test]
+    fn add_connection_and_list() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("prod")).unwrap();
+        let list = repo.list().unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "prod");
+        assert_eq!(list[0].host, "localhost");
+    }
+
+    #[test]
+    fn add_duplicate_returns_error() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("prod")).unwrap();
+        let err = repo.add(sample_conn("prod")).unwrap_err();
+        assert_eq!(err, "connection 'prod' already exists");
+    }
+
+    #[test]
+    fn list_returns_empty_initially() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        assert!(repo.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_removes_connection() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("prod")).unwrap();
+        repo.delete("prod").unwrap();
+        assert!(repo.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_returns_error_when_not_found() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        let err = repo.delete("ghost").unwrap_err();
+        assert_eq!(err, "connection 'ghost' not found");
+    }
+
+    #[test]
+    fn get_connection_by_name() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("prod")).unwrap();
+        let c = repo.get_connection("prod").unwrap();
+        assert_eq!(c.name, "prod");
+        assert_eq!(c.port, 5432);
+    }
+
+    #[test]
+    fn get_connection_returns_error_when_not_found() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        let err = repo.get_connection("ghost").unwrap_err();
+        assert_eq!(err, "connection 'ghost' not found");
+    }
+
+    #[test]
+    fn update_connection() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("prod")).unwrap();
+        let mut updated = sample_conn("prod");
+        updated.database = "newdb".to_string();
+        repo.update(updated).unwrap();
+        let c = repo.get_connection("prod").unwrap();
+        assert_eq!(c.database, "newdb");
+        assert_eq!(c.host, "localhost");
+    }
+
+    #[test]
+    fn update_returns_error_when_not_found() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        let err = repo.update(sample_conn("ghost")).unwrap_err();
+        assert_eq!(err, "connection 'ghost' not found");
+    }
+
+    #[test]
+    fn rename_connection() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("prod")).unwrap();
+        repo.rename("prod", "production").unwrap();
+        assert!(repo.get_connection("production").is_ok());
+        assert_eq!(repo.get_connection("prod").unwrap_err(), "connection 'prod' not found");
+    }
+
+    #[test]
+    fn rename_returns_error_when_not_found() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        let err = repo.rename("ghost", "new").unwrap_err();
+        assert_eq!(err, "connection 'ghost' not found");
+    }
+
+    #[test]
+    fn rename_returns_error_when_new_name_exists() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        repo.add(sample_conn("prod")).unwrap();
+        repo.add(sample_conn("staging")).unwrap();
+        let err = repo.rename("prod", "staging").unwrap_err();
+        assert_eq!(err, "connection 'staging' already exists");
+    }
+
+    #[test]
+    fn connection_with_tls_and_environment_round_trips() {
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        let c = Connection {
+            name: "secure".to_string(),
+            host: "db.example.com".to_string(),
+            port: 5433,
+            username: "admin".to_string(),
+            password: "secret".to_string(),
+            database: "prod_db".to_string(),
+            tls: TlsMode::VerifyFull,
+            environment: Some("production".to_string()),
+            id: Some("abc123".to_string()),
+        };
+        repo.add(c.clone()).unwrap();
+        let loaded = repo.get_connection("secure").unwrap();
+        assert_eq!(loaded.tls, TlsMode::VerifyFull);
+        assert_eq!(loaded.environment, Some("production".to_string()));
+        assert_eq!(loaded.id, Some("abc123".to_string()));
+        assert_eq!(loaded.port, 5433);
     }
 }
