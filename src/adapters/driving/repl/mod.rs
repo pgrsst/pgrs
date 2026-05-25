@@ -325,8 +325,8 @@ fn handle_export(
             return;
         }
     };
-    if is_dml(&entry.query) {
-        writeln!(writer, "error: cannot export DML query").ok();
+    if is_dml(&entry.query) || is_ddl(&entry.query) {
+        writeln!(writer, "error: cannot export non-SELECT query").ok();
         return;
     }
     let result = match conn.execute(&entry.query) {
@@ -344,6 +344,8 @@ fn handle_export(
         }
     };
     if let Err(e) = write_csv(&result, &mut file) {
+        drop(file);
+        std::fs::remove_file(path).ok();
         writeln!(writer, "error: could not write file: {}", e).ok();
         return;
     }
@@ -1219,7 +1221,24 @@ mod tests {
         handle_export(5, &path, "mydb", &stub, &analytics, &mut out);
 
         let msg = String::from_utf8(out).unwrap();
-        assert!(msg.contains("cannot export DML query"), "expected DML error, got: {msg}");
+        assert!(msg.contains("cannot export non-SELECT query"), "expected non-SELECT error, got: {msg}");
+        assert!(!std::path::Path::new(&path).exists(), "file must not be created");
+    }
+
+    #[test]
+    fn handle_export_errors_on_ddl_query() {
+        let path = export_tmp_path("ddl");
+        let _ = std::fs::remove_file(&path);
+
+        let stub = StubDb::ok(vec![], vec![]);
+        let analytics = FixedHistoryAnalytics::new(vec![
+            HistoryEntry { id: 6, query: "DROP TABLE foo;".to_string(), executed_at: 1000 },
+        ]);
+        let mut out = Vec::new();
+        handle_export(6, &path, "mydb", &stub, &analytics, &mut out);
+
+        let msg = String::from_utf8(out).unwrap();
+        assert!(msg.contains("cannot export non-SELECT query"), "expected non-SELECT error, got: {msg}");
         assert!(!std::path::Path::new(&path).exists(), "file must not be created");
     }
 }
