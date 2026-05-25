@@ -1,4 +1,4 @@
-pub mod migrations;
+pub(crate) mod migrations;
 pub mod connection_store;
 pub mod analytics_store;
 pub mod schema_cache;
