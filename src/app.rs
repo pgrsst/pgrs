@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::adapters::driven::postgres_db::PostgresDb;
-use crate::adapters::driven::sqlite_repository::SqliteRepository;
+use crate::adapters::driven::sqlite::SqliteRepository;
 use crate::adapters::driving::cli::Cli;
 use crate::adapters::driving::repl;
 use crate::core::ports::analytics_port::AnalyticsPort;

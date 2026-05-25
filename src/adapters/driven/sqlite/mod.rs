@@ -1,3 +1,8 @@
+pub mod migrations;
+pub mod connection_store;
+pub mod analytics_store;
+pub mod schema_cache;
+
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -167,7 +172,7 @@ impl SqliteRepository {
         }
     }
 
-    fn connection_id_for(conn: &rusqlite::Connection, name: &str) -> Option<i64> {
+    pub(crate) fn connection_id_for(conn: &rusqlite::Connection, name: &str) -> Option<i64> {
         conn.query_row(
             "SELECT id FROM connections WHERE name = ?1",
             rusqlite::params![name],
