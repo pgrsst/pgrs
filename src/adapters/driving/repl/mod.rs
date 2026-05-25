@@ -180,6 +180,18 @@ fn is_ddl(query: &str) -> bool {
     )
 }
 
+fn is_dml(query: &str) -> bool {
+    matches!(
+        query
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_uppercase()
+            .as_str(),
+        "INSERT" | "UPDATE" | "DELETE"
+    )
+}
+
 fn csv_quote(val: &str) -> String {
     if val.contains(',') || val.contains('"') || val.contains('\n') {
         format!("\"{}\"", val.replace('"', "\"\""))
@@ -291,6 +303,51 @@ fn handle_stats(
             }
         }
     }
+}
+
+fn handle_export(
+    id: i64,
+    path: &str,
+    connection_name: &str,
+    conn: &dyn ReplPort,
+    analytics: &dyn AnalyticsPort,
+    writer: &mut impl Write,
+) {
+    if std::path::Path::new(path).exists() {
+        writeln!(writer, "error: file already exists: {}", path).ok();
+        return;
+    }
+    let history = analytics.get_history(connection_name);
+    let entry = match history.iter().find(|e| e.id == id) {
+        Some(e) => e,
+        None => {
+            writeln!(writer, "error: no history entry with id {}", id).ok();
+            return;
+        }
+    };
+    if is_dml(&entry.query) {
+        writeln!(writer, "error: cannot export DML query").ok();
+        return;
+    }
+    let result = match conn.execute(&entry.query) {
+        Ok(r) => r,
+        Err(e) => {
+            writeln!(writer, "error: {}", e).ok();
+            return;
+        }
+    };
+    let mut file = match std::fs::File::create(path) {
+        Ok(f) => f,
+        Err(e) => {
+            writeln!(writer, "error: could not write file: {}", e).ok();
+            return;
+        }
+    };
+    if let Err(e) = write_csv(&result, &mut file) {
+        writeln!(writer, "error: could not write file: {}", e).ok();
+        return;
+    }
+    writeln!(writer, "Exported {} rows to {}", result.rows.len(), path).ok();
 }
 
 fn extract_column_refs(query: &str, schema: &SchemaService) -> Vec<(String, String)> {
@@ -915,6 +972,19 @@ mod tests {
         }
     }
 
+    struct FixedHistoryAnalytics {
+        entries: Vec<HistoryEntry>,
+    }
+    impl FixedHistoryAnalytics {
+        fn new(entries: Vec<HistoryEntry>) -> Self { Self { entries } }
+    }
+    impl AnalyticsPort for FixedHistoryAnalytics {
+        fn record_query(&self, _: &str, _: &str, _: &[String], _: &[(String, String)]) {}
+        fn get_history(&self, _: &str) -> Vec<HistoryEntry> { self.entries.clone() }
+        fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> { vec![] }
+        fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> { vec![] }
+    }
+
     #[test]
     fn handle_sql_records_analytics_with_connection_name() {
         struct CapturingAnalytics {
@@ -1048,5 +1118,108 @@ mod tests {
         write_csv(&result, &mut out).unwrap();
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text, "id\n");
+    }
+
+    #[test]
+    fn is_dml_detects_insert() {
+        assert!(is_dml("INSERT INTO foo VALUES (1);"));
+        assert!(is_dml("insert into foo values (1);"));
+    }
+
+    #[test]
+    fn is_dml_detects_update() {
+        assert!(is_dml("UPDATE foo SET x = 1;"));
+    }
+
+    #[test]
+    fn is_dml_detects_delete() {
+        assert!(is_dml("DELETE FROM foo;"));
+    }
+
+    #[test]
+    fn is_dml_returns_false_for_select() {
+        assert!(!is_dml("SELECT * FROM foo;"));
+        assert!(!is_dml("WITH cte AS (SELECT 1) SELECT * FROM cte;"));
+    }
+
+    fn export_tmp_path(tag: &str) -> String {
+        format!("/tmp/pgrs_export_{}_{}.csv", std::process::id(), tag)
+    }
+
+    #[test]
+    fn handle_export_writes_csv_for_valid_id() {
+        let path = export_tmp_path("happy");
+        let _ = std::fs::remove_file(&path);
+
+        let stub = StubDb::ok(
+            vec![vec!["1".to_string(), "alice".to_string()]],
+            vec!["id".to_string(), "name".to_string()],
+        );
+        let analytics = FixedHistoryAnalytics::new(vec![
+            HistoryEntry { id: 3, query: "SELECT id, name FROM users;".to_string(), executed_at: 1000 },
+        ]);
+        let mut out = Vec::new();
+        handle_export(3, &path, "mydb", &stub, &analytics, &mut out);
+
+        let msg = String::from_utf8(out).unwrap();
+        assert!(msg.contains("Exported 1 rows to"), "expected confirmation, got: {msg}");
+
+        let csv = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(csv, "id,name\n1,alice\n");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_export_errors_on_existing_file() {
+        let path = export_tmp_path("exists");
+        std::fs::write(&path, "existing").unwrap();
+
+        let stub = StubDb::ok(vec![], vec![]);
+        let analytics = FixedHistoryAnalytics::new(vec![
+            HistoryEntry { id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
+        ]);
+        let mut out = Vec::new();
+        handle_export(1, &path, "mydb", &stub, &analytics, &mut out);
+
+        let msg = String::from_utf8(out).unwrap();
+        assert!(msg.contains("file already exists"), "expected file-exists error, got: {msg}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing", "file must not be overwritten");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn handle_export_errors_on_unknown_id() {
+        let path = export_tmp_path("unknown");
+        let _ = std::fs::remove_file(&path);
+
+        let stub = StubDb::ok(vec![], vec![]);
+        let analytics = FixedHistoryAnalytics::new(vec![
+            HistoryEntry { id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
+        ]);
+        let mut out = Vec::new();
+        handle_export(999, &path, "mydb", &stub, &analytics, &mut out);
+
+        let msg = String::from_utf8(out).unwrap();
+        assert!(msg.contains("no history entry with id 999"), "expected id-not-found error, got: {msg}");
+        assert!(!std::path::Path::new(&path).exists(), "file must not be created");
+    }
+
+    #[test]
+    fn handle_export_errors_on_dml_query() {
+        let path = export_tmp_path("dml");
+        let _ = std::fs::remove_file(&path);
+
+        let stub = StubDb::ok(vec![], vec![]);
+        let analytics = FixedHistoryAnalytics::new(vec![
+            HistoryEntry { id: 5, query: "INSERT INTO foo VALUES (1);".to_string(), executed_at: 1000 },
+        ]);
+        let mut out = Vec::new();
+        handle_export(5, &path, "mydb", &stub, &analytics, &mut out);
+
+        let msg = String::from_utf8(out).unwrap();
+        assert!(msg.contains("cannot export DML query"), "expected DML error, got: {msg}");
+        assert!(!std::path::Path::new(&path).exists(), "file must not be created");
     }
 }
