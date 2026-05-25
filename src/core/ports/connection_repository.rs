@@ -6,6 +6,7 @@ pub trait ConnectionRepository {
     fn list(&self) -> Result<Vec<Connection>, DomainError>;
     fn delete(&self, name: &str) -> Result<(), DomainError>;
     fn get_connection(&self, name: &str) -> Result<Connection, DomainError>;
+    fn find_row_id(&self, name: &str) -> Result<i64, DomainError>;
     fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError>;
     fn update(&self, connection: Connection) -> Result<(), DomainError>;
 }
@@ -22,6 +23,9 @@ impl<T: ConnectionRepository> ConnectionRepository for std::sync::Arc<T> {
     }
     fn get_connection(&self, name: &str) -> Result<Connection, DomainError> {
         (**self).get_connection(name)
+    }
+    fn find_row_id(&self, name: &str) -> Result<i64, DomainError> {
+        (**self).find_row_id(name)
     }
     fn update(&self, connection: Connection) -> Result<(), DomainError> {
         (**self).update(connection)
@@ -97,6 +101,15 @@ pub mod test_support {
                 .iter()
                 .find(|c| c.name() == name)
                 .cloned()
+                .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", name)))
+        }
+
+        fn find_row_id(&self, name: &str) -> Result<i64, DomainError> {
+            self.connections
+                .borrow()
+                .iter()
+                .position(|c| c.name() == name)
+                .map(|i| (i + 1) as i64)
                 .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", name)))
         }
 

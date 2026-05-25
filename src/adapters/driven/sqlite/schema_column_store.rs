@@ -4,20 +4,13 @@ use crate::core::ports::schema_column_repository::SchemaColumnRepository;
 use super::SqliteRepository;
 
 impl SchemaColumnRepository for SqliteRepository {
-    fn save(
-        &self,
-        connection_id: i64,
-        table_name: &str,
-        column_name: &str,
-        data_type: Option<&str>,
-        cached_at: i64,
-    ) -> Result<(), DomainError> {
+    fn save(&self, entity: &SchemaColumn) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO schema_columns
              (connection_id, table_name, column_name, data_type, cached_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![connection_id, table_name, column_name, data_type, cached_at],
+            rusqlite::params![entity.connection_id, entity.table_name, entity.column_name, entity.data_type, entity.cached_at],
         )
         .map(|_| ())
         .map_err(|e| DomainError::StorageError(e.to_string()))

@@ -4,19 +4,17 @@ use crate::core::ports::query_history_repository::QueryHistoryRepository;
 use super::SqliteRepository;
 
 impl QueryHistoryRepository for SqliteRepository {
-    fn upsert(&self, connection_name: &str, query: &str, executed_at: i64) -> Result<i64, DomainError> {
+    fn save(&self, entity: &QueryHistory) -> Result<i64, DomainError> {
         let conn = self.conn.lock().unwrap();
-        let connection_id = SqliteRepository::connection_id_for(&conn, connection_name)
-            .ok_or_else(|| DomainError::NotFound(connection_name.to_string()))?;
         conn.execute(
             "INSERT INTO query_history (connection_id, query, executed_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(connection_id, query) DO UPDATE SET executed_at = excluded.executed_at",
-            rusqlite::params![connection_id, query, executed_at],
+            rusqlite::params![entity.connection_id, entity.query, entity.executed_at],
         )
         .map_err(|e| DomainError::StorageError(e.to_string()))?;
         conn.query_row(
             "SELECT id FROM query_history WHERE connection_id = ?1 AND query = ?2",
-            rusqlite::params![connection_id, query],
+            rusqlite::params![entity.connection_id, entity.query],
             |r| r.get(0),
         )
         .map_err(|e| DomainError::StorageError(e.to_string()))

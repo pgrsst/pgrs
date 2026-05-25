@@ -133,6 +133,12 @@ impl ConnectionRepository for SqliteRepository {
         Ok(())
     }
 
+    fn find_row_id(&self, name: &str) -> Result<i64, DomainError> {
+        let conn = self.conn.lock().unwrap();
+        SqliteRepository::connection_id_for(&conn, name)
+            .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", name)))
+    }
+
     fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
         let n = conn

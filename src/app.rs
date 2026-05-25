@@ -13,7 +13,10 @@ use crate::core::ports::query_history_repository::QueryHistoryRepository;
 use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::ports::table_access_repository::TableAccessRepository;
 use crate::core::services::analytics::service::AnalyticsService;
+use crate::core::services::column_access::service::ColumnAccessService;
 use crate::core::services::connection::service::ConnectionService;
+use crate::core::services::query_history::service::QueryHistoryService;
+use crate::core::services::table_access::service::TableAccessService;
 
 pub fn run() -> Result<(), String> {
     let data_dir = dirs::home_dir()
@@ -37,10 +40,23 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
 
     match args.first().map(String::as_str) {
         Some("shell") => {
-            let analytics = Arc::new(AnalyticsService::new(
+            let connection_repo = Arc::clone(&sqlite) as Arc<dyn ConnectionRepository>;
+            let query_history_svc = Arc::new(QueryHistoryService::new(
+                Arc::clone(&connection_repo),
                 Arc::clone(&sqlite) as Arc<dyn QueryHistoryRepository>,
+            ));
+            let table_access_svc = Arc::new(TableAccessService::new(
+                Arc::clone(&connection_repo),
                 Arc::clone(&sqlite) as Arc<dyn TableAccessRepository>,
+            ));
+            let column_access_svc = Arc::new(ColumnAccessService::new(
+                Arc::clone(&connection_repo),
                 Arc::clone(&sqlite) as Arc<dyn ColumnAccessRepository>,
+            ));
+            let analytics = Arc::new(AnalyticsService::new(
+                query_history_svc,
+                table_access_svc,
+                column_access_svc,
             ));
             run_shell(
                 &args[1..],

@@ -104,13 +104,20 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use crate::core::domain::analytics::FreqEntry;
+    use crate::core::domain::column_access::ColumnAccess;
+    use crate::core::domain::connection::Connection;
     use crate::core::domain::error::DomainError;
     use crate::core::domain::query_history::QueryHistory;
+    use crate::core::domain::table_access::TableAccess;
     use crate::core::ports::column_access_repository::ColumnAccessRepository;
+    use crate::core::ports::connection_repository::ConnectionRepository;
     use crate::core::ports::db_connection::QueryResult;
     use crate::core::ports::query_history_repository::QueryHistoryRepository;
     use crate::core::ports::table_access_repository::TableAccessRepository;
     use crate::core::services::analytics::service::AnalyticsService;
+    use crate::core::services::column_access::service::ColumnAccessService;
+    use crate::core::services::query_history::service::QueryHistoryService;
+    use crate::core::services::table_access::service::TableAccessService;
 
     struct StubDb {
         result: Result<QueryResult, String>,
@@ -136,6 +143,17 @@ mod tests {
         }
     }
 
+    struct StubConnRepo;
+    impl ConnectionRepository for StubConnRepo {
+        fn add(&self, _: Connection) -> Result<(), DomainError> { Ok(()) }
+        fn list(&self) -> Result<Vec<Connection>, DomainError> { Ok(vec![]) }
+        fn delete(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
+        fn get_connection(&self, n: &str) -> Result<Connection, DomainError> { Err(DomainError::NotFound(n.to_string())) }
+        fn find_row_id(&self, _: &str) -> Result<i64, DomainError> { Ok(1) }
+        fn rename(&self, _: &str, _: &str) -> Result<(), DomainError> { Ok(()) }
+        fn update(&self, _: Connection) -> Result<(), DomainError> { Ok(()) }
+    }
+
     struct FixedHistory {
         entries: Vec<QueryHistory>,
     }
@@ -143,25 +161,34 @@ mod tests {
         fn new(entries: Vec<QueryHistory>) -> Self { Self { entries } }
     }
     impl QueryHistoryRepository for FixedHistory {
-        fn upsert(&self, _: &str, _: &str, _: i64) -> Result<i64, DomainError> { Ok(1) }
+        fn save(&self, _: &QueryHistory) -> Result<i64, DomainError> { Ok(1) }
         fn list_recent(&self, _: &str, _: usize) -> Vec<QueryHistory> { self.entries.clone() }
     }
     impl TableAccessRepository for FixedHistory {
-        fn insert(&self, _: &str, _: &str, _: Option<i64>, _: i64) -> Result<(), DomainError> { Ok(()) }
+        fn save(&self, _: &TableAccess) -> Result<(), DomainError> { Ok(()) }
         fn list_frequent(&self, _: &str, _: usize) -> Vec<FreqEntry> { vec![] }
     }
     impl ColumnAccessRepository for FixedHistory {
-        fn insert(&self, _: &str, _: &str, _: &str, _: Option<i64>, _: i64) -> Result<(), DomainError> { Ok(()) }
+        fn save(&self, _: &ColumnAccess) -> Result<(), DomainError> { Ok(()) }
         fn list_frequent_by_table(&self, _: &str, _: &str, _: usize) -> Vec<FreqEntry> { vec![] }
     }
 
     fn make_svc(entries: Vec<QueryHistory>) -> AnalyticsService {
+        let conn_repo = Arc::new(StubConnRepo);
         let stub = Arc::new(FixedHistory::new(entries));
-        AnalyticsService::new(
+        let history_svc = Arc::new(QueryHistoryService::new(
+            Arc::clone(&conn_repo) as Arc<dyn ConnectionRepository>,
             Arc::clone(&stub) as Arc<dyn QueryHistoryRepository>,
+        ));
+        let table_svc = Arc::new(TableAccessService::new(
+            Arc::clone(&conn_repo) as Arc<dyn ConnectionRepository>,
             Arc::clone(&stub) as Arc<dyn TableAccessRepository>,
+        ));
+        let col_svc = Arc::new(ColumnAccessService::new(
+            Arc::clone(&conn_repo) as Arc<dyn ConnectionRepository>,
             Arc::clone(&stub) as Arc<dyn ColumnAccessRepository>,
-        )
+        ));
+        AnalyticsService::new(history_svc, table_svc, col_svc)
     }
 
     #[test]

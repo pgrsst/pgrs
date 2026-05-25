@@ -1,23 +1,16 @@
 use crate::core::domain::analytics::FreqEntry;
 use crate::core::domain::error::DomainError;
+use crate::core::domain::table_access::TableAccess;
 use crate::core::ports::table_access_repository::TableAccessRepository;
 use super::SqliteRepository;
 
 impl TableAccessRepository for SqliteRepository {
-    fn insert(
-        &self,
-        connection_name: &str,
-        table_name: &str,
-        query_id: Option<i64>,
-        accessed_at: i64,
-    ) -> Result<(), DomainError> {
+    fn save(&self, entity: &TableAccess) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
-        let connection_id = SqliteRepository::connection_id_for(&conn, connection_name)
-            .ok_or_else(|| DomainError::NotFound(connection_name.to_string()))?;
         conn.execute(
             "INSERT INTO table_access (connection_id, table_name, query_id, accessed_at)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![connection_id, table_name, query_id, accessed_at],
+            rusqlite::params![entity.connection_id, entity.table_name, entity.query_id, entity.accessed_at],
         )
         .map(|_| ())
         .map_err(|e| DomainError::StorageError(e.to_string()))
