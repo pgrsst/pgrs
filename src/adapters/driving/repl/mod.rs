@@ -194,7 +194,7 @@ fn is_dml(query: &str) -> bool {
 }
 
 fn csv_quote(val: &str) -> String {
-    if val.contains(',') || val.contains('"') || val.contains('\n') {
+    if val.contains(',') || val.contains('"') || val.contains('\n') || val.contains('\r') {
         format!("\"{}\"", val.replace('"', "\"\""))
     } else {
         val.to_string()
@@ -1100,6 +1100,11 @@ mod tests {
     #[test]
     fn csv_quote_value_with_newline_is_quoted() {
         assert_eq!(csv_quote("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn csv_quote_value_with_carriage_return_is_quoted() {
+        assert_eq!(csv_quote("line1\rline2"), "\"line1\rline2\"");
     }
 
     #[test]

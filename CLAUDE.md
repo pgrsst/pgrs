@@ -78,3 +78,9 @@ src/
 **Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers).
 
 **Tab-completion pipeline:** `tokenizer.rs` tokenizes the current line → `alias.rs` builds an `AliasMap` (alias→real table) and `JoinContext` → `completer.rs` uses those plus `SchemaService` to suggest keywords, tables, or columns depending on the preceding SQL keyword (`FROM`/`JOIN` → tables; `SELECT`/`WHERE`/`ON` → columns). Known limitation: schema-qualified names (`public.users`) partially disrupt alias extraction — the dot emits `Other('.')` which breaks the state machine for that table.
+
+## Known Limitations
+
+- **`\export` does not block CTE-wrapped DML.** Queries starting with `WITH` that wrap `INSERT`/`UPDATE`/`DELETE` (e.g., `WITH rows AS (...) INSERT INTO ...`) are not detected as mutations and will be re-executed. This matches the same limitation in the `is_ddl` detection used for schema auto-refresh.
+
+- **Tab-completion schema-qualified names.** Schema-qualified names (`public.users`) partially disrupt alias extraction — the dot emits `Other('.')` which breaks the state machine for that table.
