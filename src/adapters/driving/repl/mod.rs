@@ -107,19 +107,20 @@ impl Validator for SqlValidator {
 
 // To add a new REPL command: append one (&str, &str) entry here.
 const REPL_COMMANDS: &[(&str, &str)] = &[
-    ("\\d",              "list all tables"),
-    ("\\dt",             "list all tables with extended information (column count)"),
-    ("\\d <table>",      "describe table (columns, indexes, constraints)"),
-    ("\\d+ <table>",     "describe table (extended: + storage, triggers, comments)"),
-    ("\\l",              "list databases"),
-    ("\\x",              "toggle expanded display"),
-    ("\\timing",         "toggle query execution time"),
-    ("\\refresh",        "reload schema (after CREATE/DROP/ALTER TABLE)"),
-    ("\\history",        "show recent query history"),
-    ("\\stats",          "show most frequently queried tables"),
-    ("\\stats <table>",  "show most frequently queried columns for table"),
-    ("\\help, \\?",      "show this help"),
-    ("\\q, exit",        "quit (or Ctrl+D)"),
+    ("\\d",                  "list all tables"),
+    ("\\dt",                 "list all tables with extended information (column count)"),
+    ("\\d <table>",          "describe table (columns, indexes, constraints)"),
+    ("\\d+ <table>",         "describe table (extended: + storage, triggers, comments)"),
+    ("\\l",                  "list databases"),
+    ("\\x",                  "toggle expanded display"),
+    ("\\timing",             "toggle query execution time"),
+    ("\\refresh",            "reload schema (after CREATE/DROP/ALTER TABLE)"),
+    ("\\history",            "show recent query history"),
+    ("\\export <id> <path>", "export query result from history to CSV file"),
+    ("\\stats",              "show most frequently queried tables"),
+    ("\\stats <table>",      "show most frequently queried columns for table"),
+    ("\\help, \\?",          "show this help"),
+    ("\\q, exit",            "quit (or Ctrl+D)"),
 ];
 
 fn repl_help_text() -> String {
@@ -535,6 +536,19 @@ pub fn run(
                                 Some(a) => handle_stats(connection_name, Some(tbl), a, &mut stdout),
                                 None => { writeln!(stdout, "Analytics not available.").ok(); }
                             }
+                        } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
+                            let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                            if parts.len() != 2 || parts[1].is_empty() {
+                                writeln!(stdout, "Usage: \\export <id> <path>").ok();
+                            } else {
+                                match parts[0].parse::<i64>() {
+                                    Err(_) => { writeln!(stdout, "error: invalid id '{}'", parts[0]).ok(); }
+                                    Ok(id) => match analytics.as_deref() {
+                                        None => { writeln!(stdout, "Analytics not available.").ok(); }
+                                        Some(a) => handle_export(id, parts[1], connection_name, conn.as_ref(), a, &mut stdout),
+                                    }
+                                }
+                            }
                         } else {
                             handle_sql(
                                 conn.as_ref(),
@@ -944,6 +958,12 @@ mod tests {
     fn help_text_mentions_backslash_d() {
         let text = repl_help_text();
         assert!(text.contains("\\d"), "help should mention \\d, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_export_command() {
+        let text = repl_help_text();
+        assert!(text.contains("\\export"), "help should mention \\export, got: {text}");
     }
 
     use std::sync::RwLock;
