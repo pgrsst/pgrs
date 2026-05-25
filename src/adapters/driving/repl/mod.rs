@@ -306,6 +306,36 @@ fn handle_stats(
     }
 }
 
+/// Parses `\export <id> <path>` rest string (everything after `\export `).
+/// Path may be unquoted, single-quoted, or double-quoted (to support spaces).
+/// Returns `None` if the rest string cannot be parsed into (id, path).
+fn parse_export_args(rest: &str) -> Option<(i64, String)> {
+    let rest = rest.trim();
+    // Split id from the remainder
+    let (id_str, after_id) = rest.split_once(' ')?;
+    let id: i64 = id_str.parse().ok()?;
+    let path_raw = after_id.trim();
+    if path_raw.is_empty() {
+        return None;
+    }
+    let path = if (path_raw.starts_with('"') && path_raw.ends_with('"'))
+        || (path_raw.starts_with('\'') && path_raw.ends_with('\''))
+    {
+        // Strip surrounding quotes (only one level)
+        path_raw[1..path_raw.len() - 1].to_string()
+    } else {
+        path_raw.to_string()
+    };
+    // Expand leading ~ to home directory
+    let path = if let Some(without_tilde) = path.strip_prefix('~') {
+        let home = std::env::var("HOME").unwrap_or_default();
+        format!("{}{}", home, without_tilde)
+    } else {
+        path
+    };
+    Some((id, path))
+}
+
 fn handle_export(
     id: i64,
     path: &str,
@@ -539,16 +569,11 @@ pub fn run(
                         } else if trimmed == "\\export" {
                             writeln!(stdout, "Usage: \\export <id> <path>").ok();
                         } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
-                            let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-                            if parts.len() != 2 || parts[1].is_empty() {
-                                writeln!(stdout, "Usage: \\export <id> <path>").ok();
-                            } else {
-                                match parts[0].parse::<i64>() {
-                                    Err(_) => { writeln!(stdout, "error: invalid id '{}'", parts[0]).ok(); }
-                                    Ok(id) => match analytics.as_deref() {
-                                        None => { writeln!(stdout, "Analytics not available.").ok(); }
-                                        Some(a) => handle_export(id, parts[1], connection_name, conn.as_ref(), a, &mut stdout),
-                                    }
+                            match parse_export_args(rest) {
+                                None => { writeln!(stdout, "Usage: \\export <id> <path>").ok(); }
+                                Some((id, path)) => match analytics.as_deref() {
+                                    None => { writeln!(stdout, "Analytics not available.").ok(); }
+                                    Some(a) => handle_export(id, &path, connection_name, conn.as_ref(), a, &mut stdout),
                                 }
                             }
                         } else {
@@ -1267,5 +1292,49 @@ mod tests {
         let msg = String::from_utf8(out).unwrap();
         assert!(msg.contains("cannot export non-SELECT query"), "expected non-SELECT error, got: {msg}");
         assert!(!std::path::Path::new(&path).exists(), "file must not be created");
+    }
+
+    #[test]
+    fn parse_export_args_unquoted() {
+        let result = parse_export_args("42 /tmp/output.csv");
+        assert_eq!(result, Some((42, "/tmp/output.csv".to_string())));
+    }
+
+    #[test]
+    fn parse_export_args_double_quoted_path_with_space() {
+        let result = parse_export_args("1 \"/home/user/my documents/export.csv\"");
+        assert_eq!(result, Some((1, "/home/user/my documents/export.csv".to_string())));
+    }
+
+    #[test]
+    fn parse_export_args_single_quoted_path_with_space() {
+        let result = parse_export_args("5 '/home/user/my docs/out.csv'");
+        assert_eq!(result, Some((5, "/home/user/my docs/out.csv".to_string())));
+    }
+
+    #[test]
+    fn parse_export_args_tilde_expansion() {
+        // ~  is replaced by $HOME; just verify the prefix is stripped and HOME is prepended
+        let result = parse_export_args("7 ~/Documents/export.csv");
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert_eq!(result, Some((7, format!("{}/Documents/export.csv", home))));
+    }
+
+    #[test]
+    fn parse_export_args_tilde_in_quotes() {
+        let result = parse_export_args("2 \"~/My Docs/export.csv\"");
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert_eq!(result, Some((2, format!("{}/My Docs/export.csv", home))));
+    }
+
+    #[test]
+    fn parse_export_args_invalid_id() {
+        assert!(parse_export_args("abc /tmp/out.csv").is_none());
+    }
+
+    #[test]
+    fn parse_export_args_missing_path() {
+        assert!(parse_export_args("1").is_none());
+        assert!(parse_export_args("1 ").is_none());
     }
 }
