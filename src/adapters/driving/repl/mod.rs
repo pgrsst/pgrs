@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use reedline::Signal;
 
-use crate::core::ports::analytics_port::AnalyticsPort;
 use crate::core::ports::repl_port::ReplPort;
 use crate::core::ports::schema_cache_port::SchemaCachePort;
+use crate::core::services::analytics::service::AnalyticsService;
 use crate::core::services::schema::service::SchemaService;
 
 use describe::describe_table;
@@ -25,7 +25,7 @@ pub fn run(
     db_name: &str,
     connection_name: &str,
     environment: Option<&str>,
-    analytics: Option<Arc<dyn AnalyticsPort>>,
+    analytics: Option<Arc<AnalyticsService>>,
     schema_cache: Option<Arc<dyn SchemaCachePort>>,
 ) -> Result<(), String> {
     let mut schema = SchemaService::load_with_cache(

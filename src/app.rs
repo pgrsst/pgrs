@@ -6,10 +6,13 @@ use crate::adapters::driven::postgres_db::PostgresDb;
 use crate::adapters::driven::sqlite::SqliteRepository;
 use crate::adapters::driving::cli::Cli;
 use crate::adapters::driving::repl;
-use crate::core::ports::analytics_port::AnalyticsPort;
+use crate::core::ports::column_access_repository::ColumnAccessRepository;
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::ports::db_connection::DbConnection;
+use crate::core::ports::query_history_repository::QueryHistoryRepository;
 use crate::core::ports::schema_cache_port::SchemaCachePort;
+use crate::core::ports::table_access_repository::TableAccessRepository;
+use crate::core::services::analytics::service::AnalyticsService;
 use crate::core::services::connection::service::ConnectionService;
 
 pub fn run() -> Result<(), String> {
@@ -33,12 +36,19 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
     let connection_service = ConnectionService::new(Arc::clone(&sqlite));
 
     match args.first().map(String::as_str) {
-        Some("shell") => run_shell(
-            &args[1..],
-            &connection_service,
-            Some(Arc::clone(&sqlite) as Arc<dyn AnalyticsPort>),
-            Some(Arc::clone(&sqlite) as Arc<dyn SchemaCachePort>),
-        ),
+        Some("shell") => {
+            let analytics = Arc::new(AnalyticsService::new(
+                Arc::clone(&sqlite) as Arc<dyn QueryHistoryRepository>,
+                Arc::clone(&sqlite) as Arc<dyn TableAccessRepository>,
+                Arc::clone(&sqlite) as Arc<dyn ColumnAccessRepository>,
+            ));
+            run_shell(
+                &args[1..],
+                &connection_service,
+                Some(analytics),
+                Some(Arc::clone(&sqlite) as Arc<dyn SchemaCachePort>),
+            )
+        }
         Some("test") => run_test(&args[1..], &connection_service),
         _ => {
             let cli = Cli::new(connection_service);
@@ -50,7 +60,7 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
 fn run_shell<R: ConnectionRepository>(
     args: &[String],
     service: &ConnectionService<R>,
-    analytics: Option<Arc<dyn AnalyticsPort>>,
+    analytics: Option<Arc<AnalyticsService>>,
     schema_cache: Option<Arc<dyn SchemaCachePort>>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
@@ -59,8 +69,8 @@ fn run_shell<R: ConnectionRepository>(
 
     repl::run(
         Box::new(db),
-        conn.database(),       // db_name: display (PostgreSQL database name)
-        conn.name(),           // connection_name: analytics/cache key
+        conn.database(),
+        conn.name(),
         conn.environment(),
         analytics,
         schema_cache,

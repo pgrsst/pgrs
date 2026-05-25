@@ -1,6 +1,10 @@
-pub mod analytics_port;
+pub mod column_access_repository;
 pub mod connection_repository;
 pub mod db_connection;
+pub mod query_history_repository;
 pub mod repl_port;
 pub mod schema_cache_port;
+pub mod schema_column_repository;
 pub mod schema_port;
+pub mod schema_table_repository;
+pub mod table_access_repository;

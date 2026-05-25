@@ -1,11 +1,4 @@
 #[derive(Debug, Clone)]
-pub struct HistoryEntry {
-    pub id: i64,
-    pub query: String,
-    pub executed_at: i64,
-}
-
-#[derive(Debug, Clone)]
 pub struct FreqEntry {
     pub name: String,
     pub count: u64,
@@ -14,18 +7,6 @@ pub struct FreqEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn history_entry_stores_query_and_timestamp() {
-        let entry = HistoryEntry {
-            id: 1,
-            query: "SELECT 1".to_string(),
-            executed_at: 1234567890,
-        };
-        assert_eq!(entry.id, 1);
-        assert_eq!(entry.query, "SELECT 1");
-        assert_eq!(entry.executed_at, 1234567890);
-    }
 
     #[test]
     fn freq_entry_stores_name_and_count() {

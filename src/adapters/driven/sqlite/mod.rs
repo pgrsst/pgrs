@@ -1,7 +1,11 @@
 pub(crate) mod migrations;
 pub(crate) mod connection_store;
-pub(crate) mod analytics_store;
 pub(crate) mod schema_cache;
+pub(crate) mod query_history_store;
+pub(crate) mod table_access_store;
+pub(crate) mod column_access_store;
+pub(crate) mod schema_table_store;
+pub(crate) mod schema_column_store;
 
 use rusqlite::Connection;
 use std::sync::Mutex;
@@ -48,7 +52,9 @@ mod tests {
     use super::*;
     use crate::core::domain::error::DomainError;
     use crate::core::ports::schema_cache_port::SchemaCachePort;
-    use crate::core::ports::analytics_port::AnalyticsPort;
+    use crate::core::ports::query_history_repository::QueryHistoryRepository;
+    use crate::core::ports::table_access_repository::TableAccessRepository;
+    use crate::core::ports::column_access_repository::ColumnAccessRepository;
 
     #[test]
     fn open_in_memory_creates_schema() {
@@ -81,7 +87,6 @@ mod tests {
         repo.migrate().unwrap();
     }
 
-    // Helper untuk tests yang butuh connection
     fn add_conn(repo: &SqliteRepository, name: &str) {
         use crate::core::ports::connection_repository::ConnectionRepository;
         use crate::core::domain::connection::{Connection, TlsMode};
@@ -160,9 +165,6 @@ mod tests {
 
     #[test]
     fn save_schema_is_atomic_on_failure() {
-        // Verifies that a failed save does not partially modify the schema.
-        // We install a trigger that fires after the DELETEs but before the INSERTs,
-        // simulating a mid-transaction failure.  The original schema must be intact.
         use std::collections::HashMap;
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "mydb");
@@ -171,7 +173,6 @@ mod tests {
         initial.insert("users".to_string(), vec!["id".to_string()]);
         repo.save_schema("mydb", &initial);
 
-        // Trigger causes INSERT INTO schema_tables to fail
         {
             let conn = repo.conn.lock().unwrap();
             conn.execute_batch(
@@ -183,9 +184,8 @@ mod tests {
 
         let mut new_schema = HashMap::new();
         new_schema.insert("products".to_string(), vec!["sku".to_string()]);
-        repo.save_schema("mydb", &new_schema); // expected to silently fail
+        repo.save_schema("mydb", &new_schema);
 
-        // Remove trigger so load_schema can work
         {
             let conn = repo.conn.lock().unwrap();
             conn.execute_batch("DROP TRIGGER fail_schema_insert").unwrap();
@@ -216,72 +216,78 @@ mod tests {
         assert_eq!(loaded["users"], vec!["id", "email"]);
     }
 
-    // --- AnalyticsPort tests ---
+    // --- QueryHistoryRepository tests ---
 
     #[test]
-    fn record_query_and_get_history() {
+    fn upsert_and_list_recent() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "mydb");
-        repo.record_query("mydb", "SELECT 1", &[], &[]);
-        repo.record_query("mydb", "SELECT 2", &[], &[]);
+        repo.upsert("mydb", "SELECT 1", 1000).unwrap();
+        repo.upsert("mydb", "SELECT 2", 2000).unwrap();
 
-        let history = repo.get_history("mydb");
+        let history = repo.list_recent("mydb", 50);
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].query, "SELECT 2");
     }
 
     #[test]
-    fn record_query_deduplicates_same_query() {
+    fn upsert_deduplicates_same_query() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "mydb");
-        repo.record_query("mydb", "SELECT * FROM users", &[], &[]);
-        repo.record_query("mydb", "SELECT * FROM users", &[], &[]);
-        repo.record_query("mydb", "SELECT * FROM users", &[], &[]);
+        repo.upsert("mydb", "SELECT * FROM users", 1000).unwrap();
+        repo.upsert("mydb", "SELECT * FROM users", 2000).unwrap();
+        repo.upsert("mydb", "SELECT * FROM users", 3000).unwrap();
 
-        let history = repo.get_history("mydb");
+        let history = repo.list_recent("mydb", 50);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].query, "SELECT * FROM users");
     }
 
     #[test]
-    fn record_query_dedup_updates_executed_at() {
+    fn upsert_updates_executed_at_on_conflict() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "mydb");
-        repo.record_query("mydb", "SELECT 1", &[], &[]);
-        repo.record_query("mydb", "SELECT 1", &[], &[]);
-        assert_eq!(repo.get_history("mydb").len(), 1);
+        repo.upsert("mydb", "SELECT 1", 1000).unwrap();
+        repo.upsert("mydb", "SELECT 1", 9999).unwrap();
+        let history = repo.list_recent("mydb", 50);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].executed_at, 9999);
     }
 
     #[test]
-    fn get_history_filters_by_connection_name() {
+    fn list_recent_filters_by_connection_name() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "db1");
         add_conn(&repo, "db2");
-        repo.record_query("db1", "SELECT 1", &[], &[]);
-        repo.record_query("db2", "SELECT 2", &[], &[]);
+        repo.upsert("db1", "SELECT 1", 1000).unwrap();
+        repo.upsert("db2", "SELECT 2", 2000).unwrap();
 
-        let history = repo.get_history("db1");
+        let history = repo.list_recent("db1", 50);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].query, "SELECT 1");
     }
 
     #[test]
-    fn get_history_returns_empty_for_unknown_connection() {
+    fn list_recent_returns_empty_for_unknown_connection() {
         let repo = SqliteRepository::open_in_memory().unwrap();
-        assert!(repo.get_history("ghost").is_empty());
+        assert!(repo.list_recent("ghost", 50).is_empty());
     }
 
+    // --- TableAccessRepository tests ---
+
     #[test]
-    fn get_frequent_tables_ordered_by_count() {
+    fn table_access_list_frequent_ordered_by_count() {
+        use crate::core::ports::table_access_repository::TableAccessRepository;
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "mydb");
-        let users = vec!["users".to_string()];
-        let orders = vec!["orders".to_string()];
-        repo.record_query("mydb", "SELECT * FROM users", &users, &[]);
-        repo.record_query("mydb", "SELECT * FROM users 2", &users, &[]);
-        repo.record_query("mydb", "SELECT * FROM orders", &orders, &[]);
+        let qid = repo.upsert("mydb", "SELECT * FROM users", 1000).unwrap();
+        TableAccessRepository::insert(&repo, "mydb", "users", Some(qid), 1000).unwrap();
+        let qid2 = repo.upsert("mydb", "SELECT * FROM users 2", 2000).unwrap();
+        TableAccessRepository::insert(&repo, "mydb", "users", Some(qid2), 2000).unwrap();
+        let qid3 = repo.upsert("mydb", "SELECT * FROM orders", 3000).unwrap();
+        TableAccessRepository::insert(&repo, "mydb", "orders", Some(qid3), 3000).unwrap();
 
-        let freq = repo.get_frequent_tables("mydb");
+        let freq = repo.list_frequent("mydb", 100);
         assert_eq!(freq[0].name, "users");
         assert_eq!(freq[0].count, 2);
         assert_eq!(freq[1].name, "orders");
@@ -289,40 +295,43 @@ mod tests {
     }
 
     #[test]
-    fn get_frequent_columns_for_table() {
+    fn table_access_list_frequent_returns_empty_for_unknown_connection() {
+        use crate::core::ports::table_access_repository::TableAccessRepository;
+        let repo = SqliteRepository::open_in_memory().unwrap();
+        assert!(repo.list_frequent("ghost", 100).is_empty());
+    }
+
+    // --- ColumnAccessRepository tests ---
+
+    #[test]
+    fn column_access_list_frequent_by_table() {
+        use crate::core::ports::column_access_repository::ColumnAccessRepository;
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "mydb");
-        let tables = vec!["users".to_string()];
-        let cols = vec![
-            ("users".to_string(), "email".to_string()),
-            ("users".to_string(), "email".to_string()),
-            ("users".to_string(), "id".to_string()),
-        ];
-        repo.record_query("mydb", "SELECT email, id FROM users", &tables, &cols);
+        let qid = repo.upsert("mydb", "SELECT email, id FROM users", 1000).unwrap();
+        ColumnAccessRepository::insert(&repo, "mydb", "users", "email", Some(qid), 1000).unwrap();
+        ColumnAccessRepository::insert(&repo, "mydb", "users", "email", Some(qid), 1000).unwrap();
+        ColumnAccessRepository::insert(&repo, "mydb", "users", "id", Some(qid), 1000).unwrap();
 
-        let freq = repo.get_frequent_columns("mydb", "users");
+        let freq = repo.list_frequent_by_table("mydb", "users", 100);
         assert_eq!(freq[0].name, "email");
         assert_eq!(freq[0].count, 2);
         assert_eq!(freq[1].name, "id");
         assert_eq!(freq[1].count, 1);
     }
 
-    #[test]
-    fn get_frequent_tables_returns_empty_for_unknown_connection() {
-        let repo = SqliteRepository::open_in_memory().unwrap();
-        assert!(repo.get_frequent_tables("ghost").is_empty());
-    }
+    // --- Cascade delete test ---
 
     #[test]
     fn delete_connection_cascades_to_history() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         add_conn(&repo, "mydb");
-        repo.record_query("mydb", "SELECT 1", &[], &[]);
-        assert_eq!(repo.get_history("mydb").len(), 1);
+        repo.upsert("mydb", "SELECT 1", 1000).unwrap();
+        assert_eq!(repo.list_recent("mydb", 50).len(), 1);
 
         use crate::core::ports::connection_repository::ConnectionRepository;
         repo.delete("mydb").unwrap();
-        assert!(repo.get_history("mydb").is_empty());
+        assert!(repo.list_recent("mydb", 50).is_empty());
     }
 
     // --- ConnectionRepository tests ---

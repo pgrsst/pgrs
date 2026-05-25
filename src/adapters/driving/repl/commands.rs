@@ -1,10 +1,10 @@
 use std::io::Write;
 
-use crate::core::ports::analytics_port::AnalyticsPort;
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::ports::repl_port::ReplPort;
 use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::ports::schema_port::SchemaPort;
+use crate::core::services::analytics::service::AnalyticsService;
 use crate::core::services::schema::service::SchemaService;
 use super::alias::extract_referenced_tables;
 use super::executor::format_result;
@@ -47,7 +47,7 @@ pub(super) fn handle_l(conn: &dyn DbConnection, expanded: bool, writer: &mut imp
     };
 }
 
-pub(super) fn handle_history(connection_name: &str, analytics: &dyn AnalyticsPort, writer: &mut impl Write) {
+pub(super) fn handle_history(connection_name: &str, analytics: &AnalyticsService, writer: &mut impl Write) {
     use chrono::{DateTime, Local, TimeZone};
 
     let history = analytics.get_history(connection_name);
@@ -76,7 +76,7 @@ pub(super) fn handle_history(connection_name: &str, analytics: &dyn AnalyticsPor
 pub(super) fn handle_stats(
     connection_name: &str,
     table: Option<&str>,
-    analytics: &dyn AnalyticsPort,
+    analytics: &AnalyticsService,
     writer: &mut impl Write,
 ) {
     match table {
@@ -109,7 +109,7 @@ pub(super) struct SqlOptions<'a> {
     pub(super) expanded: bool,
     pub(super) timing: bool,
     pub(super) connection_name: &'a str,
-    pub(super) analytics: Option<&'a dyn AnalyticsPort>,
+    pub(super) analytics: Option<&'a AnalyticsService>,
     pub(super) schema_cache: Option<&'a dyn SchemaCachePort>,
 }
 
@@ -177,9 +177,15 @@ pub(super) fn handle_refresh(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::RwLock;
-    use crate::core::domain::analytics::{FreqEntry, HistoryEntry};
+    use std::sync::Mutex;
+    use crate::core::domain::analytics::FreqEntry;
+    use crate::core::domain::error::DomainError;
+    use crate::core::domain::query_history::QueryHistory;
+    use crate::core::ports::column_access_repository::ColumnAccessRepository;
     use crate::core::ports::db_connection::QueryResult;
+    use crate::core::ports::query_history_repository::QueryHistoryRepository;
+    use crate::core::ports::table_access_repository::TableAccessRepository;
+    use crate::core::services::analytics::service::AnalyticsService;
 
     struct StubDb {
         columns: HashMap<String, Vec<String>>,
@@ -220,6 +226,51 @@ mod tests {
     fn schema_from(tables: &[(&str, &[&str])]) -> SchemaService {
         let stub = StubDb::with_schema(tables);
         SchemaService::load(&stub).unwrap()
+    }
+
+    struct StubAnalytics {
+        history: Vec<QueryHistory>,
+        tables: Vec<FreqEntry>,
+        columns: Vec<FreqEntry>,
+        recorded: Mutex<Vec<(String, String)>>,
+    }
+
+    impl StubAnalytics {
+        fn new(history: Vec<QueryHistory>, tables: Vec<FreqEntry>, columns: Vec<FreqEntry>) -> Self {
+            Self { history, tables, columns, recorded: Mutex::new(vec![]) }
+        }
+    }
+
+    impl QueryHistoryRepository for StubAnalytics {
+        fn upsert(&self, conn: &str, query: &str, _: i64) -> Result<i64, DomainError> {
+            self.recorded.lock().unwrap().push((conn.to_string(), query.to_string()));
+            Ok(1)
+        }
+        fn list_recent(&self, _: &str, _: usize) -> Vec<QueryHistory> { self.history.clone() }
+    }
+
+    impl TableAccessRepository for StubAnalytics {
+        fn insert(&self, _: &str, _: &str, _: Option<i64>, _: i64) -> Result<(), DomainError> { Ok(()) }
+        fn list_frequent(&self, _: &str, _: usize) -> Vec<FreqEntry> { self.tables.clone() }
+    }
+
+    impl ColumnAccessRepository for StubAnalytics {
+        fn insert(&self, _: &str, _: &str, _: &str, _: Option<i64>, _: i64) -> Result<(), DomainError> { Ok(()) }
+        fn list_frequent_by_table(&self, _: &str, _: &str, _: usize) -> Vec<FreqEntry> { self.columns.clone() }
+    }
+
+    fn make_svc(
+        history: Vec<QueryHistory>,
+        tables: Vec<FreqEntry>,
+        columns: Vec<FreqEntry>,
+    ) -> (std::sync::Arc<StubAnalytics>, AnalyticsService) {
+        let stub = std::sync::Arc::new(StubAnalytics::new(history, tables, columns));
+        let svc = AnalyticsService::new(
+            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn QueryHistoryRepository>,
+            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn TableAccessRepository>,
+            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn ColumnAccessRepository>,
+        );
+        (stub, svc)
     }
 
     #[test]
@@ -267,7 +318,6 @@ mod tests {
         let stub = StubDb::err("connection lost");
         let mut out = Vec::new();
         handle_l(&stub, false, &mut out);
-        // error goes to stderr, stdout output is empty — should not panic
     }
 
     #[test]
@@ -385,49 +435,10 @@ mod tests {
         assert!(!text.contains("columns"), "handle_d should not show column count, got: {text}");
     }
 
-    struct RecordingAnalytics {
-        recorded: RwLock<Vec<(String, String)>>,
-    }
-    impl RecordingAnalytics {
-        fn new() -> Self { Self { recorded: RwLock::new(vec![]) } }
-    }
-    impl AnalyticsPort for RecordingAnalytics {
-        fn record_query(&self, connection_name: &str, query: &str, _: &[String], _: &[(String, String)]) {
-            self.recorded.write().unwrap().push((connection_name.to_string(), query.to_string()));
-        }
-        fn get_history(&self, _: &str) -> Vec<HistoryEntry> {
-            vec![
-                HistoryEntry { id: 2, query: "SELECT 1".to_string(), executed_at: 1000 },
-                HistoryEntry { id: 1, query: "SELECT 2".to_string(), executed_at: 999 },
-            ]
-        }
-        fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> {
-            vec![FreqEntry { name: "users".to_string(), count: 5 }]
-        }
-        fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> {
-            vec![FreqEntry { name: "email".to_string(), count: 3 }]
-        }
-    }
-
     #[test]
     fn handle_sql_records_analytics_with_connection_name() {
-        struct CapturingAnalytics {
-            recorded: RwLock<Vec<(String, String)>>,
-        }
-        impl CapturingAnalytics {
-            fn new() -> Self { Self { recorded: RwLock::new(vec![]) } }
-        }
-        impl AnalyticsPort for CapturingAnalytics {
-            fn record_query(&self, connection_name: &str, query: &str, _: &[String], _: &[(String, String)]) {
-                self.recorded.write().unwrap().push((connection_name.to_string(), query.to_string()));
-            }
-            fn get_history(&self, _: &str) -> Vec<HistoryEntry> { vec![] }
-            fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> { vec![] }
-            fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> { vec![] }
-        }
-
         let stub = StubDb::ok(vec![vec!["1".to_string()]], vec!["id".to_string()]);
-        let analytics = CapturingAnalytics::new();
+        let (recording, svc) = make_svc(vec![], vec![], vec![]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
 
@@ -438,7 +449,7 @@ mod tests {
                 expanded: false,
                 timing: false,
                 connection_name: "my-conn",
-                analytics: Some(&analytics),
+                analytics: Some(&svc),
                 schema_cache: None,
             },
             &mut schema,
@@ -446,7 +457,7 @@ mod tests {
             &mut out,
         );
 
-        let recorded = analytics.recorded.read().unwrap();
+        let recorded = recording.recorded.lock().unwrap();
         assert_eq!(recorded.len(), 1);
         assert_eq!(recorded[0].0, "my-conn", "connection_name must reach analytics, not db_name");
         assert_eq!(recorded[0].1, "SELECT 1");
@@ -454,9 +465,13 @@ mod tests {
 
     #[test]
     fn handle_history_shows_queries() {
-        let analytics = RecordingAnalytics::new();
+        let history = vec![
+            QueryHistory { id: 2, connection_id: 1, query: "SELECT 1".to_string(), executed_at: 1000 },
+            QueryHistory { id: 1, connection_id: 1, query: "SELECT 2".to_string(), executed_at: 999 },
+        ];
+        let (_, svc) = make_svc(history, vec![], vec![]);
         let mut out = Vec::new();
-        handle_history("mydb", &analytics, &mut out);
+        handle_history("mydb", &svc, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("SELECT 1"), "expected query in history, got: {text}");
         assert!(text.contains("SELECT 2"), "expected query in history, got: {text}");
@@ -464,9 +479,10 @@ mod tests {
 
     #[test]
     fn handle_stats_no_table_shows_tables() {
-        let analytics = RecordingAnalytics::new();
+        let tables = vec![FreqEntry { name: "users".to_string(), count: 5 }];
+        let (_, svc) = make_svc(vec![], tables, vec![]);
         let mut out = Vec::new();
-        handle_stats("mydb", None, &analytics, &mut out);
+        handle_stats("mydb", None, &svc, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("users"), "expected table name, got: {text}");
         assert!(text.contains("5"), "expected count, got: {text}");
@@ -474,9 +490,10 @@ mod tests {
 
     #[test]
     fn handle_stats_with_table_shows_columns() {
-        let analytics = RecordingAnalytics::new();
+        let columns = vec![FreqEntry { name: "email".to_string(), count: 3 }];
+        let (_, svc) = make_svc(vec![], vec![], columns);
         let mut out = Vec::new();
-        handle_stats("mydb", Some("users"), &analytics, &mut out);
+        handle_stats("mydb", Some("users"), &svc, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("email"), "expected column name, got: {text}");
         assert!(text.contains("3"), "expected count, got: {text}");

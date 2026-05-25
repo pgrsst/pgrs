@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 
-use crate::core::ports::analytics_port::AnalyticsPort;
-use crate::core::ports::db_connection::{QueryResult};
+use crate::core::ports::db_connection::QueryResult;
 use crate::core::ports::repl_port::ReplPort;
+use crate::core::services::analytics::service::AnalyticsService;
 
 use super::sql_utils::{is_ddl, is_dml};
 
@@ -29,7 +29,6 @@ fn write_csv(result: &QueryResult, file: &mut impl Write) -> io::Result<()> {
 /// Returns `None` if the rest string cannot be parsed into (id, path).
 pub(super) fn parse_export_args(rest: &str) -> Option<(i64, String)> {
     let rest = rest.trim();
-    // Split id from the remainder
     let (id_str, after_id) = rest.split_once(' ')?;
     let id: i64 = id_str.parse().ok()?;
     let path_raw = after_id.trim();
@@ -39,12 +38,10 @@ pub(super) fn parse_export_args(rest: &str) -> Option<(i64, String)> {
     let path = if (path_raw.starts_with('"') && path_raw.ends_with('"'))
         || (path_raw.starts_with('\'') && path_raw.ends_with('\''))
     {
-        // Strip surrounding quotes (only one level)
         path_raw[1..path_raw.len() - 1].to_string()
     } else {
         path_raw.to_string()
     };
-    // Expand leading ~ to home directory
     let path = if let Some(without_tilde) = path.strip_prefix('~') {
         let home = std::env::var("HOME").unwrap_or_default();
         format!("{}{}", home, without_tilde)
@@ -59,7 +56,7 @@ pub(super) fn handle_export(
     path: &str,
     connection_name: &str,
     conn: &dyn ReplPort,
-    analytics: &dyn AnalyticsPort,
+    analytics: &AnalyticsService,
     writer: &mut impl Write,
 ) {
     if std::path::Path::new(path).exists() {
@@ -105,9 +102,15 @@ pub(super) fn handle_export(
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use crate::core::domain::analytics::{FreqEntry, HistoryEntry};
-    use crate::core::ports::analytics_port::AnalyticsPort;
+    use std::sync::Arc;
+    use crate::core::domain::analytics::FreqEntry;
+    use crate::core::domain::error::DomainError;
+    use crate::core::domain::query_history::QueryHistory;
+    use crate::core::ports::column_access_repository::ColumnAccessRepository;
     use crate::core::ports::db_connection::QueryResult;
+    use crate::core::ports::query_history_repository::QueryHistoryRepository;
+    use crate::core::ports::table_access_repository::TableAccessRepository;
+    use crate::core::services::analytics::service::AnalyticsService;
 
     struct StubDb {
         result: Result<QueryResult, String>,
@@ -133,17 +136,32 @@ mod tests {
         }
     }
 
-    struct FixedHistoryAnalytics {
-        entries: Vec<HistoryEntry>,
+    struct FixedHistory {
+        entries: Vec<QueryHistory>,
     }
-    impl FixedHistoryAnalytics {
-        fn new(entries: Vec<HistoryEntry>) -> Self { Self { entries } }
+    impl FixedHistory {
+        fn new(entries: Vec<QueryHistory>) -> Self { Self { entries } }
     }
-    impl AnalyticsPort for FixedHistoryAnalytics {
-        fn record_query(&self, _: &str, _: &str, _: &[String], _: &[(String, String)]) {}
-        fn get_history(&self, _: &str) -> Vec<HistoryEntry> { self.entries.clone() }
-        fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> { vec![] }
-        fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> { vec![] }
+    impl QueryHistoryRepository for FixedHistory {
+        fn upsert(&self, _: &str, _: &str, _: i64) -> Result<i64, DomainError> { Ok(1) }
+        fn list_recent(&self, _: &str, _: usize) -> Vec<QueryHistory> { self.entries.clone() }
+    }
+    impl TableAccessRepository for FixedHistory {
+        fn insert(&self, _: &str, _: &str, _: Option<i64>, _: i64) -> Result<(), DomainError> { Ok(()) }
+        fn list_frequent(&self, _: &str, _: usize) -> Vec<FreqEntry> { vec![] }
+    }
+    impl ColumnAccessRepository for FixedHistory {
+        fn insert(&self, _: &str, _: &str, _: &str, _: Option<i64>, _: i64) -> Result<(), DomainError> { Ok(()) }
+        fn list_frequent_by_table(&self, _: &str, _: &str, _: usize) -> Vec<FreqEntry> { vec![] }
+    }
+
+    fn make_svc(entries: Vec<QueryHistory>) -> AnalyticsService {
+        let stub = Arc::new(FixedHistory::new(entries));
+        AnalyticsService::new(
+            Arc::clone(&stub) as Arc<dyn QueryHistoryRepository>,
+            Arc::clone(&stub) as Arc<dyn TableAccessRepository>,
+            Arc::clone(&stub) as Arc<dyn ColumnAccessRepository>,
+        )
     }
 
     #[test]
@@ -226,11 +244,11 @@ mod tests {
             vec![vec!["1".to_string(), "alice".to_string()]],
             vec!["id".to_string(), "name".to_string()],
         );
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 3, query: "SELECT id, name FROM users;".to_string(), executed_at: 1000 },
+        let svc = make_svc(vec![
+            QueryHistory { id: 3, connection_id: 1, query: "SELECT id, name FROM users;".to_string(), executed_at: 1000 },
         ]);
         let mut out = Vec::new();
-        handle_export(3, &path, "mydb", &stub, &analytics, &mut out);
+        handle_export(3, &path, "mydb", &stub, &svc, &mut out);
 
         let msg = String::from_utf8(out).unwrap();
         assert!(msg.contains("Exported 1 rows to"), "expected confirmation, got: {msg}");
@@ -247,11 +265,11 @@ mod tests {
         std::fs::write(&path, "existing").unwrap();
 
         let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
+        let svc = make_svc(vec![
+            QueryHistory { id: 1, connection_id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
         ]);
         let mut out = Vec::new();
-        handle_export(1, &path, "mydb", &stub, &analytics, &mut out);
+        handle_export(1, &path, "mydb", &stub, &svc, &mut out);
 
         let msg = String::from_utf8(out).unwrap();
         assert!(msg.contains("file already exists"), "expected file-exists error, got: {msg}");
@@ -266,11 +284,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
+        let svc = make_svc(vec![
+            QueryHistory { id: 1, connection_id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
         ]);
         let mut out = Vec::new();
-        handle_export(999, &path, "mydb", &stub, &analytics, &mut out);
+        handle_export(999, &path, "mydb", &stub, &svc, &mut out);
 
         let msg = String::from_utf8(out).unwrap();
         assert!(msg.contains("no history entry with id 999"), "expected id-not-found error, got: {msg}");
@@ -283,11 +301,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 5, query: "INSERT INTO foo VALUES (1);".to_string(), executed_at: 1000 },
+        let svc = make_svc(vec![
+            QueryHistory { id: 5, connection_id: 1, query: "INSERT INTO foo VALUES (1);".to_string(), executed_at: 1000 },
         ]);
         let mut out = Vec::new();
-        handle_export(5, &path, "mydb", &stub, &analytics, &mut out);
+        handle_export(5, &path, "mydb", &stub, &svc, &mut out);
 
         let msg = String::from_utf8(out).unwrap();
         assert!(msg.contains("cannot export non-SELECT query"), "expected non-SELECT error, got: {msg}");
@@ -300,11 +318,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 6, query: "DROP TABLE foo;".to_string(), executed_at: 1000 },
+        let svc = make_svc(vec![
+            QueryHistory { id: 6, connection_id: 1, query: "DROP TABLE foo;".to_string(), executed_at: 1000 },
         ]);
         let mut out = Vec::new();
-        handle_export(6, &path, "mydb", &stub, &analytics, &mut out);
+        handle_export(6, &path, "mydb", &stub, &svc, &mut out);
 
         let msg = String::from_utf8(out).unwrap();
         assert!(msg.contains("cannot export non-SELECT query"), "expected non-SELECT error, got: {msg}");
@@ -331,7 +349,6 @@ mod tests {
 
     #[test]
     fn parse_export_args_tilde_expansion() {
-        // ~  is replaced by $HOME; just verify the prefix is stripped and HOME is prepended
         let result = parse_export_args("7 ~/Documents/export.csv");
         let home = std::env::var("HOME").unwrap_or_default();
         assert_eq!(result, Some((7, format!("{}/Documents/export.csv", home))));
