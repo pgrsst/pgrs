@@ -415,20 +415,20 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
             "INSERT INTO connections (name, host, port, username, password, database, tls, environment, uuid)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
-                connection.name,
-                connection.host,
-                connection.port as i64,
-                connection.username,
-                connection.password,
-                connection.database,
-                connection.tls.to_string(),
-                connection.environment,
-                connection.id,
+                connection.name(),
+                connection.host(),
+                connection.port() as i64,
+                connection.username(),
+                connection.password(),
+                connection.database(),
+                connection.tls().to_string(),
+                connection.environment(),
+                connection.id(),
             ],
         )
         .map_err(|e| {
             if e.to_string().contains("UNIQUE constraint failed") {
-                DomainError::AlreadyExists(format!("connection '{}' already exists", connection.name))
+                DomainError::AlreadyExists(format!("connection '{}' already exists", connection.name()))
             } else {
                 DomainError::StorageError(e.to_string())
             }
@@ -447,17 +447,17 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
         let rows = stmt
             .query_map([], |r| {
                 let tls_str: String = r.get(6)?;
-                Ok(DomainConnection {
-                    name: r.get(0)?,
-                    host: r.get(1)?,
-                    port: r.get::<_, i64>(2)? as u16,
-                    username: r.get(3)?,
-                    password: r.get(4)?,
-                    database: r.get(5)?,
-                    tls: SqliteRepository::tls_from_str(&tls_str),
-                    environment: r.get(7)?,
-                    id: r.get(8)?,
-                })
+                Ok(DomainConnection::from_storage(
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get::<_, i64>(2)? as u16,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    SqliteRepository::tls_from_str(&tls_str),
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
             })
             .map_err(|e| DomainError::StorageError(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -483,17 +483,17 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
             rusqlite::params![name],
             |r| {
                 let tls_str: String = r.get(6)?;
-                Ok(DomainConnection {
-                    name: r.get(0)?,
-                    host: r.get(1)?,
-                    port: r.get::<_, i64>(2)? as u16,
-                    username: r.get(3)?,
-                    password: r.get(4)?,
-                    database: r.get(5)?,
-                    tls: SqliteRepository::tls_from_str(&tls_str),
-                    environment: r.get(7)?,
-                    id: r.get(8)?,
-                })
+                Ok(DomainConnection::from_storage(
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get::<_, i64>(2)? as u16,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    SqliteRepository::tls_from_str(&tls_str),
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
             },
         )
         .map_err(|e| {
@@ -512,20 +512,20 @@ impl crate::core::ports::connection_repository::ConnectionRepository for SqliteR
                 "UPDATE connections SET host=?1, port=?2, username=?3, password=?4,
                  database=?5, tls=?6, environment=?7, uuid=?8 WHERE name=?9",
                 rusqlite::params![
-                    connection.host,
-                    connection.port as i64,
-                    connection.username,
-                    connection.password,
-                    connection.database,
-                    connection.tls.to_string(),
-                    connection.environment,
-                    connection.id,
-                    connection.name,
+                    connection.host(),
+                    connection.port() as i64,
+                    connection.username(),
+                    connection.password(),
+                    connection.database(),
+                    connection.tls().to_string(),
+                    connection.environment(),
+                    connection.id(),
+                    connection.name(),
                 ],
             )
             .map_err(|e| DomainError::StorageError(e.to_string()))?;
         if n == 0 {
-            return Err(DomainError::NotFound(format!("connection '{}' not found", connection.name)));
+            return Err(DomainError::NotFound(format!("connection '{}' not found", connection.name())));
         }
         Ok(())
     }
@@ -564,7 +564,8 @@ mod tests {
         let conn = repo.conn.lock().unwrap();
         let count: i32 = conn
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \n             ('connections','query_history','table_access','column_access','schema_tables','schema_columns')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN \
+                 ('connections','query_history','table_access','column_access','schema_tables','schema_columns')",
                 [],
                 |r| r.get(0),
             )
@@ -592,17 +593,16 @@ mod tests {
     fn add_conn(repo: &SqliteRepository, name: &str) {
         use crate::core::ports::connection_repository::ConnectionRepository;
         use crate::core::domain::connection::{Connection, TlsMode};
-        repo.add(Connection {
-            name: name.to_string(),
-            host: "localhost".to_string(),
-            port: 5432,
-            username: "u".to_string(),
-            password: "p".to_string(),
-            database: "db".to_string(),
-            tls: TlsMode::Disable,
-            environment: None,
-            id: None,
-        }).unwrap();
+        repo.add(Connection::new(
+            name.to_string(),
+            "localhost".to_string(),
+            5432,
+            "u".to_string(),
+            "p".to_string(),
+            "db".to_string(),
+            TlsMode::Disable,
+            None,
+        ).unwrap()).unwrap();
     }
 
     // --- SchemaCachePort tests ---
@@ -839,17 +839,16 @@ mod tests {
     use crate::core::ports::connection_repository::ConnectionRepository;
 
     fn sample_conn(name: &str) -> Connection {
-        Connection {
-            name: name.to_string(),
-            host: "localhost".to_string(),
-            port: 5432,
-            username: "user".to_string(),
-            password: "pass".to_string(),
-            database: "db".to_string(),
-            tls: TlsMode::Disable,
-            environment: None,
-            id: None,
-        }
+        Connection::new(
+            name.to_string(),
+            "localhost".to_string(),
+            5432,
+            "user".to_string(),
+            "pass".to_string(),
+            "db".to_string(),
+            TlsMode::Disable,
+            None,
+        ).expect("valid test connection")
     }
 
     #[test]
@@ -858,8 +857,8 @@ mod tests {
         repo.add(sample_conn("prod")).unwrap();
         let list = repo.list().unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].name, "prod");
-        assert_eq!(list[0].host, "localhost");
+        assert_eq!(list[0].name(), "prod");
+        assert_eq!(list[0].host(), "localhost");
     }
 
     #[test]
@@ -896,8 +895,8 @@ mod tests {
         let repo = SqliteRepository::open_in_memory().unwrap();
         repo.add(sample_conn("prod")).unwrap();
         let c = repo.get_connection("prod").unwrap();
-        assert_eq!(c.name, "prod");
-        assert_eq!(c.port, 5432);
+        assert_eq!(c.name(), "prod");
+        assert_eq!(c.port(), 5432);
     }
 
     #[test]
@@ -912,11 +911,11 @@ mod tests {
         let repo = SqliteRepository::open_in_memory().unwrap();
         repo.add(sample_conn("prod")).unwrap();
         let mut updated = sample_conn("prod");
-        updated.database = "newdb".to_string();
+        updated.set_database("newdb".to_string());
         repo.update(updated).unwrap();
         let c = repo.get_connection("prod").unwrap();
-        assert_eq!(c.database, "newdb");
-        assert_eq!(c.host, "localhost");
+        assert_eq!(c.database(), "newdb");
+        assert_eq!(c.host(), "localhost");
     }
 
     #[test]
@@ -958,30 +957,30 @@ mod tests {
         repo.add(sample_conn("alpha")).unwrap();
         repo.add(sample_conn("middle")).unwrap();
         let list = repo.list().unwrap();
-        assert_eq!(list[0].name, "alpha");
-        assert_eq!(list[1].name, "middle");
-        assert_eq!(list[2].name, "zebra");
+        assert_eq!(list[0].name(), "alpha");
+        assert_eq!(list[1].name(), "middle");
+        assert_eq!(list[2].name(), "zebra");
     }
 
     #[test]
     fn connection_with_tls_and_environment_round_trips() {
         let repo = SqliteRepository::open_in_memory().unwrap();
-        let c = Connection {
-            name: "secure".to_string(),
-            host: "db.example.com".to_string(),
-            port: 5433,
-            username: "admin".to_string(),
-            password: "secret".to_string(),
-            database: "prod_db".to_string(),
-            tls: TlsMode::VerifyFull,
-            environment: Some("production".to_string()),
-            id: Some("abc123".to_string()),
-        };
+        let mut c = Connection::new(
+            "secure".to_string(),
+            "db.example.com".to_string(),
+            5433,
+            "admin".to_string(),
+            "secret".to_string(),
+            "prod_db".to_string(),
+            TlsMode::VerifyFull,
+            Some("production".to_string()),
+        ).unwrap();
+        c.set_id("abc123".to_string());
         repo.add(c.clone()).unwrap();
         let loaded = repo.get_connection("secure").unwrap();
-        assert_eq!(loaded.tls, TlsMode::VerifyFull);
-        assert_eq!(loaded.environment, Some("production".to_string()));
-        assert_eq!(loaded.id, Some("abc123".to_string()));
-        assert_eq!(loaded.port, 5433);
+        assert_eq!(loaded.tls(), &TlsMode::VerifyFull);
+        assert_eq!(loaded.environment(), Some("production"));
+        assert_eq!(loaded.id(), Some("abc123"));
+        assert_eq!(loaded.port(), 5433);
     }
 }
