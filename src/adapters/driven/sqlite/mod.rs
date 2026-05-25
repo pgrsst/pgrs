@@ -1,7 +1,7 @@
 pub(crate) mod migrations;
-pub mod connection_store;
-pub mod analytics_store;
-pub mod schema_cache;
+pub(crate) mod connection_store;
+pub(crate) mod analytics_store;
+pub(crate) mod schema_cache;
 
 use rusqlite::Connection;
 use std::sync::Mutex;
