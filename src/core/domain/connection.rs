@@ -99,6 +99,7 @@ fn require_not_empty(label: &str, value: &str) -> Result<(), DomainError> {
 
 impl Connection {
     /// Create a validated connection. Returns an error if any required field is empty.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         host: String,
@@ -118,6 +119,7 @@ impl Connection {
     }
 
     /// Construct directly from trusted storage (DB rows, JSON files) — skips validation.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_storage(
         name: String,
         host: String,
@@ -146,7 +148,6 @@ impl Connection {
 
     // --- Setters (crate-internal, used by services and adapters) ---
 
-    pub(crate) fn set_name(&mut self, v: String) { self.name = v; }
     pub(crate) fn set_host(&mut self, v: String) { self.host = v; }
     pub(crate) fn set_port(&mut self, v: u16) { self.port = v; }
     pub(crate) fn set_username(&mut self, v: String) { self.username = v; }
