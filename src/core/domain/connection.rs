@@ -148,6 +148,7 @@ impl Connection {
 
     // --- Setters (crate-internal, used by services and adapters) ---
 
+    pub(crate) fn set_name(&mut self, v: String) { self.name = v; }
     pub(crate) fn set_host(&mut self, v: String) { self.host = v; }
     pub(crate) fn set_port(&mut self, v: u16) { self.port = v; }
     pub(crate) fn set_username(&mut self, v: String) { self.username = v; }

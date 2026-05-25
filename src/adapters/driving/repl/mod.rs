@@ -15,7 +15,7 @@ use reedline::{
 };
 
 use crate::core::ports::analytics_port::AnalyticsPort;
-use crate::core::ports::db_connection::DbConnection;
+use crate::core::ports::db_connection::{DbConnection, QueryResult};
 use crate::core::ports::repl_port::ReplPort;
 use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::ports::schema_port::SchemaPort;
@@ -178,6 +178,24 @@ fn is_ddl(query: &str) -> bool {
             .as_str(),
         "CREATE" | "DROP" | "ALTER" | "TRUNCATE"
     )
+}
+
+fn csv_quote(val: &str) -> String {
+    if val.contains(',') || val.contains('"') || val.contains('\n') {
+        format!("\"{}\"", val.replace('"', "\"\""))
+    } else {
+        val.to_string()
+    }
+}
+
+fn write_csv(result: &QueryResult, file: &mut impl Write) -> io::Result<()> {
+    let header: Vec<String> = result.columns.iter().map(|c| csv_quote(c)).collect();
+    writeln!(file, "{}", header.join(","))?;
+    for row in &result.rows {
+        let cells: Vec<String> = row.iter().map(|v| csv_quote(v)).collect();
+        writeln!(file, "{}", cells.join(","))?;
+    }
+    Ok(())
 }
 
 fn handle_d(schema: &SchemaService, writer: &mut impl Write) {
@@ -968,5 +986,67 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("email"), "expected column name, got: {text}");
         assert!(text.contains("3"), "expected count, got: {text}");
+    }
+
+    #[test]
+    fn csv_quote_plain_value_unchanged() {
+        assert_eq!(csv_quote("hello"), "hello");
+    }
+
+    #[test]
+    fn csv_quote_value_with_comma_is_quoted() {
+        assert_eq!(csv_quote("a,b"), "\"a,b\"");
+    }
+
+    #[test]
+    fn csv_quote_value_with_double_quote_is_escaped() {
+        assert_eq!(csv_quote("say \"hi\""), "\"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn csv_quote_value_with_newline_is_quoted() {
+        assert_eq!(csv_quote("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
+    fn write_csv_produces_header_and_rows() {
+        let result = QueryResult {
+            columns: vec!["id".to_string(), "name".to_string()],
+            rows: vec![
+                vec!["1".to_string(), "alice".to_string()],
+                vec!["2".to_string(), "bob".to_string()],
+            ],
+            rows_affected: None,
+        };
+        let mut out = Vec::new();
+        write_csv(&result, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, "id,name\n1,alice\n2,bob\n");
+    }
+
+    #[test]
+    fn write_csv_quotes_values_with_comma() {
+        let result = QueryResult {
+            columns: vec!["note".to_string()],
+            rows: vec![vec!["a,b".to_string()]],
+            rows_affected: None,
+        };
+        let mut out = Vec::new();
+        write_csv(&result, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, "note\n\"a,b\"\n");
+    }
+
+    #[test]
+    fn write_csv_empty_result_writes_only_header() {
+        let result = QueryResult {
+            columns: vec!["id".to_string()],
+            rows: vec![],
+            rows_affected: None,
+        };
+        let mut out = Vec::new();
+        write_csv(&result, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, "id\n");
     }
 }
