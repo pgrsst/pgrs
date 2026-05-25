@@ -1,5 +1,6 @@
 mod alias;
 mod completer;
+mod csv;
 mod executor;
 mod tokenizer;
 mod describe;
@@ -16,7 +17,7 @@ use reedline::{
 };
 
 use crate::core::ports::analytics_port::AnalyticsPort;
-use crate::core::ports::db_connection::{DbConnection, QueryResult};
+use crate::core::ports::db_connection::DbConnection;
 use crate::core::ports::repl_port::ReplPort;
 use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::ports::schema_port::SchemaPort;
@@ -26,7 +27,7 @@ use alias::extract_referenced_tables;
 use completer::{SqlCompleter, SqlHighlighter, SqlHinter};
 use describe::describe_table;
 use executor::format_result;
-use sql_utils::{is_ddl, is_dml, extract_column_refs, is_complete_statement};
+use sql_utils::{is_ddl, extract_column_refs, is_complete_statement};
 
 struct PgrsPrompt {
     db_name: String,
@@ -141,24 +142,6 @@ fn build_reedline(schema: SchemaService) -> Reedline {
         .with_edit_mode(Box::new(Emacs::new(keybindings)))
 }
 
-fn csv_quote(val: &str) -> String {
-    if val.contains(',') || val.contains('"') || val.contains('\n') || val.contains('\r') {
-        format!("\"{}\"", val.replace('"', "\"\""))
-    } else {
-        val.to_string()
-    }
-}
-
-fn write_csv(result: &QueryResult, file: &mut impl Write) -> io::Result<()> {
-    let header: Vec<String> = result.columns.iter().map(|c| csv_quote(c)).collect();
-    writeln!(file, "{}", header.join(","))?;
-    for row in &result.rows {
-        let cells: Vec<String> = row.iter().map(|v| csv_quote(v)).collect();
-        writeln!(file, "{}", cells.join(","))?;
-    }
-    Ok(())
-}
-
 fn handle_d(schema: &SchemaService, writer: &mut impl Write) {
     let tables = schema.tables();
     if tables.is_empty() {
@@ -252,83 +235,6 @@ fn handle_stats(
             }
         }
     }
-}
-
-/// Parses `\export <id> <path>` rest string (everything after `\export `).
-/// Path may be unquoted, single-quoted, or double-quoted (to support spaces).
-/// Returns `None` if the rest string cannot be parsed into (id, path).
-fn parse_export_args(rest: &str) -> Option<(i64, String)> {
-    let rest = rest.trim();
-    // Split id from the remainder
-    let (id_str, after_id) = rest.split_once(' ')?;
-    let id: i64 = id_str.parse().ok()?;
-    let path_raw = after_id.trim();
-    if path_raw.is_empty() {
-        return None;
-    }
-    let path = if (path_raw.starts_with('"') && path_raw.ends_with('"'))
-        || (path_raw.starts_with('\'') && path_raw.ends_with('\''))
-    {
-        // Strip surrounding quotes (only one level)
-        path_raw[1..path_raw.len() - 1].to_string()
-    } else {
-        path_raw.to_string()
-    };
-    // Expand leading ~ to home directory
-    let path = if let Some(without_tilde) = path.strip_prefix('~') {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{}{}", home, without_tilde)
-    } else {
-        path
-    };
-    Some((id, path))
-}
-
-fn handle_export(
-    id: i64,
-    path: &str,
-    connection_name: &str,
-    conn: &dyn ReplPort,
-    analytics: &dyn AnalyticsPort,
-    writer: &mut impl Write,
-) {
-    if std::path::Path::new(path).exists() {
-        writeln!(writer, "error: file already exists: {}", path).ok();
-        return;
-    }
-    let history = analytics.get_history(connection_name);
-    let entry = match history.iter().find(|e| e.id == id) {
-        Some(e) => e,
-        None => {
-            writeln!(writer, "error: no history entry with id {}", id).ok();
-            return;
-        }
-    };
-    if is_dml(&entry.query) || is_ddl(&entry.query) {
-        writeln!(writer, "error: cannot export non-SELECT query").ok();
-        return;
-    }
-    let result = match conn.execute(&entry.query) {
-        Ok(r) => r,
-        Err(e) => {
-            writeln!(writer, "error: {}", e).ok();
-            return;
-        }
-    };
-    let mut file = match std::fs::File::create(path) {
-        Ok(f) => f,
-        Err(e) => {
-            writeln!(writer, "error: could not write file: {}", e).ok();
-            return;
-        }
-    };
-    if let Err(e) = write_csv(&result, &mut file) {
-        drop(file);
-        std::fs::remove_file(path).ok();
-        writeln!(writer, "error: could not write file: {}", e).ok();
-        return;
-    }
-    writeln!(writer, "Exported {} rows to {}", result.rows.len(), path).ok();
 }
 
 struct SqlOptions<'a> {
@@ -487,11 +393,11 @@ pub fn run(
                         } else if trimmed == "\\export" {
                             writeln!(stdout, "Usage: \\export <id> <path>").ok();
                         } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
-                            match parse_export_args(rest) {
+                            match csv::parse_export_args(rest) {
                                 None => { writeln!(stdout, "Usage: \\export <id> <path>").ok(); }
                                 Some((id, path)) => match analytics.as_deref() {
                                     None => { writeln!(stdout, "Analytics not available.").ok(); }
-                                    Some(a) => handle_export(id, &path, connection_name, conn.as_ref(), a, &mut stdout),
+                                    Some(a) => csv::handle_export(id, &path, connection_name, conn.as_ref(), a, &mut stdout),
                                 }
                             }
                         } else {
@@ -879,19 +785,6 @@ mod tests {
         }
     }
 
-    struct FixedHistoryAnalytics {
-        entries: Vec<HistoryEntry>,
-    }
-    impl FixedHistoryAnalytics {
-        fn new(entries: Vec<HistoryEntry>) -> Self { Self { entries } }
-    }
-    impl AnalyticsPort for FixedHistoryAnalytics {
-        fn record_query(&self, _: &str, _: &str, _: &[String], _: &[(String, String)]) {}
-        fn get_history(&self, _: &str) -> Vec<HistoryEntry> { self.entries.clone() }
-        fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> { vec![] }
-        fn get_frequent_columns(&self, _: &str, _: &str) -> Vec<FreqEntry> { vec![] }
-    }
-
     #[test]
     fn handle_sql_records_analytics_with_connection_name() {
         struct CapturingAnalytics {
@@ -965,212 +858,4 @@ mod tests {
         assert!(text.contains("3"), "expected count, got: {text}");
     }
 
-    #[test]
-    fn csv_quote_plain_value_unchanged() {
-        assert_eq!(csv_quote("hello"), "hello");
-    }
-
-    #[test]
-    fn csv_quote_value_with_comma_is_quoted() {
-        assert_eq!(csv_quote("a,b"), "\"a,b\"");
-    }
-
-    #[test]
-    fn csv_quote_value_with_double_quote_is_escaped() {
-        assert_eq!(csv_quote("say \"hi\""), "\"say \"\"hi\"\"\"");
-    }
-
-    #[test]
-    fn csv_quote_value_with_newline_is_quoted() {
-        assert_eq!(csv_quote("line1\nline2"), "\"line1\nline2\"");
-    }
-
-    #[test]
-    fn csv_quote_value_with_carriage_return_is_quoted() {
-        assert_eq!(csv_quote("line1\rline2"), "\"line1\rline2\"");
-    }
-
-    #[test]
-    fn write_csv_produces_header_and_rows() {
-        let result = QueryResult {
-            columns: vec!["id".to_string(), "name".to_string()],
-            rows: vec![
-                vec!["1".to_string(), "alice".to_string()],
-                vec!["2".to_string(), "bob".to_string()],
-            ],
-            rows_affected: None,
-        };
-        let mut out = Vec::new();
-        write_csv(&result, &mut out).unwrap();
-        let text = String::from_utf8(out).unwrap();
-        assert_eq!(text, "id,name\n1,alice\n2,bob\n");
-    }
-
-    #[test]
-    fn write_csv_quotes_values_with_comma() {
-        let result = QueryResult {
-            columns: vec!["note".to_string()],
-            rows: vec![vec!["a,b".to_string()]],
-            rows_affected: None,
-        };
-        let mut out = Vec::new();
-        write_csv(&result, &mut out).unwrap();
-        let text = String::from_utf8(out).unwrap();
-        assert_eq!(text, "note\n\"a,b\"\n");
-    }
-
-    #[test]
-    fn write_csv_empty_result_writes_only_header() {
-        let result = QueryResult {
-            columns: vec!["id".to_string()],
-            rows: vec![],
-            rows_affected: None,
-        };
-        let mut out = Vec::new();
-        write_csv(&result, &mut out).unwrap();
-        let text = String::from_utf8(out).unwrap();
-        assert_eq!(text, "id\n");
-    }
-
-    fn export_tmp_path(tag: &str) -> String {
-        format!("/tmp/pgrs_export_{}_{}.csv", std::process::id(), tag)
-    }
-
-    #[test]
-    fn handle_export_writes_csv_for_valid_id() {
-        let path = export_tmp_path("happy");
-        let _ = std::fs::remove_file(&path);
-
-        let stub = StubDb::ok(
-            vec![vec!["1".to_string(), "alice".to_string()]],
-            vec!["id".to_string(), "name".to_string()],
-        );
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 3, query: "SELECT id, name FROM users;".to_string(), executed_at: 1000 },
-        ]);
-        let mut out = Vec::new();
-        handle_export(3, &path, "mydb", &stub, &analytics, &mut out);
-
-        let msg = String::from_utf8(out).unwrap();
-        assert!(msg.contains("Exported 1 rows to"), "expected confirmation, got: {msg}");
-
-        let csv = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(csv, "id,name\n1,alice\n");
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn handle_export_errors_on_existing_file() {
-        let path = export_tmp_path("exists");
-        std::fs::write(&path, "existing").unwrap();
-
-        let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
-        ]);
-        let mut out = Vec::new();
-        handle_export(1, &path, "mydb", &stub, &analytics, &mut out);
-
-        let msg = String::from_utf8(out).unwrap();
-        assert!(msg.contains("file already exists"), "expected file-exists error, got: {msg}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing", "file must not be overwritten");
-
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn handle_export_errors_on_unknown_id() {
-        let path = export_tmp_path("unknown");
-        let _ = std::fs::remove_file(&path);
-
-        let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 1, query: "SELECT 1;".to_string(), executed_at: 1000 },
-        ]);
-        let mut out = Vec::new();
-        handle_export(999, &path, "mydb", &stub, &analytics, &mut out);
-
-        let msg = String::from_utf8(out).unwrap();
-        assert!(msg.contains("no history entry with id 999"), "expected id-not-found error, got: {msg}");
-        assert!(!std::path::Path::new(&path).exists(), "file must not be created");
-    }
-
-    #[test]
-    fn handle_export_errors_on_dml_query() {
-        let path = export_tmp_path("dml");
-        let _ = std::fs::remove_file(&path);
-
-        let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 5, query: "INSERT INTO foo VALUES (1);".to_string(), executed_at: 1000 },
-        ]);
-        let mut out = Vec::new();
-        handle_export(5, &path, "mydb", &stub, &analytics, &mut out);
-
-        let msg = String::from_utf8(out).unwrap();
-        assert!(msg.contains("cannot export non-SELECT query"), "expected non-SELECT error, got: {msg}");
-        assert!(!std::path::Path::new(&path).exists(), "file must not be created");
-    }
-
-    #[test]
-    fn handle_export_errors_on_ddl_query() {
-        let path = export_tmp_path("ddl");
-        let _ = std::fs::remove_file(&path);
-
-        let stub = StubDb::ok(vec![], vec![]);
-        let analytics = FixedHistoryAnalytics::new(vec![
-            HistoryEntry { id: 6, query: "DROP TABLE foo;".to_string(), executed_at: 1000 },
-        ]);
-        let mut out = Vec::new();
-        handle_export(6, &path, "mydb", &stub, &analytics, &mut out);
-
-        let msg = String::from_utf8(out).unwrap();
-        assert!(msg.contains("cannot export non-SELECT query"), "expected non-SELECT error, got: {msg}");
-        assert!(!std::path::Path::new(&path).exists(), "file must not be created");
-    }
-
-    #[test]
-    fn parse_export_args_unquoted() {
-        let result = parse_export_args("42 /tmp/output.csv");
-        assert_eq!(result, Some((42, "/tmp/output.csv".to_string())));
-    }
-
-    #[test]
-    fn parse_export_args_double_quoted_path_with_space() {
-        let result = parse_export_args("1 \"/home/user/my documents/export.csv\"");
-        assert_eq!(result, Some((1, "/home/user/my documents/export.csv".to_string())));
-    }
-
-    #[test]
-    fn parse_export_args_single_quoted_path_with_space() {
-        let result = parse_export_args("5 '/home/user/my docs/out.csv'");
-        assert_eq!(result, Some((5, "/home/user/my docs/out.csv".to_string())));
-    }
-
-    #[test]
-    fn parse_export_args_tilde_expansion() {
-        // ~  is replaced by $HOME; just verify the prefix is stripped and HOME is prepended
-        let result = parse_export_args("7 ~/Documents/export.csv");
-        let home = std::env::var("HOME").unwrap_or_default();
-        assert_eq!(result, Some((7, format!("{}/Documents/export.csv", home))));
-    }
-
-    #[test]
-    fn parse_export_args_tilde_in_quotes() {
-        let result = parse_export_args("2 \"~/My Docs/export.csv\"");
-        let home = std::env::var("HOME").unwrap_or_default();
-        assert_eq!(result, Some((2, format!("{}/My Docs/export.csv", home))));
-    }
-
-    #[test]
-    fn parse_export_args_invalid_id() {
-        assert!(parse_export_args("abc /tmp/out.csv").is_none());
-    }
-
-    #[test]
-    fn parse_export_args_missing_path() {
-        assert!(parse_export_args("1").is_none());
-        assert!(parse_export_args("1 ").is_none());
-    }
 }
