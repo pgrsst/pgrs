@@ -1,7 +1,7 @@
 #[derive(Debug, Clone)]
 pub struct HistoryEntry {
+    pub id: i64,
     pub query: String,
-    #[allow(dead_code)]
     pub executed_at: i64,
 }
 
@@ -18,9 +18,11 @@ mod tests {
     #[test]
     fn history_entry_stores_query_and_timestamp() {
         let entry = HistoryEntry {
+            id: 1,
             query: "SELECT 1".to_string(),
             executed_at: 1234567890,
         };
+        assert_eq!(entry.id, 1);
         assert_eq!(entry.query, "SELECT 1");
         assert_eq!(entry.executed_at, 1234567890);
     }

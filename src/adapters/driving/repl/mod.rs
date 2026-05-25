@@ -218,13 +218,27 @@ fn handle_l(conn: &dyn DbConnection, expanded: bool, writer: &mut impl Write) {
 }
 
 fn handle_history(connection_name: &str, analytics: &dyn AnalyticsPort, writer: &mut impl Write) {
+    use chrono::{DateTime, Local, TimeZone};
+
     let history = analytics.get_history(connection_name);
     if history.is_empty() {
         writeln!(writer, "No query history.").ok();
         return;
     }
+    let id_w = history.iter().map(|e| format!("{}", e.id).len()).max().unwrap_or(1);
+    let q_w  = history.iter().map(|e| e.query.len()).max().unwrap_or(5);
+    writeln!(writer, "  {:<id_w$}  {:<q_w$}  executed_at", "id", "query").ok();
+    writeln!(writer, "  {:-<id_w$}  {:-<q_w$}  {:-<25}", "", "", "").ok();
     for entry in &history {
-        writeln!(writer, "  {}", entry.query).ok();
+        let dt: DateTime<Local> = Local.timestamp_opt(entry.executed_at, 0).single()
+            .unwrap_or_else(|| Local.timestamp_opt(0, 0).unwrap());
+        writeln!(
+            writer,
+            "  {:<id_w$}  {:<q_w$}  {}",
+            entry.id,
+            entry.query,
+            dt.format("%Y-%m-%d %H:%M:%S %z"),
+        ).ok();
     }
     writeln!(writer, "({} entries)", history.len()).ok();
 }
@@ -871,8 +885,8 @@ mod tests {
         }
         fn get_history(&self, _: &str) -> Vec<HistoryEntry> {
             vec![
-                HistoryEntry { query: "SELECT 1".to_string(), executed_at: 1000 },
-                HistoryEntry { query: "SELECT 2".to_string(), executed_at: 999 },
+                HistoryEntry { id: 2, query: "SELECT 1".to_string(), executed_at: 1000 },
+                HistoryEntry { id: 1, query: "SELECT 2".to_string(), executed_at: 999 },
             ]
         }
         fn get_frequent_tables(&self, _: &str) -> Vec<FreqEntry> {

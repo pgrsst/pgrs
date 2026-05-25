@@ -341,11 +341,11 @@ impl AnalyticsPort for SqliteRepository {
         };
         let result: Result<Vec<HistoryEntry>, rusqlite::Error> = (|| {
             let mut stmt = conn.prepare(
-                "SELECT query, executed_at FROM query_history
+                "SELECT id, query, executed_at FROM query_history
                  WHERE connection_id = ?1 ORDER BY executed_at DESC LIMIT 50",
             )?;
             let rows = stmt.query_map(rusqlite::params![connection_id], |r| {
-                Ok(HistoryEntry { query: r.get(0)?, executed_at: r.get(1)? })
+                Ok(HistoryEntry { id: r.get(0)?, query: r.get(1)?, executed_at: r.get(2)? })
             })?;
             rows.collect()
         })();
