@@ -536,6 +536,8 @@ pub fn run(
                                 Some(a) => handle_stats(connection_name, Some(tbl), a, &mut stdout),
                                 None => { writeln!(stdout, "Analytics not available.").ok(); }
                             }
+                        } else if trimmed == "\\export" {
+                            writeln!(stdout, "Usage: \\export <id> <path>").ok();
                         } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
                             let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                             if parts.len() != 2 || parts[1].is_empty() {
