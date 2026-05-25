@@ -100,13 +100,18 @@ The built-in REPL provides tab-completion, syntax highlighting, query history, a
 
 | Command | Description |
 |---------|-------------|
-| `\dt` | List tables with column count |
+| `\d` | List all tables |
+| `\dt` | List all tables with column count |
 | `\d <table>` | Describe a table (columns, indexes, constraints) |
 | `\d+ <table>` | Describe a table (extended: storage, triggers, comments) |
 | `\l` | List databases |
 | `\x` | Toggle expanded display |
 | `\timing` | Toggle query execution time |
 | `\refresh` | Reload schema (after CREATE/DROP/ALTER TABLE) |
+| `\history` | Show recent query history |
+| `\export <id> <path>` | Export a query result from history to a CSV file |
+| `\stats` | Show most frequently queried tables |
+| `\stats <table>` | Show most frequently queried columns for a table |
 | `\help`, `\?` | Show REPL help |
 | `\q`, `exit`, Ctrl+D | Quit |
 
@@ -122,6 +127,6 @@ Tab completion suggests SQL keywords, table names, and column names based on que
 | `require` | Encrypt, but do not verify server certificate |
 | `verify-full` | Encrypt and verify server certificate |
 
-## Connections are stored at
+## Data is stored at
 
-`~/.pgrs/connections.json`
+`~/.pgrs/pgrs.db` (SQLite — connections, query history, and usage analytics)
