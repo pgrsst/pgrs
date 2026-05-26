@@ -1,5 +1,5 @@
 use crate::adapters::driving::completions;
-use crate::core::domain::connection::TlsMode;
+use crate::core::enums::tls_mode::TlsMode;
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::services::connection::service::{AddConnectionInput, ConnectionService, EditConnectionInput};
 
@@ -102,7 +102,7 @@ where
 
         if names_only {
             for c in &connections {
-                println!("{}", c.name());
+                println!("{}", c.name);
             }
             return Ok(());
         }
@@ -112,19 +112,19 @@ where
             return Ok(());
         }
 
-        let name_w = connections.iter().map(|c| c.name().len()).max().unwrap_or(4).max(4);
-        let host_w = connections.iter().map(|c| c.host().len()).max().unwrap_or(4).max(4);
-        let db_w = connections.iter().map(|c| c.database().len()).max().unwrap_or(8).max(8);
-        let user_w = connections.iter().map(|c| c.username().len()).max().unwrap_or(8).max(8);
+        let name_w = connections.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
+        let host_w = connections.iter().map(|c| c.host.len()).max().unwrap_or(4).max(4);
+        let db_w = connections.iter().map(|c| c.database.len()).max().unwrap_or(8).max(8);
+        let user_w = connections.iter().map(|c| c.username.len()).max().unwrap_or(8).max(8);
         let tls_w = connections
             .iter()
-            .map(|c| c.tls().to_string().len())
+            .map(|c| c.tls.to_string().len())
             .max()
             .unwrap_or(3)
             .max(3);
         let env_w = connections
             .iter()
-            .map(|c| c.environment().unwrap_or("").len())
+            .map(|c| c.environment.as_deref().unwrap_or("").len())
             .max()
             .unwrap_or(3)
             .max(3);
@@ -137,10 +137,10 @@ where
         for c in &connections {
             println!(
                 "{:<8}  {:<name_w$}  {:<host_w$}  {:<6}  {:<db_w$}  {:<env_w$}  {:<user_w$}  {:<tls_w$}  ****",
-                c.id().unwrap_or("-"),
-                c.name(), c.host(), c.port(), c.database(),
-                c.environment().unwrap_or(""),
-                c.username(), c.tls(),
+                c.id.as_deref().unwrap_or("-"),
+                c.name, c.host, c.port, c.database,
+                c.environment.as_deref().unwrap_or(""),
+                c.username, c.tls,
             );
         }
 
@@ -158,19 +158,19 @@ where
 
         println!(
             "handing off to psql for '{}' — you'll return to your shell, not pgrs, on exit",
-            connection.name()
+            connection.name
         );
 
         let mut cmd = std::process::Command::new("psql");
-        cmd.env("PGPASSWORD", connection.password())
+        cmd.env("PGPASSWORD", &connection.password)
             .arg("-h")
-            .arg(connection.host())
+            .arg(&connection.host)
             .arg("-p")
-            .arg(connection.port().to_string())
+            .arg(connection.port.to_string())
             .arg("-U")
-            .arg(connection.username())
+            .arg(&connection.username)
             .arg("-d")
-            .arg(connection.database());
+            .arg(&connection.database);
 
         #[cfg(unix)]
         {
@@ -218,7 +218,7 @@ where
                 if val.is_empty() { None } else { Some(val.to_string()) }
             });
 
-        let resolved_name = self.connection_service.find_connection(&name)?.name().to_string();
+        let resolved_name = self.connection_service.find_connection(&name)?.name.clone();
         self.connection_service.edit_connection(&resolved_name, EditConnectionInput {
             host: optional_option(args, "--host"),
             port,
@@ -244,7 +244,7 @@ where
             .ok_or("usage: pgrs rename <old-name> <new-name>")?
             .trim()
             .to_string();
-        let resolved_old = self.connection_service.find_connection(&old_name)?.name().to_string();
+        let resolved_old = self.connection_service.find_connection(&old_name)?.name.clone();
         self.connection_service.rename_connection(&resolved_old, &new_name)?;
         println!("connection '{resolved_old}' renamed to '{new_name}'");
         Ok(())
@@ -277,7 +277,7 @@ where
             }
         }
 
-        let resolved_name = self.connection_service.find_connection(&name)?.name().to_string();
+        let resolved_name = self.connection_service.find_connection(&name)?.name.clone();
         self.connection_service.delete_connection(&resolved_name)?;
         println!("connection '{resolved_name}' deleted");
         Ok(())
@@ -552,7 +552,7 @@ mod tests {
     fn get_connection_returns_correct_connection() {
         let cli = cli_with(&["prod"]);
         let conn = cli.get_connection("prod").unwrap();
-        assert_eq!(conn.name(), "prod");
+        assert_eq!(conn.name, "prod");
     }
 
     #[test]
@@ -584,29 +584,29 @@ mod tests {
 
     #[test]
     fn add_without_tls_flag_defaults_to_disable() {
-        use crate::core::domain::connection::TlsMode;
+        use crate::core::enums::tls_mode::TlsMode;
         let cli = cli_with(&[]);
         cli.run(add_args("prod", &[])).unwrap();
         let conn = cli.get_connection("prod").unwrap();
-        assert_eq!(conn.tls(), &TlsMode::Disable);
+        assert_eq!(conn.tls, TlsMode::Disable);
     }
 
     #[test]
     fn add_with_tls_require_saves_require_mode() {
-        use crate::core::domain::connection::TlsMode;
+        use crate::core::enums::tls_mode::TlsMode;
         let cli = cli_with(&[]);
         cli.run(add_args("prod", &["--tls=require"])).unwrap();
         let conn = cli.get_connection("prod").unwrap();
-        assert_eq!(conn.tls(), &TlsMode::Require);
+        assert_eq!(conn.tls, TlsMode::Require);
     }
 
     #[test]
     fn add_with_tls_verify_full_saves_verify_full_mode() {
-        use crate::core::domain::connection::TlsMode;
+        use crate::core::enums::tls_mode::TlsMode;
         let cli = cli_with(&[]);
         cli.run(add_args("prod", &["--tls=verify-full"])).unwrap();
         let conn = cli.get_connection("prod").unwrap();
-        assert_eq!(conn.tls(), &TlsMode::VerifyFull);
+        assert_eq!(conn.tls, TlsMode::VerifyFull);
     }
 
     #[test]
@@ -759,7 +759,7 @@ mod tests {
     fn edit_single_field_updates_database() {
         let cli = cli_with(&["prod"]);
         cli.run(edit_args("prod", &["--database=newdb"])).unwrap();
-        assert_eq!(cli.get_connection("prod").unwrap().database(), "newdb");
+        assert_eq!(cli.get_connection("prod").unwrap().database, "newdb");
     }
 
     #[test]
@@ -767,16 +767,16 @@ mod tests {
         let cli = cli_with(&["prod"]);
         cli.run(edit_args("prod", &["--password=secret2", "--database=newdb"])).unwrap();
         let conn = cli.get_connection("prod").unwrap();
-        assert_eq!(conn.password(), "secret2");
-        assert_eq!(conn.database(), "newdb");
-        assert_eq!(conn.host(), "localhost"); // unchanged
+        assert_eq!(conn.password, "secret2");
+        assert_eq!(conn.database, "newdb");
+        assert_eq!(conn.host, "localhost"); // unchanged
     }
 
     #[test]
     fn edit_port_parses_correctly() {
         let cli = cli_with(&["prod"]);
         cli.run(edit_args("prod", &["--port=5433"])).unwrap();
-        assert_eq!(cli.get_connection("prod").unwrap().port(), 5433);
+        assert_eq!(cli.get_connection("prod").unwrap().port, 5433);
     }
 
     #[test]
@@ -784,8 +784,8 @@ mod tests {
         let cli = cli_with(&["prod"]);
         cli.run(edit_args("prod", &["--tls=require"])).unwrap();
         assert_eq!(
-            cli.get_connection("prod").unwrap().tls(),
-            &crate::core::domain::connection::TlsMode::Require
+            cli.get_connection("prod").unwrap().tls,
+            crate::core::enums::tls_mode::TlsMode::Require
         );
     }
 
@@ -890,11 +890,11 @@ mod tests {
         )
         .unwrap();
         let conn = cli.get_connection("prod").unwrap();
-        assert_eq!(conn.host(), "localhost");
-        assert_eq!(conn.port(), 5432);
-        assert_eq!(conn.username(), "user");
-        assert_eq!(conn.password(), "pass");
-        assert_eq!(conn.database(), "mydb");
+        assert_eq!(conn.host, "localhost");
+        assert_eq!(conn.port, 5432);
+        assert_eq!(conn.username, "user");
+        assert_eq!(conn.password, "pass");
+        assert_eq!(conn.database, "mydb");
     }
 
     #[test]
@@ -910,7 +910,7 @@ mod tests {
             .into_iter(),
         )
         .unwrap();
-        assert_eq!(cli.get_connection("prod").unwrap().port(), 5433);
+        assert_eq!(cli.get_connection("prod").unwrap().port, 5433);
     }
 
     #[test]
@@ -1132,7 +1132,7 @@ mod tests {
         let cli = cli_with(&[]);
         cli.run(add_args("prod", &["--env=production"])).unwrap();
         assert_eq!(
-            cli.get_connection("prod").unwrap().environment(),
+            cli.get_connection("prod").unwrap().environment.as_deref(),
             Some("production")
         );
     }
@@ -1141,7 +1141,7 @@ mod tests {
     fn add_without_env_flag_leaves_environment_none() {
         let cli = cli_with(&[]);
         cli.run(add_args("prod", &[])).unwrap();
-        assert_eq!(cli.get_connection("prod").unwrap().environment(), None);
+        assert_eq!(cli.get_connection("prod").unwrap().environment, None);
     }
 
     #[test]
@@ -1149,7 +1149,7 @@ mod tests {
         let cli = cli_with(&["prod"]);
         cli.run(edit_args("prod", &["--env=staging"])).unwrap();
         assert_eq!(
-            cli.get_connection("prod").unwrap().environment(),
+            cli.get_connection("prod").unwrap().environment.as_deref(),
             Some("staging")
         );
     }
@@ -1161,6 +1161,6 @@ mod tests {
         cli.run(edit_args("prod", &["--env=prod"])).unwrap();
         // then clear it
         cli.run(edit_args("prod", &["--env="])).unwrap();
-        assert_eq!(cli.get_connection("prod").unwrap().environment(), None);
+        assert_eq!(cli.get_connection("prod").unwrap().environment, None);
     }
 }

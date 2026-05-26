@@ -1,7 +1,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::core::domain::connection::{Connection, TlsMode};
+use crate::core::domain::connection::Connection;
+use crate::core::enums::tls_mode::TlsMode;
 use crate::core::ports::db_connection::{DbConnection, QueryResult};
 use crate::core::ports::schema_port::SchemaPort;
 
@@ -13,16 +14,16 @@ impl PostgresDb {
     pub fn new(connection: &Connection) -> Result<Self, String> {
         let mut config = postgres::Config::new();
         config
-            .host(connection.host())
-            .port(connection.port())
-            .user(connection.username())
-            .password(connection.password().as_bytes())
-            .dbname(connection.database());
+            .host(&connection.host)
+            .port(connection.port)
+            .user(&connection.username)
+            .password(connection.password.as_bytes())
+            .dbname(&connection.database);
 
-        let client = match connection.tls() {
+        let client = match connection.tls {
             TlsMode::Disable => config
                 .connect(postgres::NoTls)
-                .map_err(|e| format!("could not connect to '{}': {}", connection.name(), e))?,
+                .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?,
             TlsMode::Require => {
                 // Encrypt without verifying the server certificate (matches psql sslmode=require).
                 let tls = native_tls::TlsConnector::builder()
@@ -33,7 +34,7 @@ impl PostgresDb {
                 let tls = postgres_native_tls::MakeTlsConnector::new(tls);
                 config
                     .connect(tls)
-                    .map_err(|e| format!("could not connect to '{}': {}", connection.name(), e))?
+                    .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?
             }
             TlsMode::VerifyFull => {
                 let tls = native_tls::TlsConnector::new()
@@ -41,7 +42,7 @@ impl PostgresDb {
                 let tls = postgres_native_tls::MakeTlsConnector::new(tls);
                 config
                     .connect(tls)
-                    .map_err(|e| format!("could not connect to '{}': {}", connection.name(), e))?
+                    .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?
             }
         };
 

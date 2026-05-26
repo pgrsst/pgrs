@@ -807,8 +807,6 @@ dependencies = [
  "postgres-native-tls",
  "reedline",
  "rusqlite",
- "serde",
- "serde_json",
  "tempfile",
  "unicode-width",
  "uuid",

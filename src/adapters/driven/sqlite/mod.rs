@@ -106,17 +106,19 @@ mod tests {
 
     fn add_conn(repo: &SqliteRepository, name: &str) {
         use crate::core::ports::connection_repository::ConnectionRepository;
-        use crate::core::domain::connection::{Connection, TlsMode};
-        repo.add(Connection::new(
-            name.to_string(),
-            "localhost".to_string(),
-            5432,
-            "u".to_string(),
-            "p".to_string(),
-            "db".to_string(),
-            TlsMode::Disable,
-            None,
-        ).unwrap()).unwrap();
+        use crate::core::domain::connection::Connection;
+        use crate::core::enums::tls_mode::TlsMode;
+        repo.add(Connection {
+            name: name.to_string(),
+            host: "localhost".to_string(),
+            port: 5432,
+            username: "u".to_string(),
+            password: "p".to_string(),
+            database: "db".to_string(),
+            tls: TlsMode::Disable,
+            environment: None,
+            id: None,
+        }).unwrap();
     }
 
     // --- QueryHistoryRepository tests ---
@@ -236,19 +238,21 @@ mod tests {
 
     // --- ConnectionRepository tests ---
 
-    use crate::core::domain::connection::{Connection, TlsMode};
+    use crate::core::domain::connection::Connection;
+    use crate::core::enums::tls_mode::TlsMode;
 
     fn sample_conn(name: &str) -> Connection {
-        Connection::new(
-            name.to_string(),
-            "localhost".to_string(),
-            5432,
-            "user".to_string(),
-            "pass".to_string(),
-            "db".to_string(),
-            TlsMode::Disable,
-            None,
-        ).expect("valid test connection")
+        Connection {
+            name: name.to_string(),
+            host: "localhost".to_string(),
+            port: 5432,
+            username: "user".to_string(),
+            password: "pass".to_string(),
+            database: "db".to_string(),
+            tls: TlsMode::Disable,
+            environment: None,
+            id: None,
+        }
     }
 
     #[test]
@@ -257,8 +261,8 @@ mod tests {
         repo.add(sample_conn("prod")).unwrap();
         let list = repo.list().unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].name(), "prod");
-        assert_eq!(list[0].host(), "localhost");
+        assert_eq!(list[0].name, "prod");
+        assert_eq!(list[0].host, "localhost");
     }
 
     #[test]
@@ -295,8 +299,8 @@ mod tests {
         let repo = SqliteRepository::open_in_memory().unwrap();
         repo.add(sample_conn("prod")).unwrap();
         let c = repo.get_connection("prod").unwrap();
-        assert_eq!(c.name(), "prod");
-        assert_eq!(c.port(), 5432);
+        assert_eq!(c.name, "prod");
+        assert_eq!(c.port, 5432);
     }
 
     #[test]
@@ -311,11 +315,11 @@ mod tests {
         let repo = SqliteRepository::open_in_memory().unwrap();
         repo.add(sample_conn("prod")).unwrap();
         let mut updated = sample_conn("prod");
-        updated.set_database("newdb".to_string());
+        updated.database = "newdb".to_string();
         repo.update(updated).unwrap();
         let c = repo.get_connection("prod").unwrap();
-        assert_eq!(c.database(), "newdb");
-        assert_eq!(c.host(), "localhost");
+        assert_eq!(c.database, "newdb");
+        assert_eq!(c.host, "localhost");
     }
 
     #[test]
@@ -357,30 +361,31 @@ mod tests {
         repo.add(sample_conn("alpha")).unwrap();
         repo.add(sample_conn("middle")).unwrap();
         let list = repo.list().unwrap();
-        assert_eq!(list[0].name(), "alpha");
-        assert_eq!(list[1].name(), "middle");
-        assert_eq!(list[2].name(), "zebra");
+        assert_eq!(list[0].name, "alpha");
+        assert_eq!(list[1].name, "middle");
+        assert_eq!(list[2].name, "zebra");
     }
 
     #[test]
     fn connection_with_tls_and_environment_round_trips() {
         let repo = SqliteRepository::open_in_memory().unwrap();
-        let mut c = Connection::new(
-            "secure".to_string(),
-            "db.example.com".to_string(),
-            5433,
-            "admin".to_string(),
-            "secret".to_string(),
-            "prod_db".to_string(),
-            TlsMode::VerifyFull,
-            Some("production".to_string()),
-        ).unwrap();
-        c.set_id("abc123".to_string());
+        let mut c = Connection {
+            name: "secure".to_string(),
+            host: "db.example.com".to_string(),
+            port: 5433,
+            username: "admin".to_string(),
+            password: "secret".to_string(),
+            database: "prod_db".to_string(),
+            tls: TlsMode::VerifyFull,
+            environment: Some("production".to_string()),
+            id: None,
+        };
+        c.id = Some("abc123".to_string());
         repo.add(c.clone()).unwrap();
         let loaded = repo.get_connection("secure").unwrap();
-        assert_eq!(loaded.tls(), &TlsMode::VerifyFull);
-        assert_eq!(loaded.environment(), Some("production"));
-        assert_eq!(loaded.id(), Some("abc123"));
-        assert_eq!(loaded.port(), 5433);
+        assert_eq!(loaded.tls, TlsMode::VerifyFull);
+        assert_eq!(loaded.environment.as_deref(), Some("production"));
+        assert_eq!(loaded.id.as_deref(), Some("abc123"));
+        assert_eq!(loaded.port, 5433);
     }
 }

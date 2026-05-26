@@ -1,4 +1,5 @@
-use crate::core::domain::connection::{Connection, TlsMode};
+use crate::core::domain::connection::Connection;
+use crate::core::enums::tls_mode::TlsMode;
 use crate::core::domain::error::DomainError;
 use crate::core::ports::connection_repository::ConnectionRepository;
 
@@ -57,10 +58,12 @@ where
         require_field("username", &input.username)?;
         require_field("password", &input.password)?;
 
-        let mut connection = Connection::new(
-            input.name, input.host, input.port, input.username, input.password, input.database, input.tls, input.environment,
-        )?;
-        connection.set_id(generate_id());
+        let mut connection = Connection {
+            name: input.name, host: input.host, port: input.port, username: input.username,
+            password: input.password, database: input.database, tls: input.tls,
+            environment: input.environment, id: None,
+        };
+        connection.id = Some(generate_id());
 
         self.repository.add(connection)
     }
@@ -84,7 +87,7 @@ where
         let connections = self.repository.list()?;
         connections
             .into_iter()
-            .find(|c| c.id() == Some(input) || c.name() == input)
+            .find(|c| c.id.as_deref() == Some(input) || c.name == input)
             .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", input)))
     }
 
@@ -108,13 +111,13 @@ where
         if let Some(ref v) = input.database { require_field("database", v)?; }
 
         let mut conn = self.repository.get_connection(name)?;
-        if let Some(v) = input.host { conn.set_host(v); }
-        if let Some(v) = input.port { conn.set_port(v); }
-        if let Some(v) = input.username { conn.set_username(v); }
-        if let Some(v) = input.password { conn.set_password(v); }
-        if let Some(v) = input.database { conn.set_database(v); }
-        if let Some(v) = input.tls { conn.set_tls(v); }
-        if let Some(v) = input.environment { conn.set_environment(v); }
+        if let Some(v) = input.host { conn.host = v; }
+        if let Some(v) = input.port { conn.port = v; }
+        if let Some(v) = input.username { conn.username = v; }
+        if let Some(v) = input.password { conn.password = v; }
+        if let Some(v) = input.database { conn.database = v; }
+        if let Some(v) = input.tls { conn.tls = v; }
+        if let Some(v) = input.environment { conn.environment = v; }
         self.repository.update(conn)
     }
 
@@ -128,7 +131,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::domain::connection::{TlsMode, DEFAULT_PORT};
+    use crate::core::domain::connection::DEFAULT_PORT;
+    use crate::core::enums::tls_mode::TlsMode;
     use crate::core::domain::error::DomainError;
     use crate::core::ports::connection_repository::test_support::StubConnectionRepository;
 
@@ -220,8 +224,8 @@ mod tests {
         svc.add_connection(valid_input("staging")).unwrap();
         let list = svc.list_connections().unwrap();
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].name(), "prod");
-        assert_eq!(list[1].name(), "staging");
+        assert_eq!(list[0].name, "prod");
+        assert_eq!(list[1].name, "staging");
     }
 
     #[test]
@@ -244,7 +248,7 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let conn = svc.get_connection("prod").unwrap();
-        assert_eq!(conn.name(), "prod");
+        assert_eq!(conn.name, "prod");
     }
 
     #[test]
@@ -282,8 +286,8 @@ mod tests {
             ..edit_input()
         }).unwrap();
         let conn = svc.get_connection("prod").unwrap();
-        assert_eq!(conn.database(), "newdb");
-        assert_eq!(conn.host(), "localhost"); // unchanged
+        assert_eq!(conn.database, "newdb");
+        assert_eq!(conn.host, "localhost"); // unchanged
     }
 
     #[test]
@@ -296,9 +300,9 @@ mod tests {
             ..edit_input()
         }).unwrap();
         let conn = svc.get_connection("prod").unwrap();
-        assert_eq!(conn.host(), "db.example.com");
-        assert_eq!(conn.password(), "newpass");
-        assert_eq!(conn.database(), "mydb"); // unchanged
+        assert_eq!(conn.host, "db.example.com");
+        assert_eq!(conn.password, "newpass");
+        assert_eq!(conn.database, "mydb"); // unchanged
     }
 
     #[test]
@@ -348,7 +352,7 @@ mod tests {
             tls: Some(TlsMode::Require),
             ..edit_input()
         }).unwrap();
-        assert_eq!(svc.get_connection("prod").unwrap().tls(), &TlsMode::Require);
+        assert_eq!(svc.get_connection("prod").unwrap().tls, TlsMode::Require);
     }
 
     #[test]
@@ -359,7 +363,7 @@ mod tests {
             port: Some(5433),
             ..edit_input()
         }).unwrap();
-        assert_eq!(svc.get_connection("prod").unwrap().port(), 5433);
+        assert_eq!(svc.get_connection("prod").unwrap().port, 5433);
     }
 
     #[test]
@@ -410,7 +414,7 @@ mod tests {
             ..valid_input("prod")
         }).unwrap();
         assert_eq!(
-            svc.get_connection("prod").unwrap().environment(),
+            svc.get_connection("prod").unwrap().environment.as_deref(),
             Some("production")
         );
     }
@@ -419,7 +423,7 @@ mod tests {
     fn add_connection_without_environment_saves_none() {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
-        assert_eq!(svc.get_connection("prod").unwrap().environment(), None);
+        assert_eq!(svc.get_connection("prod").unwrap().environment, None);
     }
 
     #[test]
@@ -431,7 +435,7 @@ mod tests {
             ..edit_input()
         }).unwrap();
         assert_eq!(
-            svc.get_connection("prod").unwrap().environment(),
+            svc.get_connection("prod").unwrap().environment.as_deref(),
             Some("staging")
         );
     }
@@ -447,7 +451,7 @@ mod tests {
             environment: Some(None),
             ..edit_input()
         }).unwrap();
-        assert_eq!(svc.get_connection("prod").unwrap().environment(), None);
+        assert_eq!(svc.get_connection("prod").unwrap().environment, None);
     }
 
     #[test]
@@ -473,7 +477,7 @@ mod tests {
             ..edit_input()
         }).unwrap();
         assert_eq!(
-            svc.get_connection("prod").unwrap().environment(),
+            svc.get_connection("prod").unwrap().environment.as_deref(),
             Some("prod")
         );
     }
@@ -483,7 +487,7 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let conn = svc.get_connection("prod").unwrap();
-        assert!(conn.id().is_some(), "id should be assigned on add");
+        assert!(conn.id.is_some(), "id should be assigned on add");
     }
 
     #[test]
@@ -491,8 +495,8 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         svc.add_connection(valid_input("staging")).unwrap();
-        let id1 = svc.get_connection("prod").unwrap().id().map(|s| s.to_string());
-        let id2 = svc.get_connection("staging").unwrap().id().map(|s| s.to_string());
+        let id1 = svc.get_connection("prod").unwrap().id.clone();
+        let id2 = svc.get_connection("staging").unwrap().id.clone();
         assert_ne!(id1, id2, "each connection should get a unique id");
     }
 
@@ -500,7 +504,7 @@ mod tests {
     fn add_connection_assigns_8_char_hex_id() {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
-        let id = svc.get_connection("prod").unwrap().id().unwrap().to_string();
+        let id = svc.get_connection("prod").unwrap().id.unwrap();
         assert_eq!(id.len(), 8, "id should be 8 characters, got: {id}");
         assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "id should be hex, got: {id}");
     }
@@ -510,16 +514,16 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let conn = svc.find_connection("prod").unwrap();
-        assert_eq!(conn.name(), "prod");
+        assert_eq!(conn.name, "prod");
     }
 
     #[test]
     fn find_connection_by_id() {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
-        let id = svc.get_connection("prod").unwrap().id().unwrap().to_string();
+        let id = svc.get_connection("prod").unwrap().id.unwrap();
         let conn = svc.find_connection(&id).unwrap();
-        assert_eq!(conn.name(), "prod");
+        assert_eq!(conn.name, "prod");
     }
 
     #[test]
