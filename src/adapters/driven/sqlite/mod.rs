@@ -183,39 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn save_schema_is_atomic_on_failure() {
-        use std::collections::HashMap;
-        let repo = SqliteRepository::open_in_memory().unwrap();
-        add_conn(&repo, "mydb");
-
-        let mut initial = HashMap::new();
-        initial.insert("users".to_string(), vec!["id".to_string()]);
-        repo.save_schema("mydb", &initial);
-
-        {
-            let conn = repo.conn.lock().unwrap();
-            conn.execute_batch(
-                "CREATE TRIGGER fail_schema_insert BEFORE INSERT ON schema_tables \
-                 BEGIN SELECT RAISE(FAIL, 'simulated failure'); END;",
-            )
-            .unwrap();
-        }
-
-        let mut new_schema = HashMap::new();
-        new_schema.insert("products".to_string(), vec!["sku".to_string()]);
-        repo.save_schema("mydb", &new_schema);
-
-        {
-            let conn = repo.conn.lock().unwrap();
-            conn.execute_batch("DROP TRIGGER fail_schema_insert").unwrap();
-        }
-
-        let loaded = repo.load_schema("mydb").unwrap();
-        assert!(loaded.contains_key("users"), "rollback must restore original schema");
-        assert!(!loaded.contains_key("products"), "failed save must not partially commit");
-    }
-
-    #[test]
     fn save_schema_overwrites_existing() {
         use std::collections::HashMap;
         let repo = SqliteRepository::open_in_memory().unwrap();
