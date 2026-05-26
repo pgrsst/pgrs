@@ -2,21 +2,21 @@ use std::sync::Arc;
 
 use crate::core::domain::analytics::FreqEntry;
 use crate::core::domain::query_history::QueryHistory;
-use crate::core::services::column_access::service::{ColumnAccessCreateInput, ColumnAccessService};
-use crate::core::services::query_history::service::{QueryHistoryCreateInput, QueryHistoryService};
-use crate::core::services::table_access::service::{TableAccessCreateInput, TableAccessService};
+use crate::core::services::column_access::service::{ColumnAccessCreateInput, ColumnAccessSvc};
+use crate::core::services::query_history::service::{QueryHistoryCreateInput, QueryHistorySvc};
+use crate::core::services::table_access::service::{TableAccessCreateInput, TableAccessSvc};
 
 pub struct AnalyticsService {
-    history: Arc<QueryHistoryService>,
-    table_access: Arc<TableAccessService>,
-    column_access: Arc<ColumnAccessService>,
+    history: Arc<dyn QueryHistorySvc>,
+    table_access: Arc<dyn TableAccessSvc>,
+    column_access: Arc<dyn ColumnAccessSvc>,
 }
 
 impl AnalyticsService {
     pub fn new(
-        history: Arc<QueryHistoryService>,
-        table_access: Arc<TableAccessService>,
-        column_access: Arc<ColumnAccessService>,
+        history: Arc<dyn QueryHistorySvc>,
+        table_access: Arc<dyn TableAccessSvc>,
+        column_access: Arc<dyn ColumnAccessSvc>,
     ) -> Self {
         Self {
             history,
@@ -73,8 +73,7 @@ impl AnalyticsService {
     }
 
     pub fn get_frequent_columns(&self, connection_name: &str, table: &str) -> Vec<FreqEntry> {
-        self.column_access
-            .get_frequent_by_table(connection_name, table)
+        self.column_access.get_frequent_by_table(connection_name, table)
     }
 }
 
@@ -82,110 +81,66 @@ impl AnalyticsService {
 mod tests {
     use super::*;
     use crate::core::domain::analytics::FreqEntry;
-    use crate::core::domain::column_access::ColumnAccess;
-    use crate::core::domain::connection::Connection;
     use crate::core::domain::error::DomainError;
     use crate::core::domain::query_history::QueryHistory;
-    use crate::core::domain::table_access::TableAccess;
-    use crate::core::ports::column_access_repository::ColumnAccessRepository;
-    use crate::core::ports::connection_repository::ConnectionRepository;
-    use crate::core::ports::query_history_repository::QueryHistoryRepository;
-    use crate::core::ports::table_access_repository::TableAccessRepository;
+    use crate::core::services::column_access::service::ColumnAccessCreateInput;
+    use crate::core::services::query_history::service::QueryHistoryCreateInput;
+    use crate::core::services::table_access::service::TableAccessCreateInput;
     use std::sync::Mutex;
 
-    struct StubConnRepo;
-    impl ConnectionRepository for StubConnRepo {
-        fn add(&self, _: Connection) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn list(&self) -> Result<Vec<Connection>, DomainError> {
-            Ok(vec![])
-        }
-        fn delete(&self, _: &str) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn get_connection(&self, name: &str) -> Result<Connection, DomainError> {
-            Err(DomainError::NotFound(name.to_string()))
-        }
-        fn find_row_id(&self, _: &str) -> Result<i64, DomainError> {
-            Ok(1)
-        }
-        fn rename(&self, _: &str, _: &str) -> Result<(), DomainError> {
-            Ok(())
-        }
-        fn update(&self, _: Connection) -> Result<(), DomainError> {
-            Ok(())
-        }
-    }
-
     struct StubHistory {
-        upserted: Mutex<Vec<String>>,
+        recorded: Mutex<Vec<String>>,
         entries: Vec<QueryHistory>,
     }
     impl StubHistory {
         fn new(entries: Vec<QueryHistory>) -> Self {
-            Self {
-                upserted: Mutex::new(vec![]),
-                entries,
-            }
+            Self { recorded: Mutex::new(vec![]), entries }
         }
     }
-    impl QueryHistoryRepository for StubHistory {
-        fn save(&self, entity: &QueryHistory) -> Result<i64, DomainError> {
-            self.upserted.lock().unwrap().push(entity.query.clone());
+    impl QueryHistorySvc for StubHistory {
+        fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError> {
+            self.recorded.lock().unwrap().push(input.query);
             Ok(1)
         }
-        fn list_recent(&self, _: &str, _: usize) -> Vec<QueryHistory> {
+        fn list_recent(&self, _: &str) -> Vec<QueryHistory> {
             self.entries.clone()
         }
     }
 
     struct StubTableAccess {
-        inserted: Mutex<Vec<String>>,
+        recorded: Mutex<Vec<String>>,
         freq: Vec<FreqEntry>,
     }
     impl StubTableAccess {
         fn new(freq: Vec<FreqEntry>) -> Self {
-            Self {
-                inserted: Mutex::new(vec![]),
-                freq,
-            }
+            Self { recorded: Mutex::new(vec![]), freq }
         }
     }
-    impl TableAccessRepository for StubTableAccess {
-        fn save(&self, entity: &TableAccess) -> Result<(), DomainError> {
-            self.inserted
-                .lock()
-                .unwrap()
-                .push(entity.table_name.clone());
+    impl TableAccessSvc for StubTableAccess {
+        fn record(&self, input: TableAccessCreateInput) -> Result<(), DomainError> {
+            self.recorded.lock().unwrap().push(input.table_name);
             Ok(())
         }
-        fn list_frequent(&self, _: &str, _: usize) -> Vec<FreqEntry> {
+        fn get_frequent(&self, _: &str) -> Vec<FreqEntry> {
             self.freq.clone()
         }
     }
 
     struct StubColumnAccess {
-        inserted: Mutex<Vec<String>>,
+        recorded: Mutex<Vec<String>>,
         freq: Vec<FreqEntry>,
     }
     impl StubColumnAccess {
         fn new(freq: Vec<FreqEntry>) -> Self {
-            Self {
-                inserted: Mutex::new(vec![]),
-                freq,
-            }
+            Self { recorded: Mutex::new(vec![]), freq }
         }
     }
-    impl ColumnAccessRepository for StubColumnAccess {
-        fn save(&self, entity: &ColumnAccess) -> Result<(), DomainError> {
-            self.inserted
-                .lock()
-                .unwrap()
-                .push(entity.column_name.clone());
+    impl ColumnAccessSvc for StubColumnAccess {
+        fn record(&self, input: ColumnAccessCreateInput) -> Result<(), DomainError> {
+            self.recorded.lock().unwrap().push(input.column_name);
             Ok(())
         }
-        fn list_frequent_by_table(&self, _: &str, _: &str, _: usize) -> Vec<FreqEntry> {
+        fn get_frequent_by_table(&self, _: &str, _: &str) -> Vec<FreqEntry> {
             self.freq.clone()
         }
     }
@@ -194,30 +149,15 @@ mod tests {
         history: Vec<QueryHistory>,
         table_freq: Vec<FreqEntry>,
         col_freq: Vec<FreqEntry>,
-    ) -> (
-        Arc<StubTableAccess>,
-        Arc<StubColumnAccess>,
-        AnalyticsService,
-    ) {
-        let conn_repo = Arc::new(StubConnRepo);
+    ) -> (Arc<StubTableAccess>, Arc<StubColumnAccess>, AnalyticsService) {
         let h = Arc::new(StubHistory::new(history));
         let t = Arc::new(StubTableAccess::new(table_freq));
         let c = Arc::new(StubColumnAccess::new(col_freq));
-
-        let history_svc = Arc::new(QueryHistoryService::new(
-            Arc::clone(&conn_repo) as Arc<dyn ConnectionRepository>,
-            Arc::clone(&h) as Arc<dyn QueryHistoryRepository>,
-        ));
-        let table_svc = Arc::new(TableAccessService::new(
-            Arc::clone(&conn_repo) as Arc<dyn ConnectionRepository>,
-            Arc::clone(&t) as Arc<dyn TableAccessRepository>,
-        ));
-        let col_svc = Arc::new(ColumnAccessService::new(
-            Arc::clone(&conn_repo) as Arc<dyn ConnectionRepository>,
-            Arc::clone(&c) as Arc<dyn ColumnAccessRepository>,
-        ));
-
-        let svc = AnalyticsService::new(history_svc, table_svc, col_svc);
+        let svc = AnalyticsService::new(
+            Arc::clone(&h) as Arc<dyn QueryHistorySvc>,
+            Arc::clone(&t) as Arc<dyn TableAccessSvc>,
+            Arc::clone(&c) as Arc<dyn ColumnAccessSvc>,
+        );
         (t, c, svc)
     }
 
@@ -230,8 +170,8 @@ mod tests {
             &["users".to_string()],
             &[("users".to_string(), "id".to_string())],
         );
-        assert_eq!(t.inserted.lock().unwrap().as_slice(), &["users"]);
-        assert_eq!(c.inserted.lock().unwrap().as_slice(), &["id"]);
+        assert_eq!(t.recorded.lock().unwrap().as_slice(), &["users"]);
+        assert_eq!(c.recorded.lock().unwrap().as_slice(), &["id"]);
     }
 
     #[test]
@@ -250,10 +190,7 @@ mod tests {
 
     #[test]
     fn get_frequent_tables_delegates_to_repo() {
-        let freq = vec![FreqEntry {
-            name: "users".to_string(),
-            count: 5,
-        }];
+        let freq = vec![FreqEntry { name: "users".to_string(), count: 5 }];
         let (_, _, svc) = make_svc(vec![], freq, vec![]);
         let result = svc.get_frequent_tables("mydb");
         assert_eq!(result[0].name, "users");
@@ -262,10 +199,7 @@ mod tests {
 
     #[test]
     fn get_frequent_columns_delegates_to_repo() {
-        let freq = vec![FreqEntry {
-            name: "email".to_string(),
-            count: 3,
-        }];
+        let freq = vec![FreqEntry { name: "email".to_string(), count: 3 }];
         let (_, _, svc) = make_svc(vec![], vec![], freq);
         let result = svc.get_frequent_columns("mydb", "users");
         assert_eq!(result[0].name, "email");

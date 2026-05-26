@@ -4,10 +4,16 @@ use crate::core::domain::error::DomainError;
 use crate::core::domain::query_history::QueryHistory;
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::ports::query_history_repository::QueryHistoryRepository;
+use crate::core::utils::unix_now;
 
 pub struct QueryHistoryCreateInput {
     pub connection_name: String,
     pub query: String,
+}
+
+pub trait QueryHistorySvc: Send + Sync {
+    fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError>;
+    fn list_recent(&self, connection_name: &str) -> Vec<QueryHistory>;
 }
 
 pub struct QueryHistoryService {
@@ -40,9 +46,12 @@ impl QueryHistoryService {
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+impl QueryHistorySvc for QueryHistoryService {
+    fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError> {
+        self.record(input)
+    }
+
+    fn list_recent(&self, connection_name: &str) -> Vec<QueryHistory> {
+        self.list_recent(connection_name)
+    }
 }

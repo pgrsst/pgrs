@@ -174,20 +174,13 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use crate::core::domain::analytics::FreqEntry;
-    use crate::core::domain::column_access::ColumnAccess;
-    use crate::core::domain::connection::Connection;
     use crate::core::domain::error::DomainError;
     use crate::core::domain::query_history::QueryHistory;
-    use crate::core::domain::table_access::TableAccess;
-    use crate::core::ports::column_access_repository::ColumnAccessRepository;
-    use crate::core::ports::connection_repository::ConnectionRepository;
     use crate::core::ports::db_connection::QueryResult;
-    use crate::core::ports::query_history_repository::QueryHistoryRepository;
-    use crate::core::ports::table_access_repository::TableAccessRepository;
     use crate::core::services::analytics::service::AnalyticsService;
-    use crate::core::services::column_access::service::ColumnAccessService;
-    use crate::core::services::query_history::service::QueryHistoryService;
-    use crate::core::services::table_access::service::TableAccessService;
+    use crate::core::services::column_access::service::{ColumnAccessCreateInput, ColumnAccessSvc};
+    use crate::core::services::query_history::service::{QueryHistoryCreateInput, QueryHistorySvc};
+    use crate::core::services::table_access::service::{TableAccessCreateInput, TableAccessSvc};
 
     struct StubDb {
         columns: HashMap<String, Vec<String>>,
@@ -232,17 +225,6 @@ mod tests {
         schema
     }
 
-    struct StubConnRepo;
-    impl ConnectionRepository for StubConnRepo {
-        fn add(&self, _: Connection) -> Result<(), DomainError> { Ok(()) }
-        fn list(&self) -> Result<Vec<Connection>, DomainError> { Ok(vec![]) }
-        fn delete(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
-        fn get_connection(&self, n: &str) -> Result<Connection, DomainError> { Err(DomainError::NotFound(n.to_string())) }
-        fn find_row_id(&self, _: &str) -> Result<i64, DomainError> { Ok(1) }
-        fn rename(&self, _: &str, _: &str) -> Result<(), DomainError> { Ok(()) }
-        fn update(&self, _: Connection) -> Result<(), DomainError> { Ok(()) }
-    }
-
     struct StubAnalytics {
         history: Vec<QueryHistory>,
         tables: Vec<FreqEntry>,
@@ -256,22 +238,22 @@ mod tests {
         }
     }
 
-    impl QueryHistoryRepository for StubAnalytics {
-        fn save(&self, entity: &QueryHistory) -> Result<i64, DomainError> {
-            self.recorded.lock().unwrap().push(("".to_string(), entity.query.clone()));
+    impl QueryHistorySvc for StubAnalytics {
+        fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError> {
+            self.recorded.lock().unwrap().push((input.connection_name, input.query));
             Ok(1)
         }
-        fn list_recent(&self, _: &str, _: usize) -> Vec<QueryHistory> { self.history.clone() }
+        fn list_recent(&self, _: &str) -> Vec<QueryHistory> { self.history.clone() }
     }
 
-    impl TableAccessRepository for StubAnalytics {
-        fn save(&self, _: &TableAccess) -> Result<(), DomainError> { Ok(()) }
-        fn list_frequent(&self, _: &str, _: usize) -> Vec<FreqEntry> { self.tables.clone() }
+    impl TableAccessSvc for StubAnalytics {
+        fn record(&self, _: TableAccessCreateInput) -> Result<(), DomainError> { Ok(()) }
+        fn get_frequent(&self, _: &str) -> Vec<FreqEntry> { self.tables.clone() }
     }
 
-    impl ColumnAccessRepository for StubAnalytics {
-        fn save(&self, _: &ColumnAccess) -> Result<(), DomainError> { Ok(()) }
-        fn list_frequent_by_table(&self, _: &str, _: &str, _: usize) -> Vec<FreqEntry> { self.columns.clone() }
+    impl ColumnAccessSvc for StubAnalytics {
+        fn record(&self, _: ColumnAccessCreateInput) -> Result<(), DomainError> { Ok(()) }
+        fn get_frequent_by_table(&self, _: &str, _: &str) -> Vec<FreqEntry> { self.columns.clone() }
     }
 
     fn make_svc(
@@ -279,21 +261,12 @@ mod tests {
         tables: Vec<FreqEntry>,
         columns: Vec<FreqEntry>,
     ) -> (std::sync::Arc<StubAnalytics>, AnalyticsService) {
-        let conn_repo = std::sync::Arc::new(StubConnRepo);
         let stub = std::sync::Arc::new(StubAnalytics::new(history, tables, columns));
-        let history_svc = std::sync::Arc::new(QueryHistoryService::new(
-            std::sync::Arc::clone(&conn_repo) as std::sync::Arc<dyn ConnectionRepository>,
-            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn QueryHistoryRepository>,
-        ));
-        let table_svc = std::sync::Arc::new(TableAccessService::new(
-            std::sync::Arc::clone(&conn_repo) as std::sync::Arc<dyn ConnectionRepository>,
-            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn TableAccessRepository>,
-        ));
-        let col_svc = std::sync::Arc::new(ColumnAccessService::new(
-            std::sync::Arc::clone(&conn_repo) as std::sync::Arc<dyn ConnectionRepository>,
-            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn ColumnAccessRepository>,
-        ));
-        let svc = AnalyticsService::new(history_svc, table_svc, col_svc);
+        let svc = AnalyticsService::new(
+            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn QueryHistorySvc>,
+            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn TableAccessSvc>,
+            std::sync::Arc::clone(&stub) as std::sync::Arc<dyn ColumnAccessSvc>,
+        );
         (stub, svc)
     }
 

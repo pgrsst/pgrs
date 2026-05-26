@@ -14,13 +14,13 @@ use crate::core::ports::schema_column_repository::SchemaColumnRepository;
 use crate::core::ports::schema_table_repository::SchemaTableRepository;
 use crate::core::ports::table_access_repository::TableAccessRepository;
 use crate::core::services::analytics::service::AnalyticsService;
-use crate::core::services::column_access::service::ColumnAccessService;
+use crate::core::services::column_access::service::{ColumnAccessService, ColumnAccessSvc};
 use crate::core::services::connection::service::ConnectionService;
-use crate::core::services::query_history::service::QueryHistoryService;
-use crate::core::services::schema_cache::service::SchemaCacheService;
-use crate::core::services::schema_column::service::SchemaColumnService;
-use crate::core::services::schema_table::service::SchemaTableService;
-use crate::core::services::table_access::service::TableAccessService;
+use crate::core::services::query_history::service::{QueryHistoryService, QueryHistorySvc};
+use crate::core::services::schema_cache::service::{SchemaCacheService, SchemaCacheSvc};
+use crate::core::services::schema_column::service::{SchemaColumnService, SchemaColumnSvc};
+use crate::core::services::schema_table::service::{SchemaTableService, SchemaTableSvc};
+use crate::core::services::table_access::service::{TableAccessService, TableAccessSvc};
 
 pub fn run() -> Result<(), String> {
     let data_dir = dirs::home_dir()
@@ -58,9 +58,9 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
                 Arc::clone(&sqlite) as Arc<dyn ColumnAccessRepository>,
             ));
             let analytics = Arc::new(AnalyticsService::new(
-                query_history_svc,
-                table_access_svc,
-                column_access_svc,
+                Arc::clone(&query_history_svc) as Arc<dyn QueryHistorySvc>,
+                Arc::clone(&table_access_svc) as Arc<dyn TableAccessSvc>,
+                Arc::clone(&column_access_svc) as Arc<dyn ColumnAccessSvc>,
             ));
             let schema_table_svc = Arc::new(SchemaTableService::new(
                 Arc::clone(&connection_repo),
@@ -70,12 +70,15 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
                 Arc::clone(&connection_repo),
                 Arc::clone(&sqlite) as Arc<dyn SchemaColumnRepository>,
             ));
-            let schema_cache = Arc::new(SchemaCacheService::new(schema_table_svc, schema_column_svc));
+            let schema_cache = Arc::new(SchemaCacheService::new(
+                Arc::clone(&schema_table_svc) as Arc<dyn SchemaTableSvc>,
+                Arc::clone(&schema_column_svc) as Arc<dyn SchemaColumnSvc>,
+            ));
             run_shell(
                 &args[1..],
                 &connection_service,
                 Some(analytics),
-                Some(schema_cache),
+                Some(schema_cache as Arc<dyn SchemaCacheSvc>),
             )
         }
         Some("test") => run_test(&args[1..], &connection_service),
@@ -90,7 +93,7 @@ fn run_shell<R: ConnectionRepository>(
     args: &[String],
     service: &ConnectionService<R>,
     analytics: Option<Arc<AnalyticsService>>,
-    schema_cache: Option<Arc<SchemaCacheService>>,
+    schema_cache: Option<Arc<dyn SchemaCacheSvc>>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
     let conn = service.find_connection(name)?;

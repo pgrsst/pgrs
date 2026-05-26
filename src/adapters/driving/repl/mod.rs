@@ -16,7 +16,7 @@ use reedline::Signal;
 use crate::core::ports::repl_port::ReplPort;
 use crate::core::services::analytics::service::AnalyticsService;
 use crate::core::services::schema::service::SchemaService;
-use crate::core::services::schema_cache::service::SchemaCacheService;
+use crate::core::services::schema_cache::service::SchemaCacheSvc;
 
 use describe::describe_table;
 
@@ -26,7 +26,7 @@ pub fn run(
     connection_name: &str,
     environment: Option<&str>,
     analytics: Option<Arc<AnalyticsService>>,
-    schema_cache: Option<Arc<SchemaCacheService>>,
+    schema_cache: Option<Arc<dyn SchemaCacheSvc>>,
 ) -> Result<(), String> {
     let mut schema = SchemaService::new(schema_cache);
     schema.load(conn.as_ref(), connection_name)?;

@@ -5,11 +5,17 @@ use crate::core::domain::error::DomainError;
 use crate::core::domain::table_access::TableAccess;
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::ports::table_access_repository::TableAccessRepository;
+use crate::core::utils::unix_now;
 
 pub struct TableAccessCreateInput {
     pub connection_name: String,
     pub table_name: String,
     pub query_id: Option<i64>,
+}
+
+pub trait TableAccessSvc: Send + Sync {
+    fn record(&self, input: TableAccessCreateInput) -> Result<(), DomainError>;
+    fn get_frequent(&self, connection_name: &str) -> Vec<FreqEntry>;
 }
 
 pub struct TableAccessService {
@@ -43,9 +49,12 @@ impl TableAccessService {
     }
 }
 
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+impl TableAccessSvc for TableAccessService {
+    fn record(&self, input: TableAccessCreateInput) -> Result<(), DomainError> {
+        self.record(input)
+    }
+
+    fn get_frequent(&self, connection_name: &str) -> Vec<FreqEntry> {
+        self.get_frequent(connection_name)
+    }
 }

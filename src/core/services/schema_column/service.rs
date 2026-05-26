@@ -13,6 +13,12 @@ pub struct SchemaColumnCreateInput {
     pub cached_at: i64,
 }
 
+pub trait SchemaColumnSvc: Send + Sync {
+    fn save(&self, input: SchemaColumnCreateInput) -> Result<(), DomainError>;
+    fn list_by_connection(&self, connection_name: &str) -> Result<Vec<SchemaColumn>, DomainError>;
+    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError>;
+}
+
 pub struct SchemaColumnService {
     connection_repo: Arc<dyn ConnectionRepository>,
     repository: Arc<dyn SchemaColumnRepository>,
@@ -46,5 +52,19 @@ impl SchemaColumnService {
     pub fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(connection_name)?;
         self.repository.delete_by_connection(connection_id)
+    }
+}
+
+impl SchemaColumnSvc for SchemaColumnService {
+    fn save(&self, input: SchemaColumnCreateInput) -> Result<(), DomainError> {
+        self.save(input)
+    }
+
+    fn list_by_connection(&self, connection_name: &str) -> Result<Vec<SchemaColumn>, DomainError> {
+        self.list_by_connection(connection_name)
+    }
+
+    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
+        self.delete_by_connection(connection_name)
     }
 }

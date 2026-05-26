@@ -2,20 +2,28 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::core::services::schema_column::service::{SchemaColumnCreateInput, SchemaColumnService};
-use crate::core::services::schema_table::service::{SchemaTableCreateInput, SchemaTableService};
+use crate::core::services::schema_column::service::{SchemaColumnCreateInput, SchemaColumnSvc};
+use crate::core::services::schema_table::service::{SchemaTableCreateInput, SchemaTableSvc};
+
+pub trait SchemaCacheSvc: Send + Sync {
+    fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>);
+    fn load(&self, connection_name: &str) -> Option<HashMap<String, Vec<String>>>;
+    fn invalidate(&self, connection_name: &str);
+}
 
 pub struct SchemaCacheService {
-    table_svc: Arc<SchemaTableService>,
-    column_svc: Arc<SchemaColumnService>,
+    table_svc: Arc<dyn SchemaTableSvc>,
+    column_svc: Arc<dyn SchemaColumnSvc>,
 }
 
 impl SchemaCacheService {
-    pub fn new(table_svc: Arc<SchemaTableService>, column_svc: Arc<SchemaColumnService>) -> Self {
+    pub fn new(table_svc: Arc<dyn SchemaTableSvc>, column_svc: Arc<dyn SchemaColumnSvc>) -> Self {
         Self { table_svc, column_svc }
     }
+}
 
-    pub fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>) {
+impl SchemaCacheSvc for SchemaCacheService {
+    fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -54,7 +62,7 @@ impl SchemaCacheService {
         }
     }
 
-    pub fn load(&self, connection_name: &str) -> Option<HashMap<String, Vec<String>>> {
+    fn load(&self, connection_name: &str) -> Option<HashMap<String, Vec<String>>> {
         let columns = self.column_svc.list_by_connection(connection_name).ok()?;
         if columns.is_empty() {
             return None;
@@ -66,7 +74,7 @@ impl SchemaCacheService {
         Some(map)
     }
 
-    pub fn invalidate(&self, connection_name: &str) {
+    fn invalidate(&self, connection_name: &str) {
         if let Err(e) = self.table_svc.delete_by_connection(connection_name) {
             eprintln!("pgrs: schema cache invalidate failed: {e}");
         }
@@ -81,85 +89,61 @@ mod tests {
     use super::*;
     use std::sync::RwLock;
 
-    use crate::core::domain::connection::Connection;
     use crate::core::domain::error::DomainError;
     use crate::core::domain::schema_column::SchemaColumn;
-    use crate::core::domain::schema_table::SchemaTable;
-    use crate::core::ports::connection_repository::ConnectionRepository;
-    use crate::core::ports::schema_column_repository::SchemaColumnRepository;
-    use crate::core::ports::schema_table_repository::SchemaTableRepository;
-    use crate::core::services::schema_column::service::SchemaColumnService;
-    use crate::core::services::schema_table::service::SchemaTableService;
+    use crate::core::services::schema_column::service::SchemaColumnCreateInput;
+    use crate::core::services::schema_table::service::SchemaTableCreateInput;
 
-    struct StubConnRepo;
-    impl ConnectionRepository for StubConnRepo {
-        fn add(&self, _: Connection) -> Result<(), DomainError> { Ok(()) }
-        fn list(&self) -> Result<Vec<Connection>, DomainError> { Ok(vec![]) }
-        fn delete(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
-        fn get_connection(&self, n: &str) -> Result<Connection, DomainError> {
-            Err(DomainError::NotFound(n.to_string()))
-        }
-        fn find_row_id(&self, _: &str) -> Result<i64, DomainError> { Ok(1) }
-        fn rename(&self, _: &str, _: &str) -> Result<(), DomainError> { Ok(()) }
-        fn update(&self, _: Connection) -> Result<(), DomainError> { Ok(()) }
+    struct StubTableSvc;
+    impl SchemaTableSvc for StubTableSvc {
+        fn save(&self, _: SchemaTableCreateInput) -> Result<(), DomainError> { Ok(()) }
+        fn delete_by_connection(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
     }
 
-    struct StubTableRepo;
-    impl SchemaTableRepository for StubTableRepo {
-        fn save(&self, _: &SchemaTable) -> Result<(), DomainError> { Ok(()) }
-        fn delete_by_connection(&self, _: i64) -> Result<(), DomainError> { Ok(()) }
-    }
-
-    struct StubColumnRepo {
+    struct StubColumnSvc {
         data: RwLock<Vec<SchemaColumn>>,
     }
-
-    impl StubColumnRepo {
-        fn empty() -> Self {
-            Self { data: RwLock::new(vec![]) }
-        }
-        fn with_columns(cols: Vec<SchemaColumn>) -> Self {
-            Self { data: RwLock::new(cols) }
-        }
+    impl StubColumnSvc {
+        fn empty() -> Self { Self { data: RwLock::new(vec![]) } }
+        fn with_columns(cols: Vec<SchemaColumn>) -> Self { Self { data: RwLock::new(cols) } }
     }
-
-    impl SchemaColumnRepository for StubColumnRepo {
-        fn save(&self, entity: &SchemaColumn) -> Result<(), DomainError> {
-            self.data.write().unwrap().push(entity.clone());
+    impl SchemaColumnSvc for StubColumnSvc {
+        fn save(&self, input: SchemaColumnCreateInput) -> Result<(), DomainError> {
+            self.data.write().unwrap().push(SchemaColumn {
+                connection_id: 1,
+                table_name: input.table_name,
+                column_name: input.column_name,
+                data_type: input.data_type,
+                cached_at: input.cached_at,
+            });
             Ok(())
         }
-        fn list_by_connection(&self, _: i64) -> Vec<SchemaColumn> {
-            self.data.read().unwrap().clone()
+        fn list_by_connection(&self, _: &str) -> Result<Vec<SchemaColumn>, DomainError> {
+            Ok(self.data.read().unwrap().clone())
         }
-        fn delete_by_connection(&self, _: i64) -> Result<(), DomainError> {
+        fn delete_by_connection(&self, _: &str) -> Result<(), DomainError> {
             self.data.write().unwrap().clear();
             Ok(())
         }
     }
 
-    fn make_svc(col_repo: Arc<StubColumnRepo>) -> SchemaCacheService {
-        let conn_repo = Arc::new(StubConnRepo) as Arc<dyn ConnectionRepository>;
-        let table_svc = Arc::new(SchemaTableService::new(
-            Arc::clone(&conn_repo),
-            Arc::new(StubTableRepo) as Arc<dyn SchemaTableRepository>,
-        ));
-        let column_svc = Arc::new(SchemaColumnService::new(
-            conn_repo,
-            col_repo as Arc<dyn SchemaColumnRepository>,
-        ));
-        SchemaCacheService::new(table_svc, column_svc)
+    fn make_svc(col_svc: Arc<StubColumnSvc>) -> SchemaCacheService {
+        SchemaCacheService::new(
+            Arc::new(StubTableSvc) as Arc<dyn SchemaTableSvc>,
+            col_svc as Arc<dyn SchemaColumnSvc>,
+        )
     }
 
     #[test]
     fn load_returns_none_when_empty() {
-        let svc = make_svc(Arc::new(StubColumnRepo::empty()));
+        let svc = make_svc(Arc::new(StubColumnSvc::empty()));
         assert!(svc.load("mydb").is_none());
     }
 
     #[test]
     fn save_and_load_round_trip() {
-        let col_repo = Arc::new(StubColumnRepo::empty());
-        let svc = make_svc(Arc::clone(&col_repo));
+        let col_svc = Arc::new(StubColumnSvc::empty());
+        let svc = make_svc(Arc::clone(&col_svc));
 
         let mut schema = HashMap::new();
         schema.insert("users".to_string(), vec!["id".to_string(), "email".to_string()]);
@@ -172,16 +156,14 @@ mod tests {
 
     #[test]
     fn invalidate_clears_cache() {
-        let col_repo = Arc::new(StubColumnRepo::with_columns(vec![
-            SchemaColumn {
-                connection_id: 1,
-                table_name: "users".to_string(),
-                column_name: "id".to_string(),
-                data_type: None,
-                cached_at: 0,
-            },
-        ]));
-        let svc = make_svc(col_repo);
+        let col_svc = Arc::new(StubColumnSvc::with_columns(vec![SchemaColumn {
+            connection_id: 1,
+            table_name: "users".to_string(),
+            column_name: "id".to_string(),
+            data_type: None,
+            cached_at: 0,
+        }]));
+        let svc = make_svc(col_svc);
         assert!(svc.load("mydb").is_some());
         svc.invalidate("mydb");
         assert!(svc.load("mydb").is_none());
@@ -189,8 +171,8 @@ mod tests {
 
     #[test]
     fn save_overwrites_existing() {
-        let col_repo = Arc::new(StubColumnRepo::empty());
-        let svc = make_svc(Arc::clone(&col_repo));
+        let col_svc = Arc::new(StubColumnSvc::empty());
+        let svc = make_svc(Arc::clone(&col_svc));
 
         let mut v1 = HashMap::new();
         v1.insert("users".to_string(), vec!["id".to_string()]);

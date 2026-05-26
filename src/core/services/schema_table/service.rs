@@ -11,6 +11,11 @@ pub struct SchemaTableCreateInput {
     pub cached_at: i64,
 }
 
+pub trait SchemaTableSvc: Send + Sync {
+    fn save(&self, input: SchemaTableCreateInput) -> Result<(), DomainError>;
+    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError>;
+}
+
 pub struct SchemaTableService {
     connection_repo: Arc<dyn ConnectionRepository>,
     repository: Arc<dyn SchemaTableRepository>,
@@ -37,5 +42,15 @@ impl SchemaTableService {
     pub fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(connection_name)?;
         self.repository.delete_by_connection(connection_id)
+    }
+}
+
+impl SchemaTableSvc for SchemaTableService {
+    fn save(&self, input: SchemaTableCreateInput) -> Result<(), DomainError> {
+        self.save(input)
+    }
+
+    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
+        self.delete_by_connection(connection_name)
     }
 }
