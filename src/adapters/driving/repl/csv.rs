@@ -259,7 +259,10 @@ mod tests {
     }
 
     fn export_tmp_path(tag: &str) -> String {
-        format!("/tmp/pgrs_export_{}_{}.csv", std::process::id(), tag)
+        let dir = std::env::temp_dir();
+        dir.join(format!("pgrs_export_{}_{}.csv", std::process::id(), tag))
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]
