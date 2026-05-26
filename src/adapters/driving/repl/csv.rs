@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use crate::core::ports::db_connection::QueryResult;
 use crate::core::ports::repl_port::ReplPort;
-use crate::core::services::analytics::service::AnalyticsService;
+use crate::core::services::analytics::service::AnalyticsSvc;
 
 use super::sql_utils::{is_ddl, is_dml};
 
@@ -56,7 +56,7 @@ pub(super) fn handle_export(
     path: &str,
     connection_name: &str,
     conn: &dyn ReplPort,
-    analytics: &AnalyticsService,
+    analytics: &dyn AnalyticsSvc,
     writer: &mut impl Write,
 ) {
     if std::path::Path::new(path).exists() {

@@ -3,13 +3,13 @@ use std::io::Write;
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::ports::repl_port::ReplPort;
 use crate::core::ports::schema_port::SchemaPort;
-use crate::core::services::analytics::service::AnalyticsService;
-use crate::core::services::schema::service::SchemaService;
+use crate::core::services::analytics::service::AnalyticsSvc;
+use crate::core::services::schema::service::{SchemaService, SchemaSvc};
 use super::alias::extract_referenced_tables;
 use super::executor::format_result;
 use super::sql_utils::{is_ddl, extract_column_refs};
 
-pub(super) fn handle_d(schema: &SchemaService, writer: &mut impl Write) {
+pub(super) fn handle_d(schema: &dyn SchemaSvc, writer: &mut impl Write) {
     let tables = schema.tables();
     if tables.is_empty() {
         writeln!(writer, "No tables.").ok();
@@ -20,7 +20,7 @@ pub(super) fn handle_d(schema: &SchemaService, writer: &mut impl Write) {
     }
 }
 
-pub(super) fn handle_dt(schema: &SchemaService, writer: &mut impl Write) {
+pub(super) fn handle_dt(schema: &dyn SchemaSvc, writer: &mut impl Write) {
     let tables = schema.tables();
     if tables.is_empty() {
         writeln!(writer, "No tables.").ok();
@@ -46,7 +46,7 @@ pub(super) fn handle_l(conn: &dyn DbConnection, expanded: bool, writer: &mut imp
     };
 }
 
-pub(super) fn handle_history(connection_name: &str, analytics: &AnalyticsService, writer: &mut impl Write) {
+pub(super) fn handle_history(connection_name: &str, analytics: &dyn AnalyticsSvc, writer: &mut impl Write) {
     use chrono::{DateTime, Local, TimeZone};
 
     let history = analytics.get_history(connection_name);
@@ -75,7 +75,7 @@ pub(super) fn handle_history(connection_name: &str, analytics: &AnalyticsService
 pub(super) fn handle_stats(
     connection_name: &str,
     table: Option<&str>,
-    analytics: &AnalyticsService,
+    analytics: &dyn AnalyticsSvc,
     writer: &mut impl Write,
 ) {
     match table {
@@ -108,7 +108,7 @@ pub(super) struct SqlOptions<'a> {
     pub(super) expanded: bool,
     pub(super) timing: bool,
     pub(super) connection_name: &'a str,
-    pub(super) analytics: Option<&'a AnalyticsService>,
+    pub(super) analytics: Option<&'a dyn AnalyticsSvc>,
 }
 
 pub(super) fn handle_sql(

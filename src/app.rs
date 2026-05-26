@@ -13,7 +13,7 @@ use crate::core::ports::query_history_repository::QueryHistoryRepository;
 use crate::core::ports::schema_column_repository::SchemaColumnRepository;
 use crate::core::ports::schema_table_repository::SchemaTableRepository;
 use crate::core::ports::table_access_repository::TableAccessRepository;
-use crate::core::services::analytics::service::AnalyticsService;
+use crate::core::services::analytics::service::{AnalyticsService, AnalyticsSvc};
 use crate::core::services::column_access::service::{ColumnAccessService, ColumnAccessSvc};
 use crate::core::services::connection::service::ConnectionService;
 use crate::core::services::query_history::service::{QueryHistoryService, QueryHistorySvc};
@@ -77,7 +77,7 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
             run_shell(
                 &args[1..],
                 &connection_service,
-                Some(analytics),
+                Some(analytics as Arc<dyn AnalyticsSvc>),
                 Some(schema_cache as Arc<dyn SchemaCacheSvc>),
             )
         }
@@ -92,7 +92,7 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
 fn run_shell<R: ConnectionRepository>(
     args: &[String],
     service: &ConnectionService<R>,
-    analytics: Option<Arc<AnalyticsService>>,
+    analytics: Option<Arc<dyn AnalyticsSvc>>,
     schema_cache: Option<Arc<dyn SchemaCacheSvc>>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;

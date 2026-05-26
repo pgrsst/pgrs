@@ -1,4 +1,4 @@
-use crate::core::services::schema::service::SchemaService;
+use crate::core::services::schema::service::SchemaSvc;
 use super::tokenizer::{SqlToken, tokenize};
 use super::alias::SQL_KEYWORDS;
 
@@ -56,7 +56,7 @@ pub(super) fn is_dml(query: &str) -> bool {
     )
 }
 
-pub(super) fn extract_column_refs(query: &str, schema: &SchemaService) -> Vec<(String, String)> {
+pub(super) fn extract_column_refs(query: &str, schema: &dyn SchemaSvc) -> Vec<(String, String)> {
     let mut in_select = false;
     let mut candidates: Vec<String> = Vec::new();
 

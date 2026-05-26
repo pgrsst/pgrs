@@ -4,6 +4,11 @@ use std::sync::Arc;
 use crate::core::ports::schema_port::SchemaPort;
 use crate::core::services::schema_cache::service::SchemaCacheSvc;
 
+pub trait SchemaSvc: Send + Sync {
+    fn tables(&self) -> &[String];
+    fn columns_for(&self, table: &str) -> &[String];
+}
+
 #[derive(Clone)]
 pub struct SchemaService {
     cache: Option<Arc<dyn SchemaCacheSvc>>,
@@ -54,6 +59,16 @@ impl SchemaService {
 
     pub fn columns_for(&self, table: &str) -> &[String] {
         self.columns.get(table).map(Vec::as_slice).unwrap_or(&[])
+    }
+}
+
+impl SchemaSvc for SchemaService {
+    fn tables(&self) -> &[String] {
+        self.tables()
+    }
+
+    fn columns_for(&self, table: &str) -> &[String] {
+        self.columns_for(table)
     }
 }
 
