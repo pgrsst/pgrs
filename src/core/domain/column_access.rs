@@ -1,5 +1,6 @@
 #[derive(Debug, Clone)]
 pub struct ColumnAccess {
+    #[allow(dead_code)]
     pub id: i64,
     pub connection_id: i64,
     pub table_name: String,

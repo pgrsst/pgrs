@@ -34,11 +34,6 @@ impl SchemaTableService {
         self.repository.save(&entity)
     }
 
-    pub fn list_by_connection(&self, connection_name: &str) -> Result<Vec<SchemaTable>, DomainError> {
-        let connection_id = self.connection_repo.find_row_id(connection_name)?;
-        Ok(self.repository.list_by_connection(connection_id))
-    }
-
     pub fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(connection_name)?;
         self.repository.delete_by_connection(connection_id)

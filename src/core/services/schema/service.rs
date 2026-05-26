@@ -120,7 +120,6 @@ mod tests {
     struct StubTableRepo;
     impl SchemaTableRepository for StubTableRepo {
         fn save(&self, _: &SchemaTable) -> Result<(), DomainError> { Ok(()) }
-        fn list_by_connection(&self, _: i64) -> Vec<SchemaTable> { vec![] }
         fn delete_by_connection(&self, _: i64) -> Result<(), DomainError> { Ok(()) }
     }
 
