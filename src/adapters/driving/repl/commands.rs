@@ -2,7 +2,6 @@ use std::io::Write;
 
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::ports::repl_port::ReplPort;
-use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::ports::schema_port::SchemaPort;
 use crate::core::services::analytics::service::AnalyticsService;
 use crate::core::services::schema::service::SchemaService;
@@ -110,7 +109,6 @@ pub(super) struct SqlOptions<'a> {
     pub(super) timing: bool,
     pub(super) connection_name: &'a str,
     pub(super) analytics: Option<&'a AnalyticsService>,
-    pub(super) schema_cache: Option<&'a dyn SchemaCachePort>,
 }
 
 pub(super) fn handle_sql(
@@ -140,12 +138,14 @@ pub(super) fn handle_sql(
                 analytics.record_query(opts.connection_name, query, &tables, &columns);
             }
 
-            if is_ddl(query)
-                && let Ok(new_schema) = SchemaService::load_with_cache(conn, opts.connection_name, opts.schema_cache)
-            {
-                *schema = new_schema.clone();
-                rebuild(new_schema);
-                writeln!(writer, "(schema refreshed)").ok();
+            if is_ddl(query) {
+                match schema.refresh(conn, opts.connection_name) {
+                    Ok(()) => {
+                        rebuild(schema.clone());
+                        writeln!(writer, "(schema refreshed)").ok();
+                    }
+                    Err(e) => eprintln!("error: could not refresh schema: {e}"),
+                }
             }
         }
         Err(e) => eprintln!("error: {}", e),
@@ -157,19 +157,14 @@ pub(super) fn handle_refresh(
     connection_name: &str,
     schema: &mut SchemaService,
     rebuild: &mut impl FnMut(SchemaService),
-    schema_cache: Option<&dyn SchemaCachePort>,
     writer: &mut impl Write,
 ) {
-    if let Some(cache) = schema_cache {
-        cache.invalidate(connection_name);
-    }
-    match SchemaService::load_with_cache(conn, connection_name, schema_cache) {
-        Ok(new_schema) => {
-            *schema = new_schema.clone();
-            rebuild(new_schema);
+    match schema.refresh(conn, connection_name) {
+        Ok(()) => {
+            rebuild(schema.clone());
             writeln!(writer, "Schema refreshed.").ok();
         }
-        Err(e) => eprintln!("error: could not refresh schema: {}", e),
+        Err(e) => eprintln!("error: could not refresh schema: {e}"),
     }
 }
 
@@ -232,7 +227,9 @@ mod tests {
 
     fn schema_from(tables: &[(&str, &[&str])]) -> SchemaService {
         let stub = StubDb::with_schema(tables);
-        SchemaService::load(&stub).unwrap()
+        let mut schema = SchemaService::new(None);
+        schema.load(&stub, "test").unwrap();
+        schema
     }
 
     struct StubConnRepo;
@@ -353,7 +350,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "no DDL — schema should not be rebuilt");
     }
 
@@ -362,7 +359,7 @@ mod tests {
         let stub = StubDb::ok(vec![vec!["42".to_string()]], vec!["id".to_string()]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 42", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "SELECT 42", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("42"), "expected result value in output, got: {text}");
     }
@@ -373,7 +370,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt, "DDL should trigger schema rebuild");
     }
 
@@ -382,7 +379,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("users", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("schema refreshed"), "expected refresh notice, got: {text}");
     }
@@ -393,7 +390,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt);
     }
 
@@ -402,7 +399,7 @@ mod tests {
         let stub = StubDb::err("syntax error");
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELEKT *", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None, schema_cache: None }, &mut schema, &mut |_| {}, &mut out);
+        handle_sql(&stub, "SELEKT *", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
     }
 
     #[test]
@@ -412,7 +409,7 @@ mod tests {
         assert!(schema.tables().is_empty());
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
+        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt);
         assert!(schema.tables().contains(&"products".to_string()));
     }
@@ -422,7 +419,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("t", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| {}, None, &mut out);
+        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("refreshed"), "expected refresh confirmation, got: {text}");
     }
@@ -438,7 +435,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&FailingDb, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, None, &mut out);
+        handle_refresh(&FailingDb, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "failed refresh must not trigger rebuild");
     }
 
@@ -477,7 +474,6 @@ mod tests {
                 timing: false,
                 connection_name: "my-conn",
                 analytics: Some(&svc),
-                schema_cache: None,
             },
             &mut schema,
             &mut |_| {},

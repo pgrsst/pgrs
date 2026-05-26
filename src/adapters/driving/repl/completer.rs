@@ -487,7 +487,9 @@ mod tests {
                 cols.iter().map(|c| c.to_string()).collect(),
             );
         }
-        SchemaService::load(&TestDb { columns: col_map }).unwrap()
+        let mut schema = SchemaService::new(None);
+        schema.load(&TestDb { columns: col_map }, "test").unwrap();
+        schema
     }
 
     #[test]

@@ -10,12 +10,16 @@ use crate::core::ports::column_access_repository::ColumnAccessRepository;
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::ports::db_connection::DbConnection;
 use crate::core::ports::query_history_repository::QueryHistoryRepository;
-use crate::core::ports::schema_cache_port::SchemaCachePort;
+use crate::core::ports::schema_column_repository::SchemaColumnRepository;
+use crate::core::ports::schema_table_repository::SchemaTableRepository;
 use crate::core::ports::table_access_repository::TableAccessRepository;
 use crate::core::services::analytics::service::AnalyticsService;
 use crate::core::services::column_access::service::ColumnAccessService;
 use crate::core::services::connection::service::ConnectionService;
 use crate::core::services::query_history::service::QueryHistoryService;
+use crate::core::services::schema_cache::service::SchemaCacheService;
+use crate::core::services::schema_column::service::SchemaColumnService;
+use crate::core::services::schema_table::service::SchemaTableService;
 use crate::core::services::table_access::service::TableAccessService;
 
 pub fn run() -> Result<(), String> {
@@ -58,11 +62,20 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
                 table_access_svc,
                 column_access_svc,
             ));
+            let schema_table_svc = Arc::new(SchemaTableService::new(
+                Arc::clone(&connection_repo),
+                Arc::clone(&sqlite) as Arc<dyn SchemaTableRepository>,
+            ));
+            let schema_column_svc = Arc::new(SchemaColumnService::new(
+                Arc::clone(&connection_repo),
+                Arc::clone(&sqlite) as Arc<dyn SchemaColumnRepository>,
+            ));
+            let schema_cache = Arc::new(SchemaCacheService::new(schema_table_svc, schema_column_svc));
             run_shell(
                 &args[1..],
                 &connection_service,
                 Some(analytics),
-                Some(Arc::clone(&sqlite) as Arc<dyn SchemaCachePort>),
+                Some(schema_cache),
             )
         }
         Some("test") => run_test(&args[1..], &connection_service),
@@ -77,7 +90,7 @@ fn run_shell<R: ConnectionRepository>(
     args: &[String],
     service: &ConnectionService<R>,
     analytics: Option<Arc<AnalyticsService>>,
-    schema_cache: Option<Arc<dyn SchemaCachePort>>,
+    schema_cache: Option<Arc<SchemaCacheService>>,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
     let conn = service.find_connection(name)?;

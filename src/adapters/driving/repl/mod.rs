@@ -14,9 +14,9 @@ use std::sync::Arc;
 use reedline::Signal;
 
 use crate::core::ports::repl_port::ReplPort;
-use crate::core::ports::schema_cache_port::SchemaCachePort;
 use crate::core::services::analytics::service::AnalyticsService;
 use crate::core::services::schema::service::SchemaService;
+use crate::core::services::schema_cache::service::SchemaCacheService;
 
 use describe::describe_table;
 
@@ -26,13 +26,10 @@ pub fn run(
     connection_name: &str,
     environment: Option<&str>,
     analytics: Option<Arc<AnalyticsService>>,
-    schema_cache: Option<Arc<dyn SchemaCachePort>>,
+    schema_cache: Option<Arc<SchemaCacheService>>,
 ) -> Result<(), String> {
-    let mut schema = SchemaService::load_with_cache(
-        conn.as_ref(),
-        connection_name,
-        schema_cache.as_deref(),
-    )?;
+    let mut schema = SchemaService::new(schema_cache);
+    schema.load(conn.as_ref(), connection_name)?;
     let mut rl = ui::build_reedline(schema.clone());
 
     let prompt = ui::PgrsPrompt {
@@ -71,7 +68,6 @@ pub fn run(
                         connection_name,
                         &mut schema,
                         &mut |s| { rl = ui::build_reedline(s); },
-                        schema_cache.as_deref(),
                         &mut stdout,
                     ),
 
@@ -125,7 +121,6 @@ pub fn run(
                                     timing,
                                     connection_name,
                                     analytics: analytics.as_deref(),
-                                    schema_cache: schema_cache.as_deref(),
                                 },
                                 &mut schema,
                                 &mut |s| { rl = ui::build_reedline(s); },

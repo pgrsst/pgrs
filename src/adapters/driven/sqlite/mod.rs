@@ -1,6 +1,5 @@
 pub(crate) mod migrations;
 pub(crate) mod connection_store;
-pub(crate) mod schema_cache;
 pub(crate) mod query_history_store;
 pub(crate) mod table_access_store;
 pub(crate) mod column_access_store;
@@ -57,7 +56,6 @@ mod tests {
     use crate::core::ports::column_access_repository::ColumnAccessRepository;
     use crate::core::ports::connection_repository::ConnectionRepository;
     use crate::core::ports::query_history_repository::QueryHistoryRepository;
-    use crate::core::ports::schema_cache_port::SchemaCachePort;
     use crate::core::ports::table_access_repository::TableAccessRepository;
 
     fn save_history(repo: &SqliteRepository, conn_name: &str, query: &str, ts: i64) -> i64 {
@@ -119,87 +117,6 @@ mod tests {
             TlsMode::Disable,
             None,
         ).unwrap()).unwrap();
-    }
-
-    // --- SchemaCachePort tests ---
-
-    #[test]
-    fn save_and_load_schema_round_trip() {
-        use std::collections::HashMap;
-        let repo = SqliteRepository::open_in_memory().unwrap();
-        add_conn(&repo, "mydb");
-        let mut schema = HashMap::new();
-        schema.insert("users".to_string(), vec!["id".to_string(), "email".to_string()]);
-        schema.insert("orders".to_string(), vec!["id".to_string(), "user_id".to_string()]);
-
-        repo.save_schema("mydb", &schema);
-        let loaded = repo.load_schema("mydb").unwrap();
-        assert_eq!(loaded["users"], vec!["id", "email"]);
-        assert_eq!(loaded["orders"], vec!["id", "user_id"]);
-    }
-
-    #[test]
-    fn load_schema_returns_none_for_unknown_connection() {
-        let repo = SqliteRepository::open_in_memory().unwrap();
-        assert!(repo.load_schema("ghost").is_none());
-    }
-
-    #[test]
-    fn invalidate_removes_schema() {
-        use std::collections::HashMap;
-        let repo = SqliteRepository::open_in_memory().unwrap();
-        add_conn(&repo, "mydb");
-        let mut schema = HashMap::new();
-        schema.insert("users".to_string(), vec!["id".to_string()]);
-
-        repo.save_schema("mydb", &schema);
-        assert!(repo.load_schema("mydb").is_some());
-        repo.invalidate("mydb");
-        assert!(repo.load_schema("mydb").is_none());
-    }
-
-    #[test]
-    fn schema_cache_isolated_per_connection() {
-        use std::collections::HashMap;
-        let repo = SqliteRepository::open_in_memory().unwrap();
-        add_conn(&repo, "db1");
-        add_conn(&repo, "db2");
-
-        let mut schema1 = HashMap::new();
-        schema1.insert("users".to_string(), vec!["id".to_string()]);
-        repo.save_schema("db1", &schema1);
-
-        let mut schema2 = HashMap::new();
-        schema2.insert("products".to_string(), vec!["sku".to_string()]);
-        repo.save_schema("db2", &schema2);
-
-        let loaded1 = repo.load_schema("db1").unwrap();
-        assert!(loaded1.contains_key("users"), "db1 schema should have users");
-        assert!(!loaded1.contains_key("products"), "db1 schema should not have db2's products");
-
-        let loaded2 = repo.load_schema("db2").unwrap();
-        assert!(loaded2.contains_key("products"), "db2 schema should have products");
-        assert!(!loaded2.contains_key("users"), "db2 schema should not have db1's users");
-    }
-
-    #[test]
-    fn save_schema_overwrites_existing() {
-        use std::collections::HashMap;
-        let repo = SqliteRepository::open_in_memory().unwrap();
-        add_conn(&repo, "mydb");
-
-        let mut schema_v1 = HashMap::new();
-        schema_v1.insert("users".to_string(), vec!["id".to_string()]);
-        repo.save_schema("mydb", &schema_v1);
-
-        let mut schema_v2 = HashMap::new();
-        schema_v2.insert("users".to_string(), vec!["id".to_string(), "email".to_string()]);
-        schema_v2.insert("orders".to_string(), vec!["id".to_string()]);
-        repo.save_schema("mydb", &schema_v2);
-
-        let loaded = repo.load_schema("mydb").unwrap();
-        assert_eq!(loaded.len(), 2, "second save should replace first");
-        assert_eq!(loaded["users"], vec!["id", "email"]);
     }
 
     // --- QueryHistoryRepository tests ---

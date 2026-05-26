@@ -1,7 +1,7 @@
 use crate::core::domain::connection::Connection;
 use crate::core::domain::error::DomainError;
 
-pub trait ConnectionRepository {
+pub trait ConnectionRepository: Send + Sync {
     fn add(&self, connection: Connection) -> Result<(), DomainError>;
     fn list(&self) -> Result<Vec<Connection>, DomainError>;
     fn delete(&self, name: &str) -> Result<(), DomainError>;
@@ -40,15 +40,15 @@ pub mod test_support {
     use crate::core::domain::connection::{Connection, TlsMode, DEFAULT_PORT};
     use crate::core::domain::error::DomainError;
     use crate::core::ports::connection_repository::ConnectionRepository;
-    use std::cell::RefCell;
+    use std::sync::Mutex;
 
     pub struct StubConnectionRepository {
-        connections: RefCell<Vec<Connection>>,
+        connections: Mutex<Vec<Connection>>,
     }
 
     impl StubConnectionRepository {
         pub fn new() -> Self {
-            Self { connections: RefCell::new(vec![]) }
+            Self { connections: Mutex::new(vec![]) }
         }
 
         pub fn with_names(names: &[&str]) -> Self {
@@ -65,13 +65,13 @@ pub mod test_support {
                     None,
                 ).expect("valid stub connection"))
                 .collect();
-            Self { connections: RefCell::new(connections) }
+            Self { connections: Mutex::new(connections) }
         }
     }
 
     impl ConnectionRepository for StubConnectionRepository {
         fn add(&self, connection: Connection) -> Result<(), DomainError> {
-            let mut connections = self.connections.borrow_mut();
+            let mut connections = self.connections.lock().unwrap();
             if connections.iter().any(|c| c.name() == connection.name()) {
                 return Err(DomainError::AlreadyExists(
                     format!("connection '{}' already exists", connection.name())
@@ -82,11 +82,11 @@ pub mod test_support {
         }
 
         fn list(&self) -> Result<Vec<Connection>, DomainError> {
-            Ok(self.connections.borrow().clone())
+            Ok(self.connections.lock().unwrap().clone())
         }
 
         fn delete(&self, name: &str) -> Result<(), DomainError> {
-            let mut connections = self.connections.borrow_mut();
+            let mut connections = self.connections.lock().unwrap();
             let initial_len = connections.len();
             connections.retain(|c| c.name() != name);
             if connections.len() == initial_len {
@@ -97,7 +97,8 @@ pub mod test_support {
 
         fn get_connection(&self, name: &str) -> Result<Connection, DomainError> {
             self.connections
-                .borrow()
+                .lock()
+                .unwrap()
                 .iter()
                 .find(|c| c.name() == name)
                 .cloned()
@@ -106,7 +107,8 @@ pub mod test_support {
 
         fn find_row_id(&self, name: &str) -> Result<i64, DomainError> {
             self.connections
-                .borrow()
+                .lock()
+                .unwrap()
                 .iter()
                 .position(|c| c.name() == name)
                 .map(|i| (i + 1) as i64)
@@ -114,7 +116,7 @@ pub mod test_support {
         }
 
         fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
-            let mut connections = self.connections.borrow_mut();
+            let mut connections = self.connections.lock().unwrap();
             if connections.iter().any(|c| c.name() == new_name) {
                 return Err(DomainError::AlreadyExists(
                     format!("connection '{}' already exists", new_name)
@@ -129,7 +131,7 @@ pub mod test_support {
         }
 
         fn update(&self, connection: Connection) -> Result<(), DomainError> {
-            let mut connections = self.connections.borrow_mut();
+            let mut connections = self.connections.lock().unwrap();
             let pos = connections
                 .iter()
                 .position(|c| c.name() == connection.name())
