@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.0] - 2026-05-26
+
+### Added
+- `\export` command: export hasil query ke file CSV dari dalam REPL, dengan dukungan quoted paths dan tilde expansion (`~/file.csv`)
+- SQLite backend: koneksi kini disimpan di `~/.pgrs/pgrs.db` (SQLite), menggantikan `connections.json`
+- Analytics: `\history` menampilkan riwayat query dengan ID dan timestamp lokal; `\stats` menampilkan tabel dan query yang paling sering digunakan
+- Schema caching: skema tabel/kolom di-cache di SQLite untuk performa tab-completion yang lebih cepat
+- `DomainError` enum: error handling end-to-end diganti dari `String` ke typed enum
+- UUID v4 sebagai generator ID koneksi (menggantikan `DefaultHasher`)
+
+### Fixed
+- `\export`: blokir DDL dalam export, cleanup file parsial jika write gagal
+- `\export`: tampilkan usage jika diketik tanpa argumen
+- CSV quoting: handle `\r` dengan benar
+- SQLite: tambahkan `ROLLBACK` pada error `save_schema`, transaction di `record_query`
+- Install script: deteksi OS dan arsitektur dengan benar untuk binary yang sesuai
+- UUID: ganti `DefaultHasher` dengan UUID v4 untuk ID yang lebih aman
+
+### Changed
+- Pemisahan arsitektur heksagonal: repository, service, dan port traits dipecah ke modul yang lebih fokus
+- REPL commands dipecah ke modul terpisah (`commands.rs`, `ui.rs`, `csv.rs`, `sql_utils.rs`)
+
 ## [0.4.0] - 2026-05-24
 
 ### Added
