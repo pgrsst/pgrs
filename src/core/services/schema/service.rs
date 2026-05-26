@@ -13,7 +13,11 @@ pub struct SchemaService {
 
 impl SchemaService {
     pub fn new(cache: Option<Arc<dyn SchemaCacheSvc>>) -> Self {
-        Self { cache, tables: vec![], columns: HashMap::new() }
+        Self {
+            cache,
+            tables: vec![],
+            columns: HashMap::new(),
+        }
     }
 
     // Uses `dyn SchemaPort` (not a generic) because callers pass `Box<dyn ReplPort>`,
@@ -58,8 +62,6 @@ mod tests {
     use super::*;
     use std::sync::RwLock;
 
-    use crate::core::domain::error::DomainError;
-
     struct MockDb {
         columns: HashMap<String, Vec<String>>,
     }
@@ -72,8 +74,14 @@ mod tests {
 
     fn mock_db() -> MockDb {
         let mut columns = HashMap::new();
-        columns.insert("users".to_string(), vec!["id".to_string(), "email".to_string()]);
-        columns.insert("orders".to_string(), vec!["id".to_string(), "user_id".to_string()]);
+        columns.insert(
+            "users".to_string(),
+            vec!["id".to_string(), "email".to_string()],
+        );
+        columns.insert(
+            "orders".to_string(),
+            vec!["id".to_string(), "user_id".to_string()],
+        );
         MockDb { columns }
     }
 
@@ -83,10 +91,16 @@ mod tests {
     }
     impl StubCache {
         fn empty() -> Arc<Self> {
-            Arc::new(Self { store: RwLock::new(None), saved: RwLock::new(vec![]) })
+            Arc::new(Self {
+                store: RwLock::new(None),
+                saved: RwLock::new(vec![]),
+            })
         }
         fn with_data(data: HashMap<String, Vec<String>>) -> Arc<Self> {
-            Arc::new(Self { store: RwLock::new(Some(data)), saved: RwLock::new(vec![]) })
+            Arc::new(Self {
+                store: RwLock::new(Some(data)),
+                saved: RwLock::new(vec![]),
+            })
         }
     }
     impl SchemaCacheSvc for StubCache {
@@ -139,7 +153,10 @@ mod tests {
         let mut schema = SchemaService::new(Some(Arc::clone(&cache) as Arc<dyn SchemaCacheSvc>));
         schema.load(&db, "mydb").unwrap();
         assert!(schema.tables().contains(&"users".to_string()));
-        assert!(!cache.saved.read().unwrap().is_empty(), "save should have been called");
+        assert!(
+            !cache.saved.read().unwrap().is_empty(),
+            "save should have been called"
+        );
     }
 
     #[test]
@@ -158,10 +175,16 @@ mod tests {
         let db = mock_db();
         let mut schema = SchemaService::new(Some(Arc::clone(&cache) as Arc<dyn SchemaCacheSvc>));
         schema.load(&db, "mydb").unwrap();
-        assert!(schema.tables().contains(&"old_table".to_string()), "load should use cache");
+        assert!(
+            schema.tables().contains(&"old_table".to_string()),
+            "load should use cache"
+        );
 
         schema.refresh(&db, "mydb").unwrap();
-        assert!(schema.tables().contains(&"users".to_string()), "refresh should fetch from DB");
+        assert!(
+            schema.tables().contains(&"users".to_string()),
+            "refresh should fetch from DB"
+        );
         assert!(!schema.tables().contains(&"old_table".to_string()));
     }
 }
