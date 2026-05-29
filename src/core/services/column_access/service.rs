@@ -31,8 +31,10 @@ impl ColumnAccessService {
     ) -> Self {
         Self { connection_repo, repository }
     }
+}
 
-    pub fn record(&self, input: ColumnAccessCreateInput) -> Result<(), DomainError> {
+impl ColumnAccessSvc for ColumnAccessService {
+    fn record(&self, input: ColumnAccessCreateInput) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(&input.connection_name)?;
         let now = unix_now();
         let entity = ColumnAccess {
@@ -46,17 +48,7 @@ impl ColumnAccessService {
         self.repository.save(&entity)
     }
 
-    pub fn get_frequent_by_table(&self, connection_name: &str, table: &str) -> Vec<FreqEntry> {
-        self.repository.list_frequent_by_table(connection_name, table, 100)
-    }
-}
-
-impl ColumnAccessSvc for ColumnAccessService {
-    fn record(&self, input: ColumnAccessCreateInput) -> Result<(), DomainError> {
-        self.record(input)
-    }
-
     fn get_frequent_by_table(&self, connection_name: &str, table: &str) -> Vec<FreqEntry> {
-        self.get_frequent_by_table(connection_name, table)
+        self.repository.list_frequent_by_table(connection_name, table, 100)
     }
 }

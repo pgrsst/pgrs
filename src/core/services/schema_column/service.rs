@@ -31,8 +31,10 @@ impl SchemaColumnService {
     ) -> Self {
         Self { connection_repo, repository }
     }
+}
 
-    pub fn save(&self, input: SchemaColumnCreateInput) -> Result<(), DomainError> {
+impl SchemaColumnSvc for SchemaColumnService {
+    fn save(&self, input: SchemaColumnCreateInput) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(&input.connection_name)?;
         let entity = SchemaColumn {
             connection_id,
@@ -44,27 +46,13 @@ impl SchemaColumnService {
         self.repository.save(&entity)
     }
 
-    pub fn list_by_connection(&self, connection_name: &str) -> Result<Vec<SchemaColumn>, DomainError> {
+    fn list_by_connection(&self, connection_name: &str) -> Result<Vec<SchemaColumn>, DomainError> {
         let connection_id = self.connection_repo.find_row_id(connection_name)?;
         Ok(self.repository.list_by_connection(connection_id))
     }
 
-    pub fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
+    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(connection_name)?;
         self.repository.delete_by_connection(connection_id)
-    }
-}
-
-impl SchemaColumnSvc for SchemaColumnService {
-    fn save(&self, input: SchemaColumnCreateInput) -> Result<(), DomainError> {
-        self.save(input)
-    }
-
-    fn list_by_connection(&self, connection_name: &str) -> Result<Vec<SchemaColumn>, DomainError> {
-        self.list_by_connection(connection_name)
-    }
-
-    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
-        self.delete_by_connection(connection_name)
     }
 }

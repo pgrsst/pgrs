@@ -28,8 +28,10 @@ impl QueryHistoryService {
     ) -> Self {
         Self { connection_repo, repository }
     }
+}
 
-    pub fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError> {
+impl QueryHistorySvc for QueryHistoryService {
+    fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError> {
         let connection_id = self.connection_repo.find_row_id(&input.connection_name)?;
         let now = unix_now();
         let entity = QueryHistory {
@@ -41,17 +43,7 @@ impl QueryHistoryService {
         self.repository.save(&entity)
     }
 
-    pub fn list_recent(&self, connection_name: &str) -> Vec<QueryHistory> {
-        self.repository.list_recent(connection_name, 50)
-    }
-}
-
-impl QueryHistorySvc for QueryHistoryService {
-    fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError> {
-        self.record(input)
-    }
-
     fn list_recent(&self, connection_name: &str) -> Vec<QueryHistory> {
-        self.list_recent(connection_name)
+        self.repository.list_recent(connection_name, 50)
     }
 }

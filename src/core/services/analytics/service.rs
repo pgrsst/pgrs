@@ -31,8 +31,10 @@ impl AnalyticsService {
             column_access,
         }
     }
+}
 
-    pub fn record_query(
+impl AnalyticsSvc for AnalyticsService {
+    fn record_query(
         &self,
         connection_name: &str,
         query: &str,
@@ -71,34 +73,16 @@ impl AnalyticsService {
         }
     }
 
-    pub fn get_history(&self, connection_name: &str) -> Vec<QueryHistory> {
+    fn get_history(&self, connection_name: &str) -> Vec<QueryHistory> {
         self.history.list_recent(connection_name)
     }
 
-    pub fn get_frequent_tables(&self, connection_name: &str) -> Vec<FreqEntry> {
+    fn get_frequent_tables(&self, connection_name: &str) -> Vec<FreqEntry> {
         self.table_access.get_frequent(connection_name)
     }
 
-    pub fn get_frequent_columns(&self, connection_name: &str, table: &str) -> Vec<FreqEntry> {
-        self.column_access.get_frequent_by_table(connection_name, table)
-    }
-}
-
-impl AnalyticsSvc for AnalyticsService {
-    fn record_query(&self, connection_name: &str, query: &str, tables: &[String], columns: &[(String, String)]) {
-        self.record_query(connection_name, query, tables, columns)
-    }
-
-    fn get_history(&self, connection_name: &str) -> Vec<QueryHistory> {
-        self.get_history(connection_name)
-    }
-
-    fn get_frequent_tables(&self, connection_name: &str) -> Vec<FreqEntry> {
-        self.get_frequent_tables(connection_name)
-    }
-
     fn get_frequent_columns(&self, connection_name: &str, table: &str) -> Vec<FreqEntry> {
-        self.get_frequent_columns(connection_name, table)
+        self.column_access.get_frequent_by_table(connection_name, table)
     }
 }
 

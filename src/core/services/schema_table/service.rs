@@ -28,8 +28,10 @@ impl SchemaTableService {
     ) -> Self {
         Self { connection_repo, repository }
     }
+}
 
-    pub fn save(&self, input: SchemaTableCreateInput) -> Result<(), DomainError> {
+impl SchemaTableSvc for SchemaTableService {
+    fn save(&self, input: SchemaTableCreateInput) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(&input.connection_name)?;
         let entity = SchemaTable {
             connection_id,
@@ -39,18 +41,8 @@ impl SchemaTableService {
         self.repository.save(&entity)
     }
 
-    pub fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
+    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
         let connection_id = self.connection_repo.find_row_id(connection_name)?;
         self.repository.delete_by_connection(connection_id)
-    }
-}
-
-impl SchemaTableSvc for SchemaTableService {
-    fn save(&self, input: SchemaTableCreateInput) -> Result<(), DomainError> {
-        self.save(input)
-    }
-
-    fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
-        self.delete_by_connection(connection_name)
     }
 }
