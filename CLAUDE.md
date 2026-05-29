@@ -30,6 +30,8 @@ cargo test <test_name>
 # Run (debug)
 cargo run -- add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require|verify-full]
 cargo run -- list
+cargo run -- edit <name> [--host=<host>] [--username=<user>] ...
+cargo run -- rename <old-name> <new-name>
 cargo run -- delete <name>
 cargo run -- connect <name>       # hands off to psql
 cargo run -- shell <name>         # opens pgrs interactive SQL REPL
@@ -44,52 +46,75 @@ Hexagonal architecture (ports and adapters):
 ```
 src/
   main.rs               — entry point, calls app::run()
-  app.rs                — wires repository → service → CLI; intercepts "shell" before CLI dispatch
+  app.rs                — wires SqliteRepository → services → CLI; intercepts "shell"/"test" before Cli dispatch
   core/
-    domain/connection.rs           — Connection struct + TlsMode enum
-    domain/analytics.rs            — HistoryEntry, FreqEntry value types
-    domain/error.rs                — DomainError enum
-    ports/connection_repository.rs — ConnectionRepository trait (add, list, delete, get_connection)
-    ports/db_connection.rs         — DbConnection trait (execute, list_tables, list_columns) + QueryResult
-    ports/schema_port.rs           — SchemaPort trait (list_columns → HashMap<table, Vec<col>>)
-    ports/schema_cache_port.rs     — SchemaCachePort trait (save/load/invalidate per connection)
-    ports/analytics_port.rs        — AnalyticsPort trait (record_query, get_history, get_frequent_*)
-    ports/repl_port.rs             — ReplPort = DbConnection + SchemaPort (blanket impl)
-    services/connection/service.rs — ConnectionService<R>: business logic, validation
-    services/schema/service.rs     — SchemaService: loads table/column metadata for REPL completion
+    domain/             — pure value types: Connection, DomainError, and analytics/access/schema domain types
+    enums/tls_mode.rs   — TlsMode enum (Disable | Require | VerifyFull)
+    ports/              — one trait file per repository/capability boundary
+      connection_repository.rs     — ConnectionRepository (add, list, delete, get_connection, update, rename)
+      db_connection.rs             — DbConnection (execute, list_tables, list_columns) + QueryResult
+      schema_port.rs               — SchemaPort (list_columns → HashMap<table, Vec<col>>)
+      repl_port.rs                 — ReplPort = DbConnection + SchemaPort (blanket impl)
+      query_history_repository.rs  — QueryHistoryRepository (save, list_recent)
+      table_access_repository.rs   — TableAccessRepository (save, list_frequent)
+      column_access_repository.rs  — ColumnAccessRepository (save, list_frequent_by_table)
+      schema_table_repository.rs   — SchemaTableRepository (upsert/load cached table names)
+      schema_column_repository.rs  — SchemaColumnRepository (upsert/load cached column names)
+    services/
+      connection/service.rs        — ConnectionService: add/edit/rename/delete/find, validation
+      schema/service.rs            — SchemaService: loads table+column metadata for REPL completion
+      analytics/service.rs         — AnalyticsService: records queries/table/column access
+      schema_cache/service.rs      — SchemaCacheService: persists/loads schema per connection
+      query_history/service.rs     — QueryHistoryService: wraps history repository
+      table_access/service.rs      — TableAccessService: wraps table access repository
+      column_access/service.rs     — ColumnAccessService: wraps column access repository
+      schema_table/service.rs      — SchemaTableService: wraps schema table repository
+      schema_column/service.rs     — SchemaColumnService: wraps schema column repository
   adapters/
-    driven/sqlite_repository.rs    — SqliteRepository: single SQLite file implementing ConnectionRepository
-                                     + AnalyticsPort + SchemaCachePort (replaces old connections.json)
-    driven/postgres_db.rs          — PostgresDb: implements DbConnection via postgres crate
-    driving/cli.rs                 — Cli<R>: parses argv, dispatches to ConnectionService
-    driving/repl/                  — interactive SQL REPL (reedline-based)
-      mod.rs        — REPL loop, backslash commands (\dt, \d <table>, \x, \export, \refresh, \q), DDL auto-refresh
-      completer.rs  — SqlCompleter, SqlHighlighter, SqlHinter backed by SchemaService
-      executor.rs   — formats and prints QueryResult (normal and expanded \x mode)
-      tokenizer.rs  — SqlToken enum + tokenize(); handles words, string literals, numbers, comments
-      alias.rs      — AliasMap (alias→table), build_alias_map, extract_join_context for tab-completion
-      describe.rs   — \d <table>: fetches columns, indexes, FK, check constraints, triggers via pg_catalog
-    driving/completions.rs / completions/ — shell completion scripts (bash, zsh, fish)
+    driven/
+      sqlite/                      — SqliteRepository split across sub-store modules:
+        mod.rs              — SqliteRepository struct, open/open_in_memory, migrations call
+        connection_store.rs — implements ConnectionRepository
+        query_history_store.rs, table_access_store.rs, column_access_store.rs — analytics repositories
+        schema_table_store.rs, schema_column_store.rs — schema cache repositories
+        migrations.rs       — SQL schema migrations (user_version pragma)
+      postgres_db.rs        — PostgresDb: implements DbConnection via postgres crate
+    driving/
+      cli.rs                — Cli: parses argv, dispatches to ConnectionService (no generics)
+      repl/                 — interactive SQL REPL (reedline-based)
+        mod.rs        — REPL loop, dispatches backslash commands, DDL auto-refresh
+        commands.rs   — backslash command dispatch (\dt, \d, \x, \export, \refresh, \q)
+        completer.rs  — SqlCompleter, SqlHighlighter, SqlHinter backed by SchemaService
+        executor.rs   — formats and prints QueryResult (normal and expanded \x mode)
+        csv.rs        — CSV export for \export
+        tokenizer.rs  — SqlToken enum + tokenize()
+        alias.rs      — AliasMap (alias→table), build_alias_map, extract_join_context
+        describe.rs   — \d <table>: fetches columns, indexes, FK, constraints via pg_catalog
+        sql_utils.rs  — is_ddl, is_mutation helpers
+        ui.rs         — builds reedline editor, PgrsPrompt
+      completions.rs / completions/ — shell completion scripts (bash, zsh, fish)
 ```
 
-**Dependency direction:** `cli` / `repl` → `ConnectionService` / `SchemaService` → port traits ← adapters. The core never imports from adapters.
+**Dependency direction:** `cli` / `repl` → services → port traits ← adapters. The core never imports from adapters.
 
-**`SqliteRepository` triple role:** The single `SqliteRepository` struct implements `ConnectionRepository`, `AnalyticsPort`, and `SchemaCachePort`. In `app.rs` it is created once as `Arc<SqliteRepository>` and then cast to each trait as needed. The SQLite DB lives at `~/.pgrs/pgrs.db` and is auto-migrated on first open.
+**`SqliteRepository` wiring:** Created once as `Arc<SqliteRepository>` in `app.rs` and cast to each port trait (`Arc<dyn ConnectionRepository>`, `Arc<dyn QueryHistoryRepository>`, etc.) as needed. All analytics and schema-cache state is backed by the same SQLite file via sub-store modules.
 
-**Generics over trait objects:** `Cli<R>` and `ConnectionService<R>` are generic over `R: ConnectionRepository`. The REPL takes `Box<dyn DbConnection>` because the concrete type isn't known at compile time in `app.rs`.
+**`shell` command wiring:** `app.rs` intercepts `shell` before `Cli` dispatch and manually constructs all services (analytics, schema cache, etc.) before calling `repl::run`.
 
 **CLI argument parsing:** No external arg-parsing library. Args are matched with `--key=value` prefix stripping via `optional_option` / `required_option` in `cli.rs`. Port defaults to 5432.
 
 **`shell` vs `connect`:** `shell` opens the built-in pgrs REPL (reedline, tab-completion, `\x` expanded display). `connect` execs `psql` directly, replacing the process.
 
-**Schema refresh:** After DDL queries (`CREATE/DROP/ALTER/TRUNCATE`) the REPL auto-refreshes `SchemaService`. Manual refresh via `\refresh`.
+**Schema refresh:** After DDL queries the REPL auto-refreshes `SchemaService` (via `SchemaCacheService`). Manual refresh via `\refresh`.
 
-**Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers).
+**Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers via `sql_utils.rs`).
 
-**Tab-completion pipeline:** `tokenizer.rs` tokenizes the current line → `alias.rs` builds an `AliasMap` (alias→real table) and `JoinContext` → `completer.rs` uses those plus `SchemaService` to suggest keywords, tables, or columns depending on the preceding SQL keyword (`FROM`/`JOIN` → tables; `SELECT`/`WHERE`/`ON` → columns). Known limitation: schema-qualified names (`public.users`) partially disrupt alias extraction — the dot emits `Other('.')` which breaks the state machine for that table.
+**Tab-completion pipeline:** `tokenizer.rs` tokenizes the current line → `alias.rs` builds an `AliasMap` and `JoinContext` → `completer.rs` suggests keywords, tables, or columns based on the preceding SQL keyword (`FROM`/`JOIN` → tables; `SELECT`/`WHERE`/`ON` → columns).
+
+**Testing patterns:** Service unit tests use `StubConnectionRepository` from `ports/connection_repository.rs` (in-memory, `#[cfg(test)]`). Adapter tests use `SqliteRepository::open_in_memory()`.
 
 ## Known Limitations
 
-- **`\export` does not block CTE-wrapped DML.** Queries starting with `WITH` that wrap `INSERT`/`UPDATE`/`DELETE` (e.g., `WITH rows AS (...) INSERT INTO ...`) are not detected as mutations and will be re-executed. This matches the same limitation in the `is_ddl` detection used for schema auto-refresh.
+- **`\export` does not block CTE-wrapped DML.** Queries starting with `WITH` that wrap `INSERT`/`UPDATE`/`DELETE` are not detected as mutations and will be re-executed. Matches the same gap in `is_ddl` detection.
 
 - **Tab-completion schema-qualified names.** Schema-qualified names (`public.users`) partially disrupt alias extraction — the dot emits `Other('.')` which breaks the state machine for that table.
