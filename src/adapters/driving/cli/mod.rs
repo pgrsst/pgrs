@@ -4,9 +4,9 @@ mod connection_handler;
 
 use std::sync::Arc;
 
+use crate::core::services::connection::service::ConnectionSvc;
 use common_handler::CommonHandler;
 use connection_handler::ConnectionHandler;
-use crate::core::services::connection::service::ConnectionSvc;
 
 pub struct Cli {
     connection: ConnectionHandler,
@@ -40,28 +40,19 @@ impl Cli {
             Some(cmd) => Err(format!("unknown command '{cmd}'. Run 'pgrs' for help.")),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn get_connection(
-        &self,
-        name: &str,
-    ) -> Result<crate::core::domain::connection::Connection, String> {
-        self.connection.get_connection(name)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use super::Cli;
     use crate::core::ports::connection_repository::test_support::StubConnectionRepository;
     use crate::core::services::connection::service::{ConnectionService, ConnectionSvc};
+    use std::sync::Arc;
 
     fn cli_with(names: &[&str]) -> Cli {
-        Cli::new(
-            Arc::new(ConnectionService::new(Arc::new(StubConnectionRepository::with_names(names))))
-                as Arc<dyn ConnectionSvc>,
-        )
+        Cli::new(Arc::new(ConnectionService::new(Arc::new(
+            StubConnectionRepository::with_names(names),
+        ))) as Arc<dyn ConnectionSvc>)
     }
 
     #[test]
@@ -71,19 +62,33 @@ mod tests {
 
     #[test]
     fn unknown_command_returns_error() {
-        assert!(cli_with(&[]).run(["unknown".to_string()].into_iter()).is_err());
+        assert!(
+            cli_with(&[])
+                .run(["unknown".to_string()].into_iter())
+                .is_err()
+        );
     }
 
     #[test]
     fn unknown_command_error_mentions_command_name() {
-        let err = cli_with(&[]).run(["foobar".to_string()].into_iter()).unwrap_err();
-        assert!(err.contains("foobar"), "error should mention the unknown command, got: {err}");
+        let err = cli_with(&[])
+            .run(["foobar".to_string()].into_iter())
+            .unwrap_err();
+        assert!(
+            err.contains("foobar"),
+            "error should mention the unknown command, got: {err}"
+        );
     }
 
     #[test]
     fn unknown_command_error_does_not_show_add_usage() {
-        let err = cli_with(&[]).run(["foobar".to_string()].into_iter()).unwrap_err();
-        assert!(!err.contains("--host"), "error should not show add usage, got: {err}");
+        let err = cli_with(&[])
+            .run(["foobar".to_string()].into_iter())
+            .unwrap_err();
+        assert!(
+            !err.contains("--host"),
+            "error should not show add usage, got: {err}"
+        );
     }
 
     #[test]
@@ -99,7 +104,10 @@ mod tests {
         let err = cli_with(&[])
             .run(["shell".to_string(), "prod".to_string()].into_iter())
             .unwrap_err();
-        assert!(!err.contains("unknown command"), "should give specific error for shell, got: {err}");
+        assert!(
+            !err.contains("unknown command"),
+            "should give specific error for shell, got: {err}"
+        );
     }
 
     #[test]
@@ -107,6 +115,9 @@ mod tests {
         let err = cli_with(&[])
             .run(["test".to_string(), "prod".to_string()].into_iter())
             .unwrap_err();
-        assert!(!err.contains("unknown command"), "should give specific error for test, got: {err}");
+        assert!(
+            !err.contains("unknown command"),
+            "should give specific error for test, got: {err}"
+        );
     }
 }
