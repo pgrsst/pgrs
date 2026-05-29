@@ -9,97 +9,161 @@ use super::alias::extract_referenced_tables;
 use super::executor::format_result;
 use super::sql_utils::{is_ddl, extract_column_refs};
 
-pub(super) fn handle_d(schema: &dyn SchemaSvc, writer: &mut impl Write) {
-    let tables = schema.tables();
-    if tables.is_empty() {
-        writeln!(writer, "No tables.").ok();
-    } else {
-        for table in tables {
-            writeln!(writer, " {}", table).ok();
-        }
-    }
-}
+pub(super) struct CommandHandler;
 
-pub(super) fn handle_dt(schema: &dyn SchemaSvc, writer: &mut impl Write) {
-    let tables = schema.tables();
-    if tables.is_empty() {
-        writeln!(writer, "No tables.").ok();
-    } else {
-        let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
-        for table in tables {
-            let col_count = schema.columns_for(table).len();
-            writeln!(writer, " {:<name_w$}  ({} columns)", table, col_count).ok();
-        }
-    }
-}
-
-const LIST_DATABASES_SQL: &str =
-    "SELECT datname AS database \
-     FROM pg_database \
-     WHERE datistemplate = false \
-     ORDER BY datname";
-
-pub(super) fn handle_l(conn: &dyn DbConnection, expanded: bool, writer: &mut impl Write) {
-    match conn.execute(LIST_DATABASES_SQL) {
-        Ok(result) => write!(writer, "{}", format_result(&result, expanded)).ok(),
-        Err(e) => { eprintln!("error: {}", e); None }
-    };
-}
-
-pub(super) fn handle_history(connection_name: &str, analytics: &dyn AnalyticsSvc, writer: &mut impl Write) {
-    use chrono::{DateTime, Local, TimeZone};
-
-    let history = analytics.get_history(connection_name);
-    if history.is_empty() {
-        writeln!(writer, "No query history.").ok();
-        return;
-    }
-    let id_w = history.iter().map(|e| format!("{}", e.id).len()).max().unwrap_or(1);
-    let q_w  = history.iter().map(|e| e.query.len()).max().unwrap_or(5);
-    writeln!(writer, "  {:<id_w$}  {:<q_w$}  executed_at", "id", "query").ok();
-    writeln!(writer, "  {:-<id_w$}  {:-<q_w$}  {:-<25}", "", "", "").ok();
-    for entry in &history {
-        let dt: DateTime<Local> = Local.timestamp_opt(entry.executed_at, 0).single()
-            .unwrap_or_else(|| Local.timestamp_opt(0, 0).unwrap());
-        writeln!(
-            writer,
-            "  {:<id_w$}  {:<q_w$}  {}",
-            entry.id,
-            entry.query,
-            dt.format("%Y-%m-%d %H:%M:%S %z"),
-        ).ok();
-    }
-    writeln!(writer, "({} entries)", history.len()).ok();
-}
-
-pub(super) fn handle_stats(
-    connection_name: &str,
-    table: Option<&str>,
-    analytics: &dyn AnalyticsSvc,
-    writer: &mut impl Write,
-) {
-    match table {
-        None => {
-            let freq = analytics.get_frequent_tables(connection_name);
-            if freq.is_empty() {
-                writeln!(writer, "No table statistics yet.").ok();
-                return;
-            }
-            let name_w = freq.iter().map(|e| e.name.len()).max().unwrap_or(0);
-            for entry in &freq {
-                writeln!(writer, "  {:<name_w$}  {}", entry.name, entry.count).ok();
+impl CommandHandler {
+    pub(super) fn handle_d(&self, schema: &dyn SchemaSvc, writer: &mut impl Write) {
+        let tables = schema.tables();
+        if tables.is_empty() {
+            writeln!(writer, "No tables.").ok();
+        } else {
+            for table in tables {
+                writeln!(writer, " {}", table).ok();
             }
         }
-        Some(tbl) => {
-            let freq = analytics.get_frequent_columns(connection_name, tbl);
-            if freq.is_empty() {
-                writeln!(writer, "No column statistics for '{}'.", tbl).ok();
-                return;
+    }
+
+    pub(super) fn handle_dt(&self, schema: &dyn SchemaSvc, writer: &mut impl Write) {
+        let tables = schema.tables();
+        if tables.is_empty() {
+            writeln!(writer, "No tables.").ok();
+        } else {
+            let name_w = tables.iter().map(|t| t.len()).max().unwrap_or(0);
+            for table in tables {
+                let col_count = schema.columns_for(table).len();
+                writeln!(writer, " {:<name_w$}  ({} columns)", table, col_count).ok();
             }
-            let name_w = freq.iter().map(|e| e.name.len()).max().unwrap_or(0);
-            for entry in &freq {
-                writeln!(writer, "  {:<name_w$}  {}", entry.name, entry.count).ok();
+        }
+    }
+
+    const LIST_DATABASES_SQL: &'static str =
+        "SELECT datname AS database \
+         FROM pg_database \
+         WHERE datistemplate = false \
+         ORDER BY datname";
+
+    pub(super) fn handle_l(&self, conn: &dyn DbConnection, expanded: bool, writer: &mut impl Write) {
+        match conn.execute(Self::LIST_DATABASES_SQL) {
+            Ok(result) => write!(writer, "{}", format_result(&result, expanded)).ok(),
+            Err(e) => { eprintln!("error: {}", e); None }
+        };
+    }
+
+    pub(super) fn handle_history(&self, connection_name: &str, analytics: &dyn AnalyticsSvc, writer: &mut impl Write) {
+        use chrono::{DateTime, Local, TimeZone};
+
+        let history = analytics.get_history(connection_name);
+        if history.is_empty() {
+            writeln!(writer, "No query history.").ok();
+            return;
+        }
+        let id_w = history.iter().map(|e| format!("{}", e.id).len()).max().unwrap_or(1);
+        let q_w  = history.iter().map(|e| e.query.len()).max().unwrap_or(5);
+        writeln!(writer, "  {:<id_w$}  {:<q_w$}  executed_at", "id", "query").ok();
+        writeln!(writer, "  {:-<id_w$}  {:-<q_w$}  {:-<25}", "", "", "").ok();
+        for entry in &history {
+            let dt: DateTime<Local> = Local.timestamp_opt(entry.executed_at, 0).single()
+                .unwrap_or_else(|| Local.timestamp_opt(0, 0).unwrap());
+            writeln!(
+                writer,
+                "  {:<id_w$}  {:<q_w$}  {}",
+                entry.id,
+                entry.query,
+                dt.format("%Y-%m-%d %H:%M:%S %z"),
+            ).ok();
+        }
+        writeln!(writer, "({} entries)", history.len()).ok();
+    }
+
+    pub(super) fn handle_stats(
+        &self,
+        connection_name: &str,
+        table: Option<&str>,
+        analytics: &dyn AnalyticsSvc,
+        writer: &mut impl Write,
+    ) {
+        match table {
+            None => {
+                let freq = analytics.get_frequent_tables(connection_name);
+                if freq.is_empty() {
+                    writeln!(writer, "No table statistics yet.").ok();
+                    return;
+                }
+                let name_w = freq.iter().map(|e| e.name.len()).max().unwrap_or(0);
+                for entry in &freq {
+                    writeln!(writer, "  {:<name_w$}  {}", entry.name, entry.count).ok();
+                }
             }
+            Some(tbl) => {
+                let freq = analytics.get_frequent_columns(connection_name, tbl);
+                if freq.is_empty() {
+                    writeln!(writer, "No column statistics for '{}'.", tbl).ok();
+                    return;
+                }
+                let name_w = freq.iter().map(|e| e.name.len()).max().unwrap_or(0);
+                for entry in &freq {
+                    writeln!(writer, "  {:<name_w$}  {}", entry.name, entry.count).ok();
+                }
+            }
+        }
+    }
+
+    pub(super) fn handle_sql(
+        &self,
+        conn: &dyn ReplPort,
+        query: &str,
+        opts: &SqlOptions<'_>,
+        schema: &mut SchemaService,
+        rebuild: &mut impl FnMut(SchemaService),
+        writer: &mut impl Write,
+    ) {
+        let start = std::time::Instant::now();
+        match conn.execute(query) {
+            Ok(result) => {
+                write!(writer, "{}", format_result(&result, opts.expanded)).ok();
+                if opts.timing {
+                    let ms = start.elapsed().as_secs_f64() * 1000.0;
+                    if ms >= 1000.0 {
+                        writeln!(writer, "Time: {:.3} s", ms / 1000.0).ok();
+                    } else {
+                        writeln!(writer, "Time: {:.3} ms", ms).ok();
+                    }
+                }
+
+                if let Some(analytics) = opts.analytics {
+                    let tables = extract_referenced_tables(query);
+                    let columns = extract_column_refs(query, schema);
+                    analytics.record_query(opts.connection_name, query, &tables, &columns);
+                }
+
+                if is_ddl(query) {
+                    match schema.refresh(conn, opts.connection_name) {
+                        Ok(()) => {
+                            rebuild(schema.clone());
+                            writeln!(writer, "(schema refreshed)").ok();
+                        }
+                        Err(e) => eprintln!("error: could not refresh schema: {e}"),
+                    }
+                }
+            }
+            Err(e) => eprintln!("error: {}", e),
+        }
+    }
+
+    pub(super) fn handle_refresh(
+        &self,
+        conn: &dyn SchemaPort,
+        connection_name: &str,
+        schema: &mut SchemaService,
+        rebuild: &mut impl FnMut(SchemaService),
+        writer: &mut impl Write,
+    ) {
+        match schema.refresh(conn, connection_name) {
+            Ok(()) => {
+                rebuild(schema.clone());
+                writeln!(writer, "Schema refreshed.").ok();
+            }
+            Err(e) => eprintln!("error: could not refresh schema: {e}"),
         }
     }
 }
@@ -109,63 +173,6 @@ pub(super) struct SqlOptions<'a> {
     pub(super) timing: bool,
     pub(super) connection_name: &'a str,
     pub(super) analytics: Option<&'a dyn AnalyticsSvc>,
-}
-
-pub(super) fn handle_sql(
-    conn: &dyn ReplPort,
-    query: &str,
-    opts: &SqlOptions<'_>,
-    schema: &mut SchemaService,
-    rebuild: &mut impl FnMut(SchemaService),
-    writer: &mut impl Write,
-) {
-    let start = std::time::Instant::now();
-    match conn.execute(query) {
-        Ok(result) => {
-            write!(writer, "{}", format_result(&result, opts.expanded)).ok();
-            if opts.timing {
-                let ms = start.elapsed().as_secs_f64() * 1000.0;
-                if ms >= 1000.0 {
-                    writeln!(writer, "Time: {:.3} s", ms / 1000.0).ok();
-                } else {
-                    writeln!(writer, "Time: {:.3} ms", ms).ok();
-                }
-            }
-
-            if let Some(analytics) = opts.analytics {
-                let tables = extract_referenced_tables(query);
-                let columns = extract_column_refs(query, schema);
-                analytics.record_query(opts.connection_name, query, &tables, &columns);
-            }
-
-            if is_ddl(query) {
-                match schema.refresh(conn, opts.connection_name) {
-                    Ok(()) => {
-                        rebuild(schema.clone());
-                        writeln!(writer, "(schema refreshed)").ok();
-                    }
-                    Err(e) => eprintln!("error: could not refresh schema: {e}"),
-                }
-            }
-        }
-        Err(e) => eprintln!("error: {}", e),
-    }
-}
-
-pub(super) fn handle_refresh(
-    conn: &dyn SchemaPort,
-    connection_name: &str,
-    schema: &mut SchemaService,
-    rebuild: &mut impl FnMut(SchemaService),
-    writer: &mut impl Write,
-) {
-    match schema.refresh(conn, connection_name) {
-        Ok(()) => {
-            rebuild(schema.clone());
-            writeln!(writer, "Schema refreshed.").ok();
-        }
-        Err(e) => eprintln!("error: could not refresh schema: {e}"),
-    }
 }
 
 #[cfg(test)]
@@ -270,11 +277,13 @@ mod tests {
         (stub, svc)
     }
 
+    fn handler() -> CommandHandler { CommandHandler }
+
     #[test]
     fn handle_dt_prints_nothing_for_empty_schema() {
         let schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_dt(&schema, &mut out);
+        handler().handle_dt(&schema, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("No tables."));
     }
@@ -283,7 +292,7 @@ mod tests {
     fn handle_dt_lists_table_names() {
         let schema = schema_from(&[("users", &["id", "email"]), ("orders", &["id"])]);
         let mut out = Vec::new();
-        handle_dt(&schema, &mut out);
+        handler().handle_dt(&schema, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("users"), "expected 'users' in output, got: {text}");
         assert!(text.contains("orders"), "expected 'orders' in output, got: {text}");
@@ -293,7 +302,7 @@ mod tests {
     fn handle_dt_shows_column_count() {
         let schema = schema_from(&[("users", &["id", "email"])]);
         let mut out = Vec::new();
-        handle_dt(&schema, &mut out);
+        handler().handle_dt(&schema, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("2 columns"), "expected column count, got: {text}");
     }
@@ -305,7 +314,7 @@ mod tests {
             vec!["database".to_string()],
         );
         let mut out = Vec::new();
-        handle_l(&stub, false, &mut out);
+        handler().handle_l(&stub, false, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("mydb"), "expected db name in output, got: {text}");
     }
@@ -314,7 +323,7 @@ mod tests {
     fn handle_l_handles_db_error_gracefully() {
         let stub = StubDb::err("connection lost");
         let mut out = Vec::new();
-        handle_l(&stub, false, &mut out);
+        handler().handle_l(&stub, false, &mut out);
     }
 
     #[test]
@@ -323,7 +332,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handler().handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "no DDL — schema should not be rebuilt");
     }
 
@@ -332,7 +341,7 @@ mod tests {
         let stub = StubDb::ok(vec![vec!["42".to_string()]], vec!["id".to_string()]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 42", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
+        handler().handle_sql(&stub, "SELECT 42", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("42"), "expected result value in output, got: {text}");
     }
@@ -343,7 +352,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handler().handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt, "DDL should trigger schema rebuild");
     }
 
@@ -352,7 +361,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("users", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
+        handler().handle_sql(&stub, "CREATE TABLE users (id int)", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("schema refreshed"), "expected refresh notice, got: {text}");
     }
@@ -363,7 +372,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handler().handle_sql(&stub, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt);
     }
 
@@ -372,7 +381,7 @@ mod tests {
         let stub = StubDb::err("syntax error");
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_sql(&stub, "SELEKT *", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
+        handler().handle_sql(&stub, "SELEKT *", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
     }
 
     #[test]
@@ -382,7 +391,7 @@ mod tests {
         assert!(schema.tables().is_empty());
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handler().handle_refresh(&stub, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(rebuilt);
         assert!(schema.tables().contains(&"products".to_string()));
     }
@@ -392,7 +401,7 @@ mod tests {
         let stub = StubDb::with_schema(&[("t", &["id"])]);
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_refresh(&stub, "my-conn", &mut schema, &mut |_| {}, &mut out);
+        handler().handle_refresh(&stub, "my-conn", &mut schema, &mut |_| {}, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("refreshed"), "expected refresh confirmation, got: {text}");
     }
@@ -408,7 +417,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut rebuilt = false;
         let mut out = Vec::new();
-        handle_refresh(&FailingDb, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, &mut out);
+        handler().handle_refresh(&FailingDb, "my-conn", &mut schema, &mut |_| { rebuilt = true; }, &mut out);
         assert!(!rebuilt, "failed refresh must not trigger rebuild");
     }
 
@@ -416,7 +425,7 @@ mod tests {
     fn handle_d_prints_nothing_for_empty_schema() {
         let schema = schema_from(&[]);
         let mut out = Vec::new();
-        handle_d(&schema, &mut out);
+        handler().handle_d(&schema, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("No tables."));
     }
@@ -425,7 +434,7 @@ mod tests {
     fn handle_d_lists_table_names_without_column_count() {
         let schema = schema_from(&[("users", &["id", "email"]), ("orders", &["id"])]);
         let mut out = Vec::new();
-        handle_d(&schema, &mut out);
+        handler().handle_d(&schema, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("users"), "expected 'users' in output, got: {text}");
         assert!(text.contains("orders"), "expected 'orders' in output, got: {text}");
@@ -439,7 +448,7 @@ mod tests {
         let mut schema = schema_from(&[]);
         let mut out = Vec::new();
 
-        handle_sql(
+        handler().handle_sql(
             &stub,
             "SELECT 1",
             &SqlOptions {
@@ -467,7 +476,7 @@ mod tests {
         ];
         let (_, svc) = make_svc(history, vec![], vec![]);
         let mut out = Vec::new();
-        handle_history("mydb", &svc, &mut out);
+        handler().handle_history("mydb", &svc, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("SELECT 1"), "expected query in history, got: {text}");
         assert!(text.contains("SELECT 2"), "expected query in history, got: {text}");
@@ -478,7 +487,7 @@ mod tests {
         let tables = vec![FreqEntry { name: "users".to_string(), count: 5 }];
         let (_, svc) = make_svc(vec![], tables, vec![]);
         let mut out = Vec::new();
-        handle_stats("mydb", None, &svc, &mut out);
+        handler().handle_stats("mydb", None, &svc, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("users"), "expected table name, got: {text}");
         assert!(text.contains("5"), "expected count, got: {text}");
@@ -489,7 +498,7 @@ mod tests {
         let columns = vec![FreqEntry { name: "email".to_string(), count: 3 }];
         let (_, svc) = make_svc(vec![], vec![], columns);
         let mut out = Vec::new();
-        handle_stats("mydb", Some("users"), &svc, &mut out);
+        handler().handle_stats("mydb", Some("users"), &svc, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("email"), "expected column name, got: {text}");
         assert!(text.contains("3"), "expected count, got: {text}");

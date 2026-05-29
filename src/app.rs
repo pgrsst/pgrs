@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::adapters::driven::postgres_db::PostgresDb;
 use crate::adapters::driven::sqlite::SqliteRepository;
 use crate::adapters::driving::cli::Cli;
-use crate::adapters::driving::repl;
+use crate::adapters::driving::repl::Repl;
 use crate::core::ports::column_access_repository::ColumnAccessRepository;
 use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::ports::db_connection::DbConnection;
@@ -100,14 +100,14 @@ fn run_shell(
     let conn = service.find_connection(name)?;
     let db = PostgresDb::new(&conn)?;
 
-    repl::run(
+    Repl::new(
         Box::new(db),
         &conn.database,
         &conn.name,
         conn.environment.as_deref(),
         analytics,
         schema_cache,
-    )
+    ).run()
 }
 
 fn run_test(
