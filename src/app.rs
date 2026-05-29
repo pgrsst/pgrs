@@ -15,7 +15,7 @@ use crate::core::ports::schema_table_repository::SchemaTableRepository;
 use crate::core::ports::table_access_repository::TableAccessRepository;
 use crate::core::services::analytics::service::{AnalyticsService, AnalyticsSvc};
 use crate::core::services::column_access::service::{ColumnAccessService, ColumnAccessSvc};
-use crate::core::services::connection::service::ConnectionService;
+use crate::core::services::connection::service::{ConnectionService, ConnectionSvc};
 use crate::core::services::query_history::service::{QueryHistoryService, QueryHistorySvc};
 use crate::core::services::schema_cache::service::{SchemaCacheService, SchemaCacheSvc};
 use crate::core::services::schema_column::service::{SchemaColumnService, SchemaColumnSvc};
@@ -40,7 +40,8 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
             .map_err(|e| format!("pgrs: could not open database: {e}"))?,
     );
 
-    let connection_service = ConnectionService::new(Arc::clone(&sqlite) as Arc<dyn ConnectionRepository>);
+    let connection_service: Arc<dyn ConnectionSvc> =
+        Arc::new(ConnectionService::new(Arc::clone(&sqlite) as Arc<dyn ConnectionRepository>));
 
     match args.first().map(String::as_str) {
         Some("shell") => {
@@ -76,12 +77,12 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
             ));
             run_shell(
                 &args[1..],
-                &connection_service,
+                connection_service.as_ref(),
                 Some(analytics as Arc<dyn AnalyticsSvc>),
                 Some(schema_cache as Arc<dyn SchemaCacheSvc>),
             )
         }
-        Some("test") => run_test(&args[1..], &connection_service),
+        Some("test") => run_test(&args[1..], connection_service.as_ref()),
         _ => {
             let cli = Cli::new(connection_service);
             cli.run(args)
@@ -91,7 +92,7 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
 
 fn run_shell(
     args: &[String],
-    service: &ConnectionService,
+    service: &dyn ConnectionSvc,
     analytics: Option<Arc<dyn AnalyticsSvc>>,
     schema_cache: Option<Arc<dyn SchemaCacheSvc>>,
 ) -> Result<(), String> {
@@ -111,7 +112,7 @@ fn run_shell(
 
 fn run_test(
     args: &[String],
-    service: &ConnectionService,
+    service: &dyn ConnectionSvc,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs test <connection-name>")?;
     let conn = service.find_connection(name)?;

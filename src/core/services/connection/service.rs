@@ -5,6 +5,17 @@ use crate::core::enums::tls_mode::TlsMode;
 use crate::core::domain::error::DomainError;
 use crate::core::ports::connection_repository::ConnectionRepository;
 
+pub trait ConnectionSvc: Send + Sync {
+    fn add_connection(&self, input: AddConnectionInput) -> Result<(), DomainError>;
+    fn list_connections(&self) -> Result<Vec<Connection>, DomainError>;
+    fn delete_connection(&self, name: &str) -> Result<(), DomainError>;
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn get_connection(&self, name: &str) -> Result<Connection, DomainError>;
+    fn find_connection(&self, input: &str) -> Result<Connection, DomainError>;
+    fn edit_connection(&self, name: &str, input: EditConnectionInput) -> Result<(), DomainError>;
+    fn rename_connection(&self, old_name: &str, new_name: &str) -> Result<(), DomainError>;
+}
+
 pub struct ConnectionService {
     repository: Arc<dyn ConnectionRepository>,
 }
@@ -46,8 +57,10 @@ impl ConnectionService {
     pub fn new(repository: Arc<dyn ConnectionRepository>) -> Self {
         Self { repository }
     }
+}
 
-    pub fn add_connection(&self, input: AddConnectionInput) -> Result<(), DomainError> {
+impl ConnectionSvc for ConnectionService {
+    fn add_connection(&self, input: AddConnectionInput) -> Result<(), DomainError> {
         require_field("connection name", &input.name)?;
         require_field("host", &input.host)?;
         require_field("database", &input.database)?;
@@ -64,22 +77,21 @@ impl ConnectionService {
         self.repository.add(connection)
     }
 
-    pub fn list_connections(&self) -> Result<Vec<Connection>, DomainError> {
+    fn list_connections(&self) -> Result<Vec<Connection>, DomainError> {
         self.repository.list()
     }
 
-    pub fn delete_connection(&self, name: &str) -> Result<(), DomainError> {
+    fn delete_connection(&self, name: &str) -> Result<(), DomainError> {
         require_field("connection name", name)?;
         self.repository.delete(name)
     }
 
-    #[cfg(test)]
-    pub fn get_connection(&self, name: &str) -> Result<Connection, DomainError> {
+    fn get_connection(&self, name: &str) -> Result<Connection, DomainError> {
         require_field("connection name", name)?;
         self.repository.get_connection(name)
     }
 
-    pub fn find_connection(&self, input: &str) -> Result<Connection, DomainError> {
+    fn find_connection(&self, input: &str) -> Result<Connection, DomainError> {
         let connections = self.repository.list()?;
         connections
             .into_iter()
@@ -87,7 +99,7 @@ impl ConnectionService {
             .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", input)))
     }
 
-    pub fn edit_connection(&self, name: &str, input: EditConnectionInput) -> Result<(), DomainError> {
+    fn edit_connection(&self, name: &str, input: EditConnectionInput) -> Result<(), DomainError> {
         require_field("connection name", name)?;
 
         if input.host.is_none()
@@ -117,7 +129,7 @@ impl ConnectionService {
         self.repository.update(conn)
     }
 
-    pub fn rename_connection(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
+    fn rename_connection(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
         require_field("old connection name", old_name)?;
         require_field("new connection name", new_name)?;
         self.repository.rename(old_name, new_name)
