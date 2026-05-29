@@ -1,20 +1,13 @@
 use crate::adapters::driving::completions;
 use crate::core::enums::tls_mode::TlsMode;
-use crate::core::ports::connection_repository::ConnectionRepository;
 use crate::core::services::connection::service::{AddConnectionInput, ConnectionService, EditConnectionInput};
 
-pub struct Cli<R>
-where
-    R: ConnectionRepository,
-{
-    connection_service: ConnectionService<R>,
+pub struct Cli {
+    connection_service: ConnectionService,
 }
 
-impl<R> Cli<R>
-where
-    R: ConnectionRepository,
-{
-    pub fn new(connection_service: ConnectionService<R>) -> Self {
+impl Cli {
+    pub fn new(connection_service: ConnectionService) -> Self {
         Self { connection_service }
     }
 
@@ -521,10 +514,11 @@ fn welcome() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::core::ports::connection_repository::test_support::StubConnectionRepository;
 
-    fn cli_with(names: &[&str]) -> Cli<StubConnectionRepository> {
-        Cli::new(ConnectionService::new(StubConnectionRepository::with_names(names)))
+    fn cli_with(names: &[&str]) -> Cli {
+        Cli::new(ConnectionService::new(Arc::new(StubConnectionRepository::with_names(names))))
     }
 
     #[test]

@@ -11,30 +11,6 @@ pub trait ConnectionRepository: Send + Sync {
     fn update(&self, connection: Connection) -> Result<(), DomainError>;
 }
 
-impl<T: ConnectionRepository> ConnectionRepository for std::sync::Arc<T> {
-    fn add(&self, connection: Connection) -> Result<(), DomainError> {
-        (**self).add(connection)
-    }
-    fn list(&self) -> Result<Vec<Connection>, DomainError> {
-        (**self).list()
-    }
-    fn delete(&self, name: &str) -> Result<(), DomainError> {
-        (**self).delete(name)
-    }
-    fn get_connection(&self, name: &str) -> Result<Connection, DomainError> {
-        (**self).get_connection(name)
-    }
-    fn find_row_id(&self, name: &str) -> Result<i64, DomainError> {
-        (**self).find_row_id(name)
-    }
-    fn update(&self, connection: Connection) -> Result<(), DomainError> {
-        (**self).update(connection)
-    }
-    fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
-        (**self).rename(old_name, new_name)
-    }
-}
-
 #[cfg(test)]
 pub mod test_support {
     use crate::core::domain::connection::{Connection, DEFAULT_PORT};

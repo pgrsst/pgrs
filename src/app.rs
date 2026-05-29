@@ -40,7 +40,7 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
             .map_err(|e| format!("pgrs: could not open database: {e}"))?,
     );
 
-    let connection_service = ConnectionService::new(Arc::clone(&sqlite));
+    let connection_service = ConnectionService::new(Arc::clone(&sqlite) as Arc<dyn ConnectionRepository>);
 
     match args.first().map(String::as_str) {
         Some("shell") => {
@@ -89,9 +89,9 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
     }
 }
 
-fn run_shell<R: ConnectionRepository>(
+fn run_shell(
     args: &[String],
-    service: &ConnectionService<R>,
+    service: &ConnectionService,
     analytics: Option<Arc<dyn AnalyticsSvc>>,
     schema_cache: Option<Arc<dyn SchemaCacheSvc>>,
 ) -> Result<(), String> {
@@ -109,9 +109,9 @@ fn run_shell<R: ConnectionRepository>(
     )
 }
 
-fn run_test<R: ConnectionRepository>(
+fn run_test(
     args: &[String],
-    service: &ConnectionService<R>,
+    service: &ConnectionService,
 ) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs test <connection-name>")?;
     let conn = service.find_connection(name)?;

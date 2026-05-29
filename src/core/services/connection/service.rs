@@ -1,13 +1,12 @@
+use std::sync::Arc;
+
 use crate::core::domain::connection::Connection;
 use crate::core::enums::tls_mode::TlsMode;
 use crate::core::domain::error::DomainError;
 use crate::core::ports::connection_repository::ConnectionRepository;
 
-pub struct ConnectionService<R>
-where
-    R: ConnectionRepository,
-{
-    repository: R,
+pub struct ConnectionService {
+    repository: Arc<dyn ConnectionRepository>,
 }
 
 pub struct EditConnectionInput {
@@ -43,11 +42,8 @@ fn generate_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
 
-impl<R> ConnectionService<R>
-where
-    R: ConnectionRepository,
-{
-    pub fn new(repository: R) -> Self {
+impl ConnectionService {
+    pub fn new(repository: Arc<dyn ConnectionRepository>) -> Self {
         Self { repository }
     }
 
@@ -131,6 +127,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::core::domain::connection::DEFAULT_PORT;
     use crate::core::enums::tls_mode::TlsMode;
     use crate::core::domain::error::DomainError;
@@ -149,8 +146,8 @@ mod tests {
         }
     }
 
-    fn service() -> ConnectionService<StubConnectionRepository> {
-        ConnectionService::new(StubConnectionRepository::new())
+    fn service() -> ConnectionService {
+        ConnectionService::new(Arc::new(StubConnectionRepository::new()))
     }
 
     #[test]
