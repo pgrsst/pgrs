@@ -6,7 +6,6 @@ pub trait ConnectionRepository: Send + Sync {
     fn list(&self) -> Result<Vec<Connection>, DomainError>;
     fn delete(&self, name: &str) -> Result<(), DomainError>;
     fn get_connection(&self, name: &str) -> Result<Connection, DomainError>;
-    fn find_row_id(&self, name: &str) -> Result<i64, DomainError>;
     fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError>;
     fn update(&self, connection: Connection) -> Result<(), DomainError>;
 }
@@ -31,7 +30,8 @@ pub mod test_support {
         pub fn with_names(names: &[&str]) -> Self {
             let connections = names
                 .iter()
-                .map(|&n| Connection {
+                .enumerate()
+                .map(|(i, &n)| Connection {
                     name: n.to_string(),
                     host: "localhost".to_string(),
                     port: DEFAULT_PORT,
@@ -40,7 +40,7 @@ pub mod test_support {
                     database: "db".to_string(),
                     tls: TlsMode::Disable,
                     environment: None,
-                    id: None,
+                    id: Some((i as i64) + 1),
                 })
                 .collect();
             Self { connections: Mutex::new(connections) }
@@ -55,7 +55,9 @@ pub mod test_support {
                     format!("connection '{}' already exists", connection.name)
                 ));
             }
-            connections.push(connection);
+            let mut conn = connection;
+            conn.id = Some((connections.len() as i64) + 1);
+            connections.push(conn);
             Ok(())
         }
 
@@ -80,16 +82,6 @@ pub mod test_support {
                 .iter()
                 .find(|c| c.name == name)
                 .cloned()
-                .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", name)))
-        }
-
-        fn find_row_id(&self, name: &str) -> Result<i64, DomainError> {
-            self.connections
-                .lock()
-                .unwrap()
-                .iter()
-                .position(|c| c.name == name)
-                .map(|i| (i + 1) as i64)
                 .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", name)))
         }
 

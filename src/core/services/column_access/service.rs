@@ -35,7 +35,10 @@ impl ColumnAccessService {
 
 impl ColumnAccessSvc for ColumnAccessService {
     fn record(&self, input: ColumnAccessCreateInput) -> Result<(), DomainError> {
-        let connection_id = self.connection_repo.find_row_id(&input.connection_name)?;
+        let connection_id = self.connection_repo
+            .get_connection(&input.connection_name)?
+            .id
+            .ok_or_else(|| DomainError::StorageError("connection has no id".to_string()))?;
         let now = unix_now();
         let entity = ColumnAccess {
             id: 0,

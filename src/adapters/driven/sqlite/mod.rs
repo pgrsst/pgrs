@@ -59,17 +59,20 @@ mod tests {
     use crate::core::ports::table_access_repository::TableAccessRepository;
 
     fn save_history(repo: &SqliteRepository, conn_name: &str, query: &str, ts: i64) -> i64 {
-        let conn_id = repo.find_row_id(conn_name).unwrap();
+        use crate::core::ports::connection_repository::ConnectionRepository;
+        let conn_id = ConnectionRepository::get_connection(repo, conn_name).unwrap().id.unwrap();
         QueryHistoryRepository::save(repo, &QueryHistory { id: 0, connection_id: conn_id, query: query.to_string(), executed_at: ts }).unwrap()
     }
 
     fn save_table_access(repo: &SqliteRepository, conn_name: &str, table: &str, qid: Option<i64>, ts: i64) {
-        let conn_id = repo.find_row_id(conn_name).unwrap();
+        use crate::core::ports::connection_repository::ConnectionRepository;
+        let conn_id = ConnectionRepository::get_connection(repo, conn_name).unwrap().id.unwrap();
         TableAccessRepository::save(repo, &TableAccess { id: 0, connection_id: conn_id, table_name: table.to_string(), query_id: qid, accessed_at: ts }).unwrap();
     }
 
     fn save_column_access(repo: &SqliteRepository, conn_name: &str, table: &str, col: &str, qid: Option<i64>, ts: i64) {
-        let conn_id = repo.find_row_id(conn_name).unwrap();
+        use crate::core::ports::connection_repository::ConnectionRepository;
+        let conn_id = ConnectionRepository::get_connection(repo, conn_name).unwrap().id.unwrap();
         ColumnAccessRepository::save(repo, &ColumnAccess { id: 0, connection_id: conn_id, table_name: table.to_string(), column_name: col.to_string(), query_id: qid, accessed_at: ts }).unwrap();
     }
 
@@ -369,7 +372,7 @@ mod tests {
     #[test]
     fn connection_with_tls_and_environment_round_trips() {
         let repo = SqliteRepository::open_in_memory().unwrap();
-        let mut c = Connection {
+        let c = Connection {
             name: "secure".to_string(),
             host: "db.example.com".to_string(),
             port: 5433,
@@ -380,12 +383,12 @@ mod tests {
             environment: Some("production".to_string()),
             id: None,
         };
-        c.id = Some("abc123".to_string());
         repo.add(c.clone()).unwrap();
         let loaded = repo.get_connection("secure").unwrap();
         assert_eq!(loaded.tls, TlsMode::VerifyFull);
         assert_eq!(loaded.environment.as_deref(), Some("production"));
-        assert_eq!(loaded.id.as_deref(), Some("abc123"));
+        assert!(loaded.id.is_some(), "id should be populated by SQLite");
+        assert!(loaded.id.unwrap() > 0);
         assert_eq!(loaded.port, 5433);
     }
 }

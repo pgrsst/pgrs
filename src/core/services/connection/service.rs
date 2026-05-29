@@ -49,10 +49,6 @@ fn require_field(label: &str, value: &str) -> Result<(), DomainError> {
     }
 }
 
-fn generate_id() -> String {
-    uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
-}
-
 impl ConnectionService {
     pub fn new(repository: Arc<dyn ConnectionRepository>) -> Self {
         Self { repository }
@@ -67,12 +63,11 @@ impl ConnectionSvc for ConnectionService {
         require_field("username", &input.username)?;
         require_field("password", &input.password)?;
 
-        let mut connection = Connection {
+        let connection = Connection {
             name: input.name, host: input.host, port: input.port, username: input.username,
             password: input.password, database: input.database, tls: input.tls,
             environment: input.environment, id: None,
         };
-        connection.id = Some(generate_id());
 
         self.repository.add(connection)
     }
@@ -93,9 +88,10 @@ impl ConnectionSvc for ConnectionService {
 
     fn find_connection(&self, input: &str) -> Result<Connection, DomainError> {
         let connections = self.repository.list()?;
+        let parsed_id: Option<i64> = input.parse().ok();
         connections
             .into_iter()
-            .find(|c| c.id.as_deref() == Some(input) || c.name == input)
+            .find(|c| (parsed_id.is_some() && c.id == parsed_id) || c.name == input)
             .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", input)))
     }
 
@@ -504,18 +500,17 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         svc.add_connection(valid_input("staging")).unwrap();
-        let id1 = svc.get_connection("prod").unwrap().id.clone();
-        let id2 = svc.get_connection("staging").unwrap().id.clone();
+        let id1 = svc.get_connection("prod").unwrap().id;
+        let id2 = svc.get_connection("staging").unwrap().id;
         assert_ne!(id1, id2, "each connection should get a unique id");
     }
 
     #[test]
-    fn add_connection_assigns_8_char_hex_id() {
+    fn add_connection_assigns_positive_integer_id() {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let id = svc.get_connection("prod").unwrap().id.unwrap();
-        assert_eq!(id.len(), 8, "id should be 8 characters, got: {id}");
-        assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "id should be hex, got: {id}");
+        assert!(id > 0, "id should be a positive integer, got: {id}");
     }
 
     #[test]
@@ -531,7 +526,7 @@ mod tests {
         let svc = service();
         svc.add_connection(valid_input("prod")).unwrap();
         let id = svc.get_connection("prod").unwrap().id.unwrap();
-        let conn = svc.find_connection(&id).unwrap();
+        let conn = svc.find_connection(&id.to_string()).unwrap();
         assert_eq!(conn.name, "prod");
     }
 

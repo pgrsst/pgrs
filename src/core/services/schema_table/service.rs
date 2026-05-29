@@ -32,7 +32,10 @@ impl SchemaTableService {
 
 impl SchemaTableSvc for SchemaTableService {
     fn save(&self, input: SchemaTableCreateInput) -> Result<(), DomainError> {
-        let connection_id = self.connection_repo.find_row_id(&input.connection_name)?;
+        let connection_id = self.connection_repo
+            .get_connection(&input.connection_name)?
+            .id
+            .ok_or_else(|| DomainError::StorageError("connection has no id".to_string()))?;
         let entity = SchemaTable {
             connection_id,
             table_name: input.table_name,
@@ -42,7 +45,10 @@ impl SchemaTableSvc for SchemaTableService {
     }
 
     fn delete_by_connection(&self, connection_name: &str) -> Result<(), DomainError> {
-        let connection_id = self.connection_repo.find_row_id(connection_name)?;
+        let connection_id = self.connection_repo
+            .get_connection(connection_name)?
+            .id
+            .ok_or_else(|| DomainError::StorageError("connection has no id".to_string()))?;
         self.repository.delete_by_connection(connection_id)
     }
 }

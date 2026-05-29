@@ -13,5 +13,5 @@ pub struct Connection {
     pub database: String,
     pub tls: TlsMode,
     pub environment: Option<String>,
-    pub id: Option<String>,
+    pub id: Option<i64>,
 }

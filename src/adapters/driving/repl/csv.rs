@@ -149,7 +149,6 @@ mod tests {
         fn list(&self) -> Result<Vec<Connection>, DomainError> { Ok(vec![]) }
         fn delete(&self, _: &str) -> Result<(), DomainError> { Ok(()) }
         fn get_connection(&self, n: &str) -> Result<Connection, DomainError> { Err(DomainError::NotFound(n.to_string())) }
-        fn find_row_id(&self, _: &str) -> Result<i64, DomainError> { Ok(1) }
         fn rename(&self, _: &str, _: &str) -> Result<(), DomainError> { Ok(()) }
         fn update(&self, _: Connection) -> Result<(), DomainError> { Ok(()) }
     }

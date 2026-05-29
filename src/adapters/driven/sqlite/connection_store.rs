@@ -16,8 +16,8 @@ impl ConnectionRepository for SqliteRepository {
     fn add(&self, connection: DomainConnection) -> Result<(), DomainError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO connections (name, host, port, username, password, database, tls, environment, uuid)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO connections (name, host, port, username, password, database, tls, environment)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 connection.name,
                 connection.host,
@@ -27,7 +27,6 @@ impl ConnectionRepository for SqliteRepository {
                 connection.database,
                 connection.tls.to_string(),
                 connection.environment.as_deref(),
-                connection.id.as_deref(),
             ],
         )
         .map_err(|e| {
@@ -44,23 +43,23 @@ impl ConnectionRepository for SqliteRepository {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
-                "SELECT name, host, port, username, password, database, tls, environment, uuid
+                "SELECT id, name, host, port, username, password, database, tls, environment
                  FROM connections ORDER BY name",
             )
             .map_err(|e| DomainError::StorageError(e.to_string()))?;
         let rows = stmt
             .query_map([], |r| {
-                let tls_str: String = r.get(6)?;
+                let tls_str: String = r.get(7)?;
                 Ok(DomainConnection {
-                    name: r.get(0)?,
-                    host: r.get(1)?,
-                    port: r.get::<_, i64>(2)? as u16,
-                    username: r.get(3)?,
-                    password: r.get(4)?,
-                    database: r.get(5)?,
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    host: r.get(2)?,
+                    port: r.get::<_, i64>(3)? as u16,
+                    username: r.get(4)?,
+                    password: r.get(5)?,
+                    database: r.get(6)?,
                     tls: tls_from_str(&tls_str),
-                    environment: r.get(7)?,
-                    id: r.get(8)?,
+                    environment: r.get(8)?,
                 })
             })
             .map_err(|e| DomainError::StorageError(e.to_string()))?;
@@ -82,21 +81,21 @@ impl ConnectionRepository for SqliteRepository {
     fn get_connection(&self, name: &str) -> Result<DomainConnection, DomainError> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT name, host, port, username, password, database, tls, environment, uuid
+            "SELECT id, name, host, port, username, password, database, tls, environment
              FROM connections WHERE name = ?1",
             rusqlite::params![name],
             |r| {
-                let tls_str: String = r.get(6)?;
+                let tls_str: String = r.get(7)?;
                 Ok(DomainConnection {
-                    name: r.get(0)?,
-                    host: r.get(1)?,
-                    port: r.get::<_, i64>(2)? as u16,
-                    username: r.get(3)?,
-                    password: r.get(4)?,
-                    database: r.get(5)?,
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    host: r.get(2)?,
+                    port: r.get::<_, i64>(3)? as u16,
+                    username: r.get(4)?,
+                    password: r.get(5)?,
+                    database: r.get(6)?,
                     tls: tls_from_str(&tls_str),
-                    environment: r.get(7)?,
-                    id: r.get(8)?,
+                    environment: r.get(8)?,
                 })
             },
         )
@@ -114,7 +113,7 @@ impl ConnectionRepository for SqliteRepository {
         let n = conn
             .execute(
                 "UPDATE connections SET host=?1, port=?2, username=?3, password=?4,
-                 database=?5, tls=?6, environment=?7, uuid=?8 WHERE name=?9",
+                 database=?5, tls=?6, environment=?7 WHERE name=?8",
                 rusqlite::params![
                     connection.host,
                     connection.port as i64,
@@ -123,7 +122,6 @@ impl ConnectionRepository for SqliteRepository {
                     connection.database,
                     connection.tls.to_string(),
                     connection.environment.as_deref(),
-                    connection.id.as_deref(),
                     connection.name,
                 ],
             )
@@ -132,12 +130,6 @@ impl ConnectionRepository for SqliteRepository {
             return Err(DomainError::NotFound(format!("connection '{}' not found", connection.name)));
         }
         Ok(())
-    }
-
-    fn find_row_id(&self, name: &str) -> Result<i64, DomainError> {
-        let conn = self.conn.lock().unwrap();
-        SqliteRepository::connection_id_for(&conn, name)
-            .ok_or_else(|| DomainError::NotFound(format!("connection '{}' not found", name)))
     }
 
     fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
