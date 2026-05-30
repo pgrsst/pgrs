@@ -47,6 +47,29 @@ impl QueryCompletionService {
             .collect()
     }
 
+    fn qualified_column_completions(
+        &self,
+        table_refs: &[String],
+        alias_map: &AliasMap,
+        prefix: &str,
+    ) -> Vec<Completion> {
+        let mut results = Vec::new();
+        for table in table_refs {
+            let aliases = alias_map.aliases_for_table(table);
+            for col in self.schema.columns_for(table) {
+                if !col.to_uppercase().starts_with(&prefix.to_uppercase()) {
+                    continue;
+                }
+                results.push(Completion { value: col.clone(), kind: CompletionKind::Column });
+                results.push(Completion { value: format!("{table}.{col}"), kind: CompletionKind::Column });
+                for alias in &aliases {
+                    results.push(Completion { value: format!("{alias}.{col}"), kind: CompletionKind::Column });
+                }
+            }
+        }
+        results
+    }
+
     fn keyword_completions(&self, prefix: &str) -> Vec<Completion> {
         SQL_KEYWORDS
             .iter()
@@ -136,10 +159,10 @@ impl QueryCompletionService {
                     if all_tables.is_empty() {
                         self.keyword_completions("")
                     } else {
-                        self.column_completions(&all_tables, "")
+                        self.qualified_column_completions(&all_tables, alias_map, "")
                     }
                 } else {
-                    self.column_completions(&table_refs, "")
+                    self.qualified_column_completions(&table_refs, alias_map, "")
                 }
             }
             _ => self.keyword_completions(""),
@@ -308,6 +331,45 @@ mod tests {
         assert!(names.contains(&"id"));
         assert!(names.contains(&"email"));
         assert!(!names.contains(&"status"), "orders column should not appear");
+    }
+
+    #[test]
+    fn qualified_completions_bare_table_and_alias_variants() {
+        let svc = service_with(&["users"], &[("users", &["id", "email"])]);
+        // alias_map from "SELECT  FROM users u" knows u → users
+        let input = "SELECT  FROM users u";
+        let results = svc.completions(input, 7);
+        let values: Vec<&str> = results.iter().map(|c| c.value.as_str()).collect();
+        assert!(values.contains(&"id"),       "bare column id expected");
+        assert!(values.contains(&"users.id"), "table-qualified users.id expected");
+        assert!(values.contains(&"u.id"),     "alias-qualified u.id expected");
+        assert!(values.contains(&"email"),       "bare column email expected");
+        assert!(values.contains(&"users.email"), "table-qualified users.email expected");
+        assert!(values.contains(&"u.email"),     "alias-qualified u.email expected");
+    }
+
+    #[test]
+    fn qualified_completions_no_alias_shows_bare_and_table() {
+        let svc = service_with(&["users"], &[("users", &["id"])]);
+        let input = "SELECT  FROM users";
+        let results = svc.completions(input, 7);
+        let values: Vec<&str> = results.iter().map(|c| c.value.as_str()).collect();
+        assert!(values.contains(&"id"),       "bare column expected");
+        assert!(values.contains(&"users.id"), "table-qualified expected");
+        assert!(!values.iter().any(|v| v.starts_with("users.") && v.contains(".id") && v.len() > "users.id".len()),
+            "no spurious qualified names expected");
+    }
+
+    #[test]
+    fn qualified_completions_dot_path_unchanged() {
+        // When user already typed "users.", should still return bare column names only (span replaces suffix)
+        let svc = service_with(&["users"], &[("users", &["id", "email"])]);
+        let input = "SELECT users. FROM users";
+        let results = svc.completions(input, 13);
+        let values: Vec<&str> = results.iter().map(|c| c.value.as_str()).collect();
+        assert!(values.contains(&"id"),    "bare id expected after users.");
+        assert!(values.contains(&"email"), "bare email expected after users.");
+        assert!(!values.iter().any(|v| v.starts_with("users.")), "no re-qualified users.id expected");
     }
 
     #[test]

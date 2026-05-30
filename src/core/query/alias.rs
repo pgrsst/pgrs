@@ -26,6 +26,15 @@ impl AliasMap {
     pub fn real_tables(&self) -> impl Iterator<Item = &str> {
         self.map.values().filter_map(|v| v.as_deref())
     }
+
+    pub fn aliases_for_table(&self, table: &str) -> Vec<&str> {
+        self.map
+            .iter()
+            .filter_map(|(alias, val)| {
+                if val.as_deref() == Some(table) { Some(alias.as_str()) } else { None }
+            })
+            .collect()
+    }
 }
 
 pub struct JoinContext {
@@ -362,6 +371,34 @@ mod tests {
         ).unwrap();
         assert_eq!(ctx.right_table, "orders");
         assert!(ctx.left_tables.contains(&"users".to_string()));
+    }
+
+    #[test]
+    fn aliases_for_table_single_alias() {
+        let map = build_alias_map("SELECT * FROM users u");
+        let mut aliases = map.aliases_for_table("users");
+        aliases.sort();
+        assert_eq!(aliases, vec!["u"]);
+    }
+
+    #[test]
+    fn aliases_for_table_multiple_aliases() {
+        let map = build_alias_map("SELECT u.id, u2.id FROM users u JOIN users u2 ON u.id != u2.id");
+        let mut aliases = map.aliases_for_table("users");
+        aliases.sort();
+        assert_eq!(aliases, vec!["u", "u2"]);
+    }
+
+    #[test]
+    fn aliases_for_table_no_alias_returns_empty() {
+        let map = build_alias_map("SELECT * FROM users");
+        assert!(map.aliases_for_table("users").is_empty());
+    }
+
+    #[test]
+    fn aliases_for_table_unknown_table_returns_empty() {
+        let map = build_alias_map("SELECT * FROM users u");
+        assert!(map.aliases_for_table("orders").is_empty());
     }
 
     #[test]
