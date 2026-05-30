@@ -171,7 +171,7 @@ impl QueryCompletionService {
             "WHERE" | "SET" | "BY" => {
                 let table_refs = self.extract_table_refs(upper_query, alias_map);
                 if table_refs.is_empty() {
-                    let all_tables: Vec<String> = self.schema.tables().iter().cloned().collect();
+                    let all_tables: Vec<String> = self.schema.tables().to_vec();
                     if all_tables.is_empty() {
                         self.keyword_completions("")
                     } else {
@@ -215,7 +215,7 @@ impl QueryCompletionService {
                 upper.starts_with(&prefix_upper)
                     || (!prefix_upper.is_empty()
                         && c.value.contains('.')
-                        && upper.split('.').next_back().map_or(false, |p| p.starts_with(&prefix_upper)))
+                        && upper.split('.').next_back().is_some_and(|p| p.starts_with(&prefix_upper)))
             })
             .collect();
 

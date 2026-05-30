@@ -53,11 +53,10 @@ fn last_ident(name: &sqlparser::ast::ObjectName) -> Option<String> {
 
 fn collect_factor_alias(factor: &TableFactor, map: &mut HashMap<String, Option<String>>) {
     match factor {
-        TableFactor::Table { name, alias, .. } => {
-            if let Some(alias) = alias {
-                map.insert(alias.name.value.to_lowercase(), last_ident(name));
-            }
+        TableFactor::Table { name, alias: Some(alias), .. } => {
+            map.insert(alias.name.value.to_lowercase(), last_ident(name));
         }
+        TableFactor::Table { .. } => {}
         TableFactor::Derived { alias, subquery, .. } => {
             if let Some(alias) = alias {
                 map.insert(alias.name.value.to_lowercase(), None);
@@ -174,11 +173,10 @@ pub fn extract_referenced_tables(sql: &str) -> Vec<String> {
             Statement::Query(q) => collect_tables_from_query(&q, &mut tables),
             Statement::Update(u) => collect_tables_from_twj(&u.table, &mut tables),
             Statement::Insert(i) => {
-                if let TableObject::TableName(name) = i.table {
-                    if let Some(n) = last_ident(&name) {
+                if let TableObject::TableName(name) = i.table
+                    && let Some(n) = last_ident(&name) {
                         tables.push(n);
                     }
-                }
             }
             Statement::Delete(d) => {
                 let twjs = match d.from {

@@ -57,14 +57,13 @@ pub(super) fn is_ddl(query: &str) -> bool {
 }
 
 fn query_contains_dml(q: &Query) -> bool {
-    if let Some(with) = &q.with {
-        if with
+    if let Some(with) = &q.with
+        && with
             .cte_tables
             .iter()
             .any(|cte| query_contains_dml(&cte.query))
-        {
-            return true;
-        }
+    {
+        return true;
     }
     matches!(
         q.body.as_ref(),
