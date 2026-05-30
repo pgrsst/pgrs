@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use reedline::{
     ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
@@ -91,10 +92,14 @@ pub(super) fn repl_help_text() -> String {
     )
 }
 
-pub(super) fn build_reedline(schema: SchemaService) -> Reedline {
+pub(super) fn build_reedline(
+    schema: SchemaService,
+    table_freq: HashMap<String, u64>,
+    column_freq: HashMap<String, u64>,
+) -> Reedline {
     let highlighter = SqlHighlighter::new(schema.clone());
-    let hinter = SqlHinter::new(schema.clone());
-    let completer = SqlCompleter::new(schema);
+    let hinter = SqlHinter::new(schema.clone(), table_freq.clone(), column_freq.clone());
+    let completer = SqlCompleter::new(schema, table_freq, column_freq);
 
     let menu = ColumnarMenu::default().with_name("completion_menu");
 

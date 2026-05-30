@@ -6,6 +6,7 @@ mod describe;
 mod sql_utils;
 mod ui;
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -18,6 +19,28 @@ use crate::core::services::schema_cache::service::SchemaCacheSvc;
 
 use command_handler::{CommandHandler, SqlOptions};
 use describe::describe_table;
+
+fn freq_for_schema(
+    analytics: Option<&dyn AnalyticsSvc>,
+    conn_name: &str,
+    schema: &SchemaService,
+) -> (HashMap<String, u64>, HashMap<String, u64>) {
+    let Some(a) = analytics else {
+        return (HashMap::new(), HashMap::new());
+    };
+    let table_freq = a.get_frequent_tables(conn_name)
+        .into_iter()
+        .map(|e| (e.name, e.count))
+        .collect();
+    let column_freq = schema.tables().iter()
+        .flat_map(|t| a.get_frequent_columns(conn_name, t))
+        .fold(HashMap::new(), |mut m, e| {
+            let c = m.entry(e.name).or_insert(0u64);
+            *c = (*c).max(e.count);
+            m
+        });
+    (table_freq, column_freq)
+}
 
 pub struct Repl {
     conn: Box<dyn ReplPort>,
@@ -52,7 +75,14 @@ impl Repl {
     pub fn run(self) -> Result<(), String> {
         let mut schema = SchemaService::new(self.schema_cache);
         schema.load(self.conn.as_ref(), &self.connection_name)?;
-        let mut rl = ui::build_reedline(schema.clone());
+        let analytics_for_rl = self.analytics.clone();
+        let conn_name_for_rl = self.connection_name.clone();
+        let (table_freq, column_freq) = freq_for_schema(
+            self.analytics.as_deref(),
+            &self.connection_name,
+            &schema,
+        );
+        let mut rl = ui::build_reedline(schema.clone(), table_freq, column_freq);
 
         let prompt = ui::PgrsPrompt {
             db_name: self.db_name.clone(),
@@ -89,7 +119,10 @@ impl Repl {
                             self.conn.as_ref(),
                             &self.connection_name,
                             &mut schema,
-                            &mut |s| { rl = ui::build_reedline(s); },
+                            &mut |s: SchemaService| {
+                                let (tf, cf) = freq_for_schema(analytics_for_rl.as_deref(), &conn_name_for_rl, &s);
+                                rl = ui::build_reedline(s, tf, cf);
+                            },
                             &mut stdout,
                         ),
                         "\\history" => {
@@ -144,7 +177,10 @@ impl Repl {
                                         analytics: self.analytics.as_deref(),
                                     },
                                     &mut schema,
-                                    &mut |s| { rl = ui::build_reedline(s); },
+                                    &mut |s: SchemaService| {
+                                        let (tf, cf) = freq_for_schema(analytics_for_rl.as_deref(), &conn_name_for_rl, &s);
+                                        rl = ui::build_reedline(s, tf, cf);
+                                    },
                                     &mut stdout,
                                 );
                             }

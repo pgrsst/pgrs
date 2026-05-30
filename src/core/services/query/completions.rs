@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::core::services::schema::service::SchemaService;
 
 use super::command_completion::CommandCompletionService;
@@ -22,10 +24,14 @@ pub struct CompletionService {
 }
 
 impl CompletionService {
-    pub fn new(schema: SchemaService) -> Self {
+    pub fn new(
+        schema: SchemaService,
+        table_freq: HashMap<String, u64>,
+        column_freq: HashMap<String, u64>,
+    ) -> Self {
         Self {
             command: CommandCompletionService::new(schema.clone()),
-            query: QueryCompletionService::new(schema),
+            query: QueryCompletionService::new(schema, table_freq, column_freq),
         }
     }
 

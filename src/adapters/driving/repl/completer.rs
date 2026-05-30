@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Highlighter, Hinter, History, Span, StyledText, Suggestion};
 
@@ -69,8 +71,12 @@ pub struct SqlCompleter {
 }
 
 impl SqlCompleter {
-    pub fn new(schema: SchemaService) -> Self {
-        Self { service: CompletionService::new(schema) }
+    pub fn new(
+        schema: SchemaService,
+        table_freq: HashMap<String, u64>,
+        column_freq: HashMap<String, u64>,
+    ) -> Self {
+        Self { service: CompletionService::new(schema, table_freq, column_freq) }
     }
 
     pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
@@ -149,9 +155,13 @@ pub struct SqlHinter {
 }
 
 impl SqlHinter {
-    pub fn new(schema: SchemaService) -> Self {
+    pub fn new(
+        schema: SchemaService,
+        table_freq: HashMap<String, u64>,
+        column_freq: HashMap<String, u64>,
+    ) -> Self {
         Self {
-            completer: SqlCompleter::new(schema),
+            completer: SqlCompleter::new(schema, table_freq, column_freq),
             current_hint: String::new(),
             style: Style::new().fg(Color::DarkGray),
         }
@@ -254,7 +264,7 @@ mod tests {
     #[test]
     fn suggests_keywords_at_start_of_input() {
         let schema = schema_with(&[], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SEL", 3);
         assert!(
             results.iter().any(|(r, _)| r == "SELECT"),
@@ -265,7 +275,7 @@ mod tests {
     #[test]
     fn suggests_table_names_after_from() {
         let schema = schema_with(&["users", "orders"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT * FROM ", 13);
         assert!(results.iter().any(|(r, _)| r == "users"));
         assert!(results.iter().any(|(r, _)| r == "orders"));
@@ -274,7 +284,7 @@ mod tests {
     #[test]
     fn suggests_table_names_after_join() {
         let schema = schema_with(&["users", "orders"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT * FROM users JOIN ", 24);
         assert!(results.iter().any(|(r, _)| r == "orders"));
     }
@@ -285,7 +295,7 @@ mod tests {
             &["users"],
             &[("users", &["id", "email", "created_at"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT  FROM users", 7);
         assert!(results.iter().any(|(r, _)| r == "id"), "expected id in {:?}", results.iter().map(|(r, _)| r).collect::<Vec<_>>());
         assert!(results.iter().any(|(r, _)| r == "email"));
@@ -294,7 +304,7 @@ mod tests {
     #[test]
     fn filters_by_current_word_prefix() {
         let schema = schema_with(&["users", "user_sessions"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT * FROM user", 18);
         assert!(results.iter().any(|(r, _)| r == "users"));
         assert!(results.iter().any(|(r, _)| r == "user_sessions"));
@@ -304,7 +314,7 @@ mod tests {
     #[test]
     fn no_duplicate_suggestions() {
         let schema = schema_with(&["users"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT * FROM ", 14);
         let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
         let unique: std::collections::HashSet<_> = names.iter().collect();
@@ -317,7 +327,7 @@ mod tests {
             &["users", "orders"],
             &[("users", &["id", "email"]), ("orders", &["id", "status"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT  FROM users JOIN orders ON users.id = orders.id", 7);
         let id_count = results.iter().filter(|(r, _)| r == "id").count();
         assert_eq!(id_count, 1, "id should appear once, not once per joined table");
@@ -326,7 +336,7 @@ mod tests {
     #[test]
     fn schema_qualified_from_suggests_columns() {
         let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT  FROM public.users";
         let results = c.complete_input(input, 7);
         assert!(
@@ -340,7 +350,7 @@ mod tests {
     #[test]
     fn tags_keywords_with_keyword_kind() {
         let schema = schema_with(&[], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SEL", 3);
         assert!(
             results.iter().any(|(r, k)| r == "SELECT" && matches!(k, CompletionKind::Keyword)),
@@ -351,7 +361,7 @@ mod tests {
     #[test]
     fn tags_tables_with_table_kind() {
         let schema = schema_with(&["users", "orders"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT * FROM ", 13);
         assert!(
             results.iter().any(|(r, k)| r == "users" && matches!(k, CompletionKind::Table)),
@@ -365,7 +375,7 @@ mod tests {
             &["users"],
             &[("users", &["id", "email"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT  FROM users", 7);
         assert!(
             results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
@@ -470,7 +480,7 @@ mod tests {
             &["users"],
             &[("users", &["id", "email", "created_at"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT users.";
         let results = c.complete_input(input, input.len());
         assert!(
@@ -487,7 +497,7 @@ mod tests {
             &["users"],
             &[("users", &["id", "email", "created_at"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT users.em";
         let results = c.complete_input(input, input.len());
         assert!(results.iter().any(|(r, _)| r == "email"), "expected email");
@@ -500,7 +510,7 @@ mod tests {
             &["users"],
             &[("users", &["id", "email"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT public.users.";
         let results = c.complete_input(input, input.len());
         assert!(
@@ -547,7 +557,7 @@ mod tests {
     fn completer_trait_complete_returns_suggestions() {
         use reedline::Completer;
         let schema = schema_with(&["users", "orders"], &[]);
-        let mut c = SqlCompleter::new(schema);
+        let mut c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let suggestions = c.complete("SELECT * FROM ", 13);
         assert!(suggestions.iter().any(|s| s.value == "users"));
         assert!(suggestions.iter().any(|s| s.value == "orders"));
@@ -557,7 +567,7 @@ mod tests {
     fn completer_trait_complete_includes_description_and_span() {
         use reedline::Completer;
         let schema = schema_with(&[], &[]);
-        let mut c = SqlCompleter::new(schema);
+        let mut c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let suggestions = c.complete("SEL", 3);
         let sel = suggestions.iter().find(|s| s.value == "SELECT").unwrap();
         assert_eq!(sel.description.as_deref(), Some("[keyword]"));
@@ -604,7 +614,7 @@ mod tests {
     #[test]
     fn qualified_dot_with_unknown_table_falls_back_to_all_columns() {
         let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT ghost.";
         let results = c.complete_input(input, input.len());
         assert!(results.iter().any(|(r, _)| r == "id"), "expected fallback column id");
@@ -612,24 +622,24 @@ mod tests {
     }
 
     #[test]
-    fn select_without_from_suggests_columns_from_all_tables() {
-        let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
-        let c = SqlCompleter::new(schema);
+    fn select_without_from_suggests_tables() {
+        let schema = schema_with(&["users", "orders"], &[("users", &["id", "email"])]);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT ", 7);
         assert!(
-            results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
-            "expected columns when schema has tables, got: {:?}", results
+            results.iter().any(|(r, k)| r == "users" && matches!(k, CompletionKind::Table)),
+            "expected tables when no FROM clause, got: {:?}", results
         );
         assert!(
-            !results.iter().any(|(_, k)| matches!(k, CompletionKind::Keyword)),
-            "keywords should not appear when schema has tables"
+            !results.iter().any(|(_, k)| matches!(k, CompletionKind::Column)),
+            "columns should not appear without FROM"
         );
     }
 
     #[test]
     fn alias_simple() {
         let schema = schema_with(&["users"], &[("users", &["id", "email", "created_at"])]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT u. FROM users u", 9);
         assert!(
             results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
@@ -642,7 +652,7 @@ mod tests {
     #[test]
     fn alias_with_as() {
         let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT u. FROM users AS u", 9);
         assert!(results.iter().any(|(r, _)| r == "id"), "expected id via AS alias");
         assert!(results.iter().any(|(r, _)| r == "email"));
@@ -651,7 +661,7 @@ mod tests {
     #[test]
     fn alias_prefix_filter() {
         let schema = schema_with(&["users"], &[("users", &["id", "email", "created_at"])]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT u.em FROM users u", 11);
         assert!(results.iter().any(|(r, _)| r == "email"), "expected email");
         assert!(!results.iter().any(|(r, _)| r == "id"), "id should not appear");
@@ -664,7 +674,7 @@ mod tests {
             &["users"],
             &[("users", &["id", "email"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT u.id FROM users u WHERE ";
         let results = c.complete_input(input, input.len());
         assert!(
@@ -684,7 +694,7 @@ mod tests {
             &["users", "orders"],
             &[("users", &["id", "email"]), ("orders", &["id", "user_id"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT o. FROM users u JOIN orders o ON u.id = o.user_id", 9);
         assert!(
             results.iter().any(|(r, _)| r == "user_id"),
@@ -703,7 +713,7 @@ mod tests {
                 ("orders", &["id", "user_id"]),
             ],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT * FROM users JOIN orders ON ";
         let results = c.complete_input(input, input.len());
         let id_pos = results.iter().position(|(r, _)| r == "id");
@@ -725,7 +735,7 @@ mod tests {
                 ("orders", &["id", "user_id"]),
             ],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT * FROM users u JOIN orders o ON ";
         let results = c.complete_input(input, input.len());
         assert!(results.iter().any(|(r, _)| r == "user_id"), "expected user_id from orders");
@@ -738,7 +748,7 @@ mod tests {
             &["users"],
             &[("users", &["id", "email"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let input = "SELECT id FROM users ON ";
         let results = c.complete_input(input, input.len());
         assert!(results.iter().any(|(r, _)| r == "id" || r == "email"),
@@ -801,7 +811,7 @@ mod tests {
     #[test]
     fn hinter_shows_suffix_for_partial_table_match() {
         let schema = schema_with(&["transaction", "transaction_detail"], &[]);
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         let hint = h.handle("SELECT * FROM tran", 18, &history, false, "");
         assert_eq!(hint, "saction");
@@ -810,7 +820,7 @@ mod tests {
     #[test]
     fn hinter_empty_when_no_candidates() {
         let schema = schema_with(&["users"], &[]);
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         let hint = h.handle("SELECT * FROM xyz", 17, &history, false, "");
         assert_eq!(hint, "");
@@ -819,7 +829,7 @@ mod tests {
     #[test]
     fn hinter_empty_when_word_already_equals_prefix() {
         let schema = schema_with(&["users"], &[]);
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         let input = "SELECT * FROM users";
         let hint = h.handle(input, input.len(), &history, false, "");
@@ -829,7 +839,7 @@ mod tests {
     #[test]
     fn hinter_complete_hint_returns_stored_suffix() {
         let schema = schema_with(&["transaction", "transaction_detail"], &[]);
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         h.handle("SELECT * FROM tran", 18, &history, false, "");
         assert_eq!(h.complete_hint(), "saction");
@@ -838,7 +848,7 @@ mod tests {
     #[test]
     fn hinter_complete_hint_empty_before_first_handle() {
         let schema = schema_with(&["users"], &[]);
-        let h = SqlHinter::new(schema);
+        let h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         assert_eq!(h.complete_hint(), "");
     }
 
@@ -848,7 +858,7 @@ mod tests {
             &["users"],
             &[("users", &["email", "email_verified"])],
         );
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         let input = "SELECT users.em";
         let hint = h.handle(input, input.len(), &history, false, "");
@@ -858,7 +868,7 @@ mod tests {
     #[test]
     fn hinter_clears_after_word_grows_past_prefix() {
         let schema = schema_with(&["transaction"], &[]);
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         let hint1 = h.handle("FROM transactio", 15, &history, false, "");
         assert_eq!(hint1, "n");
@@ -869,7 +879,7 @@ mod tests {
     #[test]
     fn hinter_no_hint_for_keyword_prefix() {
         let schema = schema_with(&[], &[]);
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         let hint = h.handle("sel", 3, &history, false, "");
         assert_eq!(hint, "", "keyword prefix should produce no ghost text");
@@ -878,7 +888,7 @@ mod tests {
     #[test]
     fn tables_sorted_by_length_then_alpha() {
         let schema = schema_with(&["users", "user_role", "user_store"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT * FROM use", 17);
         let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
         let pos_users = names.iter().position(|&n| n == "users").unwrap();
@@ -894,7 +904,7 @@ mod tests {
             &["orders"],
             &[("orders", &["id", "status", "created_at"])],
         );
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("SELECT  FROM orders", 7);
         let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
         let pos_id         = names.iter().position(|&n| n == "id").unwrap();
@@ -907,7 +917,7 @@ mod tests {
     #[test]
     fn hinter_shows_common_prefix_for_ambiguous_tables() {
         let schema = schema_with(&["users", "user_role", "user_store"], &[]);
-        let mut h = SqlHinter::new(schema);
+        let mut h = SqlHinter::new(schema, HashMap::new(), HashMap::new());
         let history = empty_history();
         let hint = h.handle("SELECT * FROM use", 17, &history, false, "");
         assert_eq!(hint, "r", "hint should be the common prefix suffix 'r'");
@@ -916,7 +926,7 @@ mod tests {
     #[test]
     fn completes_table_name_after_backslash_d() {
         let schema = schema_with(&["users", "user_roles", "orders"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("\\d use", 6);
         let names: Vec<_> = results.iter().map(|(s, _)| s.as_str()).collect();
         assert!(names.contains(&"users"), "got: {names:?}");
@@ -927,7 +937,7 @@ mod tests {
     #[test]
     fn completes_table_name_after_backslash_d_plus() {
         let schema = schema_with(&["users", "orders"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("\\d+ ord", 7);
         let names: Vec<_> = results.iter().map(|(s, _)| s.as_str()).collect();
         assert!(names.contains(&"orders"), "got: {names:?}");
@@ -937,7 +947,7 @@ mod tests {
     #[test]
     fn completions_for_backslash_d_are_table_kind() {
         let schema = schema_with(&["users"], &[]);
-        let c = SqlCompleter::new(schema);
+        let c = SqlCompleter::new(schema, HashMap::new(), HashMap::new());
         let results = c.complete_input("\\d ", 3);
         let kinds: Vec<_> = results.iter().map(|(_, k)| k).collect();
         assert!(kinds.iter().all(|k| matches!(k, CompletionKind::Table)), "got: {kinds:?}");

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::core::query::alias::{build_alias_map, extract_join_context, AliasMap, SQL_KEYWORDS};
 use crate::core::services::schema::service::SchemaService;
 
@@ -8,11 +10,17 @@ const COLUMN_TRIGGERS: &[&str] = &["SELECT", "WHERE", "ON", "SET", "BY"];
 
 pub struct QueryCompletionService {
     schema: SchemaService,
+    table_freq: HashMap<String, u64>,
+    column_freq: HashMap<String, u64>,
 }
 
 impl QueryCompletionService {
-    pub fn new(schema: SchemaService) -> Self {
-        Self { schema }
+    pub fn new(
+        schema: SchemaService,
+        table_freq: HashMap<String, u64>,
+        column_freq: HashMap<String, u64>,
+    ) -> Self {
+        Self { schema, table_freq, column_freq }
     }
 
     pub fn completions(&self, query: &str, cursor: usize) -> Vec<Completion> {
@@ -152,7 +160,15 @@ impl QueryCompletionService {
                     }
                 }
             }
-            "SELECT" | "WHERE" | "SET" | "BY" => {
+            "SELECT" => {
+                let table_refs = self.extract_table_refs(upper_query, alias_map);
+                if table_refs.is_empty() {
+                    self.table_completions("")
+                } else {
+                    self.qualified_column_completions(&table_refs, alias_map, "")
+                }
+            }
+            "WHERE" | "SET" | "BY" => {
                 let table_refs = self.extract_table_refs(upper_query, alias_map);
                 if table_refs.is_empty() {
                     let all_tables: Vec<String> = self.schema.tables().iter().cloned().collect();
@@ -194,11 +210,34 @@ impl QueryCompletionService {
 
         let mut results: Vec<Completion> = candidates
             .into_iter()
-            .filter(|c| c.value.to_uppercase().starts_with(&prefix_upper))
+            .filter(|c| {
+                let upper = c.value.to_uppercase();
+                upper.starts_with(&prefix_upper)
+                    || (!prefix_upper.is_empty()
+                        && c.value.contains('.')
+                        && upper.split('.').next_back().map_or(false, |p| p.starts_with(&prefix_upper)))
+            })
             .collect();
 
         results.sort_by(|a, b| match (&a.kind, &b.kind) {
             (CompletionKind::Keyword, CompletionKind::Keyword) => a.value.cmp(&b.value),
+            (CompletionKind::Table, CompletionKind::Table) if !self.table_freq.is_empty() => {
+                let ca = self.table_freq.get(&a.value).copied().unwrap_or(0);
+                let cb = self.table_freq.get(&b.value).copied().unwrap_or(0);
+                cb.cmp(&ca).then_with(|| a.value.len().cmp(&b.value.len()).then_with(|| a.value.cmp(&b.value)))
+            }
+            (CompletionKind::Column, CompletionKind::Column)
+                if !self.column_freq.is_empty() || !self.table_freq.is_empty() =>
+            {
+                let ta = a.value.find('.').map(|i| self.table_freq.get(&a.value[..i]).copied().unwrap_or(0)).unwrap_or(0);
+                let tb = b.value.find('.').map(|i| self.table_freq.get(&b.value[..i]).copied().unwrap_or(0)).unwrap_or(0);
+                let ca = self.column_freq.get(a.value.split('.').next_back().unwrap_or(&a.value)).copied().unwrap_or(0);
+                let cb = self.column_freq.get(b.value.split('.').next_back().unwrap_or(&b.value)).copied().unwrap_or(0);
+                tb.cmp(&ta)
+                    .then_with(|| cb.cmp(&ca))
+                    .then_with(|| a.value.len().cmp(&b.value.len()))
+                    .then_with(|| a.value.cmp(&b.value))
+            }
             _ => a.value.len().cmp(&b.value.len()).then_with(|| a.value.cmp(&b.value)),
         });
         results.dedup_by(|a, b| a.value == b.value && a.kind == b.kind);
@@ -282,7 +321,7 @@ mod tests {
     }
 
     fn service_with(tables: &[&str], columns: &[(&str, &[&str])]) -> QueryCompletionService {
-        QueryCompletionService::new(schema_with(tables, columns))
+        QueryCompletionService::new(schema_with(tables, columns), HashMap::new(), HashMap::new())
     }
 
     #[test]
@@ -382,13 +421,13 @@ mod tests {
     }
 
     #[test]
-    fn completions_suggests_columns_after_select_without_from() {
-        let svc = service_with(&["users"], &[("users", &["id", "email"])]);
+    fn completions_suggests_tables_after_select_without_from() {
+        let svc = service_with(&["users", "orders"], &[("users", &["id", "email"])]);
         let input = "SELECT ";
         let results = svc.completions(input, input.len());
-        assert!(results.iter().any(|c| c.value == "id"), "expected id in {:?}", results.iter().map(|c| &c.value).collect::<Vec<_>>());
-        assert!(results.iter().any(|c| c.value == "email"));
-        assert!(!results.iter().any(|c| matches!(c.kind, CompletionKind::Keyword)), "keywords should not appear when schema has tables");
+        assert!(results.iter().any(|c| c.value == "users" && matches!(c.kind, CompletionKind::Table)), "expected users table in {:?}", results.iter().map(|c| &c.value).collect::<Vec<_>>());
+        assert!(results.iter().any(|c| c.value == "orders" && matches!(c.kind, CompletionKind::Table)));
+        assert!(!results.iter().any(|c| matches!(c.kind, CompletionKind::Column)), "columns should not appear without FROM");
     }
 
     #[test]
