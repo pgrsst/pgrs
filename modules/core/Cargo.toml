@@ -1,0 +1,25 @@
+[package]
+name = "pgrs-core"
+version = "0.6.0"
+edition = "2024"
+
+[lib]
+name = "pgrs_core"
+path = "src/lib.rs"
+
+[features]
+# Exposes in-memory constructors (e.g. ConnectionApi::in_memory) for downstream
+# test suites such as pgrs-cli's. Off by default so release builds stay lean.
+test-support = []
+
+[dependencies]
+dirs = "6"
+postgres = "0.19"
+rusqlite = { version = "0.31", features = ["bundled"] }
+postgres-native-tls = "0.5.3"
+native-tls = { version = "0.2.18", features = ["vendored"] }
+chrono = { version = "0.4", features = ["clock"] }
+sqlparser = "0.62"
+
+[dev-dependencies]
+tempfile = "3"

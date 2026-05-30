@@ -6,28 +6,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `pgrs` is a CLI tool for managing named PostgreSQL connection configurations. All state is stored in `~/.pgrs/pgrs.db` (SQLite). The tool also supports launching an interactive SQL REPL (`shell`) and handing off to `psql` (`connect`).
 
+It is a **Cargo workspace** with two crates:
+
+- **`pgrs-core`** (`modules/core`, lib name `pgrs_core`) — all logic: domain, ports, services, driven adapters (SQLite, Postgres). Exposes a thin public **API facade** (`api/`); everything else is crate-private.
+- **`pgrs-cli`** (`modules/cli`) — the UI: arg parsing, the reedline REPL, shell completions. Produces the `pgrs` binary. Depends only on `pgrs_core`'s public API + re-exported value types — never on core internals (the boundary is compiler-enforced).
+
+Future `pgrs-desktop` / `pgrs-web` front-ends are intended to consume `pgrs-core` the same way.
+
 ## Commands
 
 ```bash
-# Build
+# Build whole workspace (produces the `pgrs` binary from pgrs-cli)
 cargo build
-
-# Build release binary
 cargo build --release
+cargo build -p pgrs-cli          # just the CLI crate + its deps
 
-# Check (fast compile check, no binary)
+# Check / lint / test the whole workspace
 cargo check
+cargo clippy --workspace
+cargo test --workspace
+cargo test -p pgrs-core          # core only
+cargo test <test_name>           # single test by name
 
-# Lint
-cargo clippy
-
-# Test all
-cargo test
-
-# Run a single test by name
-cargo test <test_name>
-
-# Run (debug)
+# Run (debug) — `cargo run` resolves to the only binary, pgrs-cli
 cargo run -- add <name> --host=<host> --username=<user> --password=<pass> --database=<db> [--port=<port>] [--tls=disable|require|verify-full]
 cargo run -- list
 cargo run -- edit <name> [--host=<host>] [--username=<user>] ...
@@ -41,80 +42,83 @@ cargo run -- completions <bash|zsh|fish>
 
 ## Architecture
 
-Hexagonal architecture (ports and adapters):
+Hexagonal architecture (ports and adapters), split across two crates. Dependency
+direction: **`pgrs-cli` → `pgrs_core::api` (facade) → services → port traits ← driven adapters.**
+The core never imports from the CLI; the CLI never reaches into core internals.
+
+### `pgrs-core` (`modules/core/src/`)
 
 ```
-src/
-  main.rs               — entry point, calls app::run()
-  app.rs                — wires SqliteRepository → services → CLI; intercepts "shell"/"test" before Cli dispatch
-  core/
-    domain/             — pure value types: Connection, DomainError, and analytics/access/schema domain types
-    enums/tls_mode.rs   — TlsMode enum (Disable | Require | VerifyFull)
-    ports/              — one trait file per repository/capability boundary
-      connection_repository.rs     — ConnectionRepository (add, list, delete, get_connection, update, rename)
-      db_connection.rs             — DbConnection (execute, list_tables, list_columns) + QueryResult
-      schema_port.rs               — SchemaPort (list_columns → HashMap<table, Vec<col>>)
-      repl_port.rs                 — ReplPort = DbConnection + SchemaPort (blanket impl)
-      query_history_repository.rs  — QueryHistoryRepository (save, list_recent)
-      table_access_repository.rs   — TableAccessRepository (save, list_frequent)
-      column_access_repository.rs  — ColumnAccessRepository (save, list_frequent_by_table)
-      schema_table_repository.rs   — SchemaTableRepository (upsert/load cached table names)
-      schema_column_repository.rs  — SchemaColumnRepository (upsert/load cached column names)
-    services/
-      connection/service.rs        — ConnectionService: add/edit/rename/delete/find, validation
-      schema/service.rs            — SchemaService: loads table+column metadata for REPL completion
-      analytics/service.rs         — AnalyticsService: records queries/table/column access
-      schema_cache/service.rs      — SchemaCacheService: persists/loads schema per connection
-      query_history/service.rs     — QueryHistoryService: wraps history repository
-      table_access/service.rs      — TableAccessService: wraps table access repository
-      column_access/service.rs     — ColumnAccessService: wraps column access repository
-      schema_table/service.rs      — SchemaTableService: wraps schema table repository
-      schema_column/service.rs     — SchemaColumnService: wraps schema column repository
-  adapters/
-    driven/
-      sqlite/                      — SqliteRepository split across sub-store modules:
-        mod.rs              — SqliteRepository struct, open/open_in_memory, migrations call
-        connection_store.rs — implements ConnectionRepository
-        query_history_store.rs, table_access_store.rs, column_access_store.rs — analytics repositories
-        schema_table_store.rs, schema_column_store.rs — schema cache repositories
-        migrations.rs       — SQL schema migrations (user_version pragma)
-      postgres_db.rs        — PostgresDb: implements DbConnection via postgres crate
-    driving/
-      cli.rs                — Cli: parses argv, dispatches to ConnectionService (no generics)
-      repl/                 — interactive SQL REPL (reedline-based)
-        mod.rs        — REPL loop, dispatches backslash commands, DDL auto-refresh
-        commands.rs   — backslash command dispatch (\dt, \d, \x, \export, \refresh, \q)
-        completer.rs  — SqlCompleter, SqlHighlighter, SqlHinter backed by SchemaService
-        executor.rs   — formats and prints QueryResult (normal and expanded \x mode)
-        csv.rs        — CSV export for \export
-        tokenizer.rs  — SqlToken enum + tokenize()
-        alias.rs      — AliasMap (alias→table), build_alias_map, extract_join_context
-        describe.rs   — \d <table>: fetches columns, indexes, FK, constraints via pg_catalog
-        sql_utils.rs  — is_ddl, is_mutation helpers
-        ui.rs         — builds reedline editor, PgrsPrompt
-      completions.rs / completions/ — shell completion scripts (bash, zsh, fish)
+lib.rs                  — Core::init(db_path) composition root + public re-exports.
+                          Owns Arc<SqliteRepository>; hands out API facades.
+api/                    — the ONLY surface pgrs-cli may use:
+  connection.rs         — ConnectionApi: add/list/delete/edit/rename/find/get
+  query.rs              — QueryApi: connect(&Connection), execute(&str) → QueryResult;
+                          impls SchemaPort by delegating to the live DB
+  schema.rs             — SchemaApi: load/refresh(&QueryApi, conn), tables(), columns_for()
+  completions.rs        — CompletionsApi: completions(query, cursor) → Vec<Completion>
+  analytics.rs          — AnalyticsApi: record_query(conn, sql, &SchemaApi) [extracts
+                          referenced tables/columns internally], history(), frequent_tables/columns()
+domain/                 — pure value types: Connection, DomainError, analytics/access/schema types
+enums/tls_mode.rs       — TlsMode (Disable | Require | VerifyFull)
+ports/                  — one trait per repository/capability boundary:
+  connection_repository.rs, db_connection.rs (DbConnection + QueryResult),
+  schema_port.rs (SchemaPort), repl_port.rs (ReplPort = DbConnection + SchemaPort),
+  query_history_repository.rs, table_access_repository.rs, column_access_repository.rs,
+  schema_table_repository.rs, schema_column_repository.rs
+services/               — connection, schema, analytics, schema_cache, query_history,
+                          table_access, column_access, schema_table, schema_column;
+                          query/ holds completions + command_completion + query_completion
+query/                  — tokenizer.rs (SqlToken + tokenize), alias.rs (AliasMap,
+                          build_alias_map, extract_join_context, extract_referenced_tables, SQL_KEYWORDS)
+adapters/driven/
+  sqlite/               — SqliteRepository across sub-stores (connection_store,
+                          query_history_store, table_access_store, column_access_store,
+                          schema_table_store, schema_column_store) + migrations.rs
+                          (open / open_in_memory[test-support] / user_version migrations)
+  postgres_db.rs        — PostgresDb: implements DbConnection via the postgres crate
 ```
 
-**Dependency direction:** `cli` / `repl` → services → port traits ← adapters. The core never imports from adapters.
+### `pgrs-cli` (`modules/cli/src/`)
 
-**`SqliteRepository` wiring:** Created once as `Arc<SqliteRepository>` in `app.rs` and cast to each port trait (`Arc<dyn ConnectionRepository>`, `Arc<dyn QueryHistoryRepository>`, etc.) as needed. All analytics and schema-cache state is backed by the same SQLite file via sub-store modules.
+```
+main.rs                 — entry point, calls app::run()
+app.rs                  — wiring: Core::init() → Cli / Repl; intercepts "shell"/"test"
+                          before Cli dispatch, builds QueryApi/SchemaApi/AnalyticsApi
+cli/
+  mod.rs                — Cli: parses argv, dispatches to handlers (takes a ConnectionApi)
+  connection_handler.rs — add/list/edit/rename/delete/connect via ConnectionApi
+  common_handler.rs     — help / version / completions
+  args.rs               — --key=value parsing, URL parsing, TLS-mode parsing
+repl/                   — interactive SQL REPL (reedline-based)
+  mod.rs                — REPL loop, dispatches backslash commands, DDL auto-refresh
+  command_handler.rs    — \d / \dt / \l / \history / \stats / SQL exec / \refresh
+  completer.rs          — SqlCompleter, SqlHighlighter, SqlHinter backed by CompletionsApi/SchemaApi
+  executor.rs           — formats and prints QueryResult (normal and expanded \x mode)
+  csv.rs                — CSV export for \export
+  describe.rs           — \d <table>: columns, indexes, FK, constraints via pg_catalog (uses QueryApi)
+  sql_utils.rs          — is_complete_statement, is_ddl, is_dml (sqlparser-based)
+  ui.rs                 — builds reedline editor, PgrsPrompt, validator, help text
+completions.rs /
+completions/            — shell completion scripts (bash, zsh, fish)
+```
 
-**`shell` command wiring:** `app.rs` intercepts `shell` before `Cli` dispatch and manually constructs all services (analytics, schema cache, etc.) before calling `repl::run`.
+**Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>` and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `QueryApi::connect(&conn)` + `Repl::new(...)`. All analytics and schema-cache state is backed by the same SQLite file.
 
-**CLI argument parsing:** No external arg-parsing library. Args are matched with `--key=value` prefix stripping via `optional_option` / `required_option` in `cli.rs`. Port defaults to 5432.
+**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, SqlToken, tokenize, SQL_KEYWORDS, DEFAULT_PORT, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
+
+**CLI argument parsing:** No external arg-parsing library. Args are matched with `--key=value` prefix stripping via `optional_option` in `cli/args.rs`. Port defaults to 5432 (`DEFAULT_PORT`).
 
 **`shell` vs `connect`:** `shell` opens the built-in pgrs REPL (reedline, tab-completion, `\x` expanded display). `connect` execs `psql` directly, replacing the process.
 
-**Schema refresh:** After DDL queries the REPL auto-refreshes `SchemaService` (via `SchemaCacheService`). Manual refresh via `\refresh`.
+**Schema refresh:** After DDL queries the REPL auto-refreshes `SchemaApi` (cache invalidate + reload). Manual refresh via `\refresh`. `sql_utils::is_ddl` decides when.
 
-**Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers via `sql_utils.rs`).
+**Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers via `sql_utils::is_complete_statement`).
 
-**Tab-completion pipeline:** `tokenizer.rs` tokenizes the current line → `alias.rs` builds an `AliasMap` and `JoinContext` → `completer.rs` suggests keywords, tables, or columns based on the preceding SQL keyword (`FROM`/`JOIN` → tables; `SELECT`/`WHERE`/`ON` → columns).
+**Tab-completion pipeline:** `tokenizer` (core) tokenizes the line → `alias` (core) builds an `AliasMap` and join context → `CompletionsApi` suggests keywords, tables, or columns based on the preceding SQL keyword (`FROM`/`JOIN` → tables; `SELECT`/`WHERE`/`ON` → columns). The CLI's `completer.rs` only adapts these into reedline `Suggestion`s and styling.
 
-**Testing patterns:** Service unit tests use `StubConnectionRepository` from `ports/connection_repository.rs` (in-memory, `#[cfg(test)]`). Adapter tests use `SqliteRepository::open_in_memory()`.
+**Testing patterns:** Core unit tests use `StubConnectionRepository` and `SqliteRepository::open_in_memory()`. Downstream (pgrs-cli) tests rely on the `test-support` feature of `pgrs-core` (a dev-dependency), which exposes in-memory constructors: `Core::in_memory()`, `ConnectionApi::in_memory()/in_memory_with(&[..])`, `QueryApi::from_repl(Box<dyn ReplPort>)`, and `SchemaApi::for_test(HashMap<table, Vec<col>>)`.
 
 ## Known Limitations
-
-- **`\export` does not block CTE-wrapped DML.** Queries starting with `WITH` that wrap `INSERT`/`UPDATE`/`DELETE` are not detected as mutations and will be re-executed. Matches the same gap in `is_ddl` detection.
 
 - **Tab-completion schema-qualified names.** Schema-qualified names (`public.users`) partially disrupt alias extraction — the dot emits `Other('.')` which breaks the state machine for that table.

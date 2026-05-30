@@ -26,8 +26,8 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   error "Only Linux is supported."
 fi
 
-VERSION=$(cargo metadata --manifest-path "${SCRIPT_DIR}/Cargo.toml" --no-deps --format-version 1 \
-  | sed -E 's/.*"version":"([^"]+)".*/\1/') || true
+VERSION=$(cargo metadata --manifest-path "${SCRIPT_DIR}/modules/cli/Cargo.toml" --no-deps --format-version 1 \
+  | sed -E 's/.*"name":"pgrs-cli"[^}]*"version":"([^"]+)".*/\1/') || true
 if [[ -z "$VERSION" ]]; then
   error "Could not parse version from Cargo metadata."
 fi
@@ -38,7 +38,7 @@ echo -e "Installing ${BOLD}pgrs ${VERSION}${RESET} from local source..."
 echo "  Building release binary..."
 (
   cd "$SCRIPT_DIR"
-  cargo build --release
+  cargo build --release -p pgrs-cli
 )
 
 if [[ ! -f "$BINARY_PATH" ]]; then

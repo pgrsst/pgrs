@@ -1,0 +1,22 @@
+[package]
+name = "pgrs-cli"
+version = "0.6.0"
+edition = "2024"
+build = "build.rs"
+
+[[bin]]
+name = "pgrs"
+path = "src/main.rs"
+
+[dependencies]
+pgrs-core = { path = "../core" }
+dirs = "6"
+reedline = "0.47"
+nu-ansi-term = "0.50"
+unicode-width = "0.2"
+chrono = { version = "0.4", features = ["clock"] }
+sqlparser = "0.62"
+
+[dev-dependencies]
+pgrs-core = { path = "../core", features = ["test-support"] }
+tempfile = "3"
