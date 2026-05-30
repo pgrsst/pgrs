@@ -1,19 +1,10 @@
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Highlighter, Hinter, History, Span, StyledText, Suggestion};
 
+use crate::core::query::alias::SQL_KEYWORDS;
+use crate::core::query::tokenizer::{SqlToken, tokenize};
+use crate::core::services::query::completions::{Completion, CompletionKind, CompletionService};
 use crate::core::services::schema::service::SchemaService;
-use super::alias::{build_alias_map, extract_join_context, AliasMap, SQL_KEYWORDS};
-use super::tokenizer::{SqlToken, tokenize};
-
-const TABLE_TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE"];
-const COLUMN_TRIGGERS: &[&str] = &["SELECT", "WHERE", "ON", "SET", "BY"];
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum CompletionKind {
-    Keyword,
-    Table,
-    Column,
-}
 
 impl CompletionKind {
     fn label(&self) -> &'static str {
@@ -46,13 +37,11 @@ fn classify_word(word: &str, tables: &[String], columns: &[String]) -> Option<Co
     }
 }
 
-
 pub(crate) fn common_prefix(candidates: &[(String, CompletionKind)]) -> String {
     if candidates.is_empty() {
         return String::new();
     }
     let first = &candidates[0].0;
-    // Count how many leading chars of `first` are a case-insensitive prefix of every other candidate.
     let prefix_len = candidates[1..].iter().fold(first.chars().count(), |acc, (c, _)| {
         first
             .chars()
@@ -75,258 +64,31 @@ fn word_start(line: &str, pos: usize) -> usize {
     }
 }
 
-fn resolve_trigger_and_word(input: &str) -> (String, String) {
-    let upper = input.to_uppercase();
-    let tokens: Vec<&str> = upper.split_whitespace().collect();
-
-    let current_word = if input.ends_with(char::is_whitespace) || input.is_empty() {
-        String::new()
-    } else {
-        tokens.last().copied().unwrap_or("").to_string()
-    };
-
-    let effective_trigger = if TABLE_TRIGGERS.contains(&current_word.as_str())
-        || COLUMN_TRIGGERS.contains(&current_word.as_str())
-    {
-        current_word.clone()
-    } else if input.ends_with(char::is_whitespace) {
-        tokens.last().copied().unwrap_or("").to_string()
-    } else if tokens.len() >= 2 {
-        tokens[tokens.len() - 2].to_string()
-    } else {
-        String::new()
-    };
-
-    (effective_trigger, current_word)
-}
-
 pub struct SqlCompleter {
-    schema: SchemaService,
+    service: CompletionService,
 }
 
 impl SqlCompleter {
     pub fn new(schema: SchemaService) -> Self {
-        Self { schema }
+        Self { service: CompletionService::new(schema) }
     }
 
     pub fn complete_input(&self, line: &str, pos: usize) -> Vec<(String, CompletionKind)> {
-        let input = &line[..pos];
-
-        if let Some(result) = self.try_complete_describe_arg(input) {
-            return result;
-        }
-
-        let alias_map = build_alias_map(line);
-
-        if let Some(result) = self.try_complete_qualified(input, &alias_map) {
-            return result;
-        }
-
-        let (effective_trigger, current_word) = resolve_trigger_and_word(input);
-        let candidates =
-            self.candidates_for_trigger(&effective_trigger, &line.to_uppercase(), &alias_map);
-        self.filter_and_sort(candidates, &effective_trigger, &current_word)
-    }
-
-    fn try_complete_qualified(
-        &self,
-        input: &str,
-        alias_map: &AliasMap,
-    ) -> Option<Vec<(String, CompletionKind)>> {
-        let last_ws = input.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
-        let token = &input[last_ws..];
-        let dot_pos = token.rfind('.')?;
-        let table_name = token[..dot_pos]
-            .split('.')
-            .next_back()
-            .unwrap_or(&token[..dot_pos])
-            .to_lowercase();
-        let col_prefix = token[dot_pos + 1..].to_uppercase();
-        Some(self.complete_qualified(&table_name, &col_prefix, alias_map))
-    }
-
-    fn try_complete_describe_arg(&self, input: &str) -> Option<Vec<(String, CompletionKind)>> {
-        let table_prefix = input.strip_prefix("\\d+ ")
-            .or_else(|| input.strip_prefix("\\d "))?;
-
-        let results = self.schema.tables()
-            .iter()
-            .filter(|t| t.to_lowercase().starts_with(&table_prefix.to_lowercase()))
-            .map(|t| (t.clone(), CompletionKind::Table))
-            .collect();
-        Some(results)
-    }
-
-    fn filter_and_sort(
-        &self,
-        candidates: Vec<(String, CompletionKind)>,
-        effective_trigger: &str,
-        current_word: &str,
-    ) -> Vec<(String, CompletionKind)> {
-        let is_trigger = TABLE_TRIGGERS.contains(&current_word)
-            || COLUMN_TRIGGERS.contains(&current_word);
-        let prefix_upper = if is_trigger {
-            String::new()
-        } else {
-            current_word.to_uppercase()
-        };
-
-        // For JOIN ON, preserve intentional shared-column priority ordering
-        if effective_trigger == "ON" {
-            let mut seen = std::collections::HashSet::new();
-            return candidates
-                .into_iter()
-                .filter(|(c, _)| c.to_uppercase().starts_with(&prefix_upper))
-                .filter(|(c, _)| seen.insert(c.clone()))
-                .collect();
-        }
-
-        let mut results: Vec<(String, CompletionKind)> = candidates
+        self.service
+            .completions(line, pos)
             .into_iter()
-            .filter(|(c, _)| c.to_uppercase().starts_with(&prefix_upper))
-            .collect();
-
-        results.sort_by(|a, b| match (&a.1, &b.1) {
-            (CompletionKind::Keyword, CompletionKind::Keyword) => a.0.cmp(&b.0),
-            _ => a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(&b.0)),
-        });
-        results.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
-        results
-    }
-
-    fn complete_qualified(&self, table_name: &str, col_prefix: &str, alias_map: &AliasMap) -> Vec<(String, CompletionKind)> {
-        let resolved = alias_map.resolve(table_name).unwrap_or(table_name);
-        let cols = self.schema.columns_for(resolved);
-        if !cols.is_empty() {
-            cols.iter()
-                .filter(|c| c.to_uppercase().starts_with(&col_prefix.to_uppercase()))
-                .map(|c| (c.to_string(), CompletionKind::Column))
-                .collect()
-        } else {
-            // Table not found: fallback to all columns
-            self.schema
-                .tables()
-                .iter()
-                .flat_map(|t| self.schema.columns_for(t).iter().cloned())
-                .filter(|c| c.to_uppercase().starts_with(&col_prefix.to_uppercase()))
-                .map(|c| (c, CompletionKind::Column))
-                .collect()
-        }
-    }
-
-    fn candidates_for_trigger(&self, trigger: &str, upper_query: &str, alias_map: &AliasMap) -> Vec<(String, CompletionKind)> {
-        match trigger {
-            "FROM" | "JOIN" | "INTO" | "UPDATE" => self
-                .schema
-                .tables()
-                .iter()
-                .map(|t| (t.to_string(), CompletionKind::Table))
-                .collect(),
-            "ON" => {
-                if let Some(ctx) = extract_join_context(upper_query, alias_map) {
-                    let right_cols: Vec<String> = self.schema.columns_for(&ctx.right_table).to_vec();
-                    let left_cols: Vec<String> = ctx
-                        .left_tables
-                        .iter()
-                        .flat_map(|t| self.schema.columns_for(t).iter().cloned())
-                        .collect();
-
-                    // Build a lowercase set for O(1) shared-column lookup
-                    let left_lower: std::collections::HashSet<String> =
-                        left_cols.iter().map(|c| c.to_lowercase()).collect();
-
-                    // Shared columns (likely FK keys) first
-                    let mut result: Vec<(String, CompletionKind)> = right_cols
-                        .iter()
-                        .filter(|c| left_lower.contains(&c.to_lowercase()))
-                        .map(|c| (c.clone(), CompletionKind::Column))
-                        .collect();
-
-                    // Remaining right-table-only columns
-                    result.extend(
-                        right_cols
-                            .iter()
-                            .filter(|c| !left_lower.contains(&c.to_lowercase()))
-                            .map(|c| (c.clone(), CompletionKind::Column)),
-                    );
-
-                    // Left table columns
-                    result.extend(left_cols.iter().map(|c| (c.clone(), CompletionKind::Column)));
-
-                    result
-                } else {
-                    let table_refs = self.extract_table_refs(upper_query, alias_map);
-                    if table_refs.is_empty() {
-                        SQL_KEYWORDS
-                            .iter()
-                            .map(|k| (k.to_string(), CompletionKind::Keyword))
-                            .collect()
-                    } else {
-                        table_refs
-                            .iter()
-                            .flat_map(|t| {
-                                self.schema
-                                    .columns_for(t)
-                                    .iter()
-                                    .map(|c| (c.to_string(), CompletionKind::Column))
-                            })
-                            .collect()
-                    }
-                }
-            }
-            "SELECT" | "WHERE" | "SET" | "BY" => {
-                let table_refs = self.extract_table_refs(upper_query, alias_map);
-                if table_refs.is_empty() {
-                    SQL_KEYWORDS
-                        .iter()
-                        .map(|k| (k.to_string(), CompletionKind::Keyword))
-                        .collect()
-                } else {
-                    table_refs
-                        .iter()
-                        .flat_map(|t| {
-                            self.schema
-                                .columns_for(t)
-                                .iter()
-                                .map(|c| (c.to_string(), CompletionKind::Column))
-                        })
-                        .collect()
-                }
-            }
-            _ => SQL_KEYWORDS
-                .iter()
-                .map(|k| (k.to_string(), CompletionKind::Keyword))
-                .collect(),
-        }
-    }
-
-    fn extract_table_refs(&self, upper_query: &str, alias_map: &AliasMap) -> Vec<String> {
-        let tokens: Vec<&str> = upper_query.split_whitespace().collect();
-        let trigger = ["FROM", "JOIN", "UPDATE"];
-        let mut refs: Vec<String> = tokens
-            .windows(2)
-            .filter_map(|w| {
-                if !trigger.contains(&w[0]) { return None; }
-                let raw = w[1].to_lowercase();
-                // Strip schema prefix: "public.users" → "users"
-                Some(raw.rsplit('.').next().unwrap_or(&raw).to_string())
-            })
-            .collect();
-        for real_table in alias_map.real_tables() {
-            if !refs.iter().any(|r| r == real_table) {
-                refs.push(real_table.to_string());
-            }
-        }
-        refs
+            .map(|c| (c.value, c.kind))
+            .collect()
     }
 }
 
 impl Completer for SqlCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let start = word_start(line, pos);
-        self.complete_input(line, pos)
+        self.service
+            .completions(line, pos)
             .into_iter()
-            .map(|(value, kind)| Suggestion {
+            .map(|Completion { value, kind }| Suggestion {
                 value,
                 display_override: None,
                 description: Some(kind.label().to_string()),
@@ -409,9 +171,6 @@ impl Hinter for SqlHinter {
         let start = word_start(line, pos);
         let current_word = &line[start..pos];
 
-        // Ghost text needs prefix-matching, not fuzzy/subsequence matching.
-        // Fuzzy matching yields too many unrelated candidates whose common prefix collapses to "".
-        // Keywords are excluded: they go through the dropdown (Tab→Menu) to ensure uppercase insertion.
         let prefix_candidates: Vec<_> = candidates
             .into_iter()
             .filter(|(c, k)| {
@@ -477,7 +236,6 @@ mod tests {
 
     fn schema_with(tables: &[&str], columns: &[(&str, &[&str])]) -> SchemaService {
         let mut col_map: HashMap<String, Vec<String>> = HashMap::new();
-        // ensure tables with no columns still appear in the schema
         for &table in tables {
             col_map.entry(table.to_string()).or_default();
         }
@@ -554,7 +312,6 @@ mod tests {
 
     #[test]
     fn dedup_removes_same_name_same_kind_from_multiple_tables() {
-        // Both "users" and "orders" have an "id" column — should appear once in suggestions
         let schema = schema_with(
             &["users", "orders"],
             &[("users", &["id", "email"]), ("orders", &["id", "status"])],
@@ -569,7 +326,6 @@ mod tests {
     fn schema_qualified_from_suggests_columns() {
         let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
         let c = SqlCompleter::new(schema);
-        // "public.users" — schema prefix should be stripped so columns are found
         let input = "SELECT  FROM public.users";
         let results = c.complete_input(input, 7);
         assert!(
@@ -754,13 +510,11 @@ mod tests {
 
     #[test]
     fn word_start_returns_position_after_dot() {
-        // "SELECT users." — word_start at pos=13 should be 13 (after the dot)
         assert_eq!(word_start("SELECT users.", 13), 13);
     }
 
     #[test]
     fn word_start_returns_position_after_last_dot_in_schema_table() {
-        // "SELECT public.users." — word_start at pos=20 should be 20
         assert_eq!(word_start("SELECT public.users.", 20), 20);
     }
 
@@ -838,7 +592,6 @@ mod tests {
         use reedline::Highlighter;
         let schema = schema_with(&[], &[]);
         let h = SqlHighlighter::new(schema);
-        // exercises Comment, StringLiteral, Number, and plain-word (None) branches
         let styled = h.highlight("-- note\n'hello' 42 foo", 0);
         let combined: String = styled.buffer.iter().map(|(_, s)| s.as_str()).collect();
         assert!(combined.contains("note"));
@@ -851,7 +604,6 @@ mod tests {
     fn qualified_dot_with_unknown_table_falls_back_to_all_columns() {
         let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
         let c = SqlCompleter::new(schema);
-        // "ghost" is not a known table — should fall back to all columns
         let input = "SELECT ghost.";
         let results = c.complete_input(input, input.len());
         assert!(results.iter().any(|(r, _)| r == "id"), "expected fallback column id");
@@ -862,7 +614,6 @@ mod tests {
     fn select_without_from_suggests_keywords() {
         let schema = schema_with(&["users"], &[]);
         let c = SqlCompleter::new(schema);
-        // SELECT followed by space, no FROM yet — table_refs empty → keywords
         let results = c.complete_input("SELECT ", 7);
         assert!(
             results.iter().any(|(r, k)| r == "FROM" && matches!(k, CompletionKind::Keyword)),
@@ -874,7 +625,6 @@ mod tests {
     fn alias_simple() {
         let schema = schema_with(&["users"], &[("users", &["id", "email", "created_at"])]);
         let c = SqlCompleter::new(schema);
-        // cursor at pos 9 — "SELECT u." — alias defined later in full line
         let results = c.complete_input("SELECT u. FROM users u", 9);
         assert!(
             results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
@@ -897,7 +647,6 @@ mod tests {
     fn alias_prefix_filter() {
         let schema = schema_with(&["users"], &[("users", &["id", "email", "created_at"])]);
         let c = SqlCompleter::new(schema);
-        // "SELECT u.em" — pos=11
         let results = c.complete_input("SELECT u.em FROM users u", 11);
         assert!(results.iter().any(|(r, _)| r == "email"), "expected email");
         assert!(!results.iter().any(|(r, _)| r == "id"), "id should not appear");
@@ -931,7 +680,6 @@ mod tests {
             &[("users", &["id", "email"]), ("orders", &["id", "user_id"])],
         );
         let c = SqlCompleter::new(schema);
-        // "SELECT o." — pos=9 — alias o resolves to orders
         let results = c.complete_input("SELECT o. FROM users u JOIN orders o ON u.id = o.user_id", 9);
         assert!(
             results.iter().any(|(r, _)| r == "user_id"),
@@ -986,7 +734,6 @@ mod tests {
             &[("users", &["id", "email"])],
         );
         let c = SqlCompleter::new(schema);
-        // ON without a preceding JOIN — unusual but must not panic, fall back to table columns
         let input = "SELECT id FROM users ON ";
         let results = c.complete_input(input, input.len());
         assert!(results.iter().any(|(r, _)| r == "id" || r == "email"),
@@ -1066,7 +813,6 @@ mod tests {
 
     #[test]
     fn hinter_empty_when_word_already_equals_prefix() {
-        // "users" typed in full, common_prefix == current_word → no hint
         let schema = schema_with(&["users"], &[]);
         let mut h = SqlHinter::new(schema);
         let history = empty_history();
@@ -1101,27 +847,22 @@ mod tests {
         let history = empty_history();
         let input = "SELECT users.em";
         let hint = h.handle(input, input.len(), &history, false, "");
-        // common_prefix(["email","email_verified"]) = "email", current_word = "em" → suffix = "ail"
         assert_eq!(hint, "ail");
     }
 
     #[test]
     fn hinter_clears_after_word_grows_past_prefix() {
-        // After accepting "transaction", typing further chars should clear the hint
         let schema = schema_with(&["transaction"], &[]);
         let mut h = SqlHinter::new(schema);
         let history = empty_history();
-        // "transactio" → hint = "n"
         let hint1 = h.handle("FROM transactio", 15, &history, false, "");
         assert_eq!(hint1, "n");
-        // "transactions" (past the only match) → no hint
         let hint2 = h.handle("FROM transactions", 17, &history, false, "");
         assert_eq!(hint2, "");
     }
 
     #[test]
     fn hinter_no_hint_for_keyword_prefix() {
-        // Keywords never produce ghost text; they go through the Tab→Menu path (uppercase).
         let schema = schema_with(&[], &[]);
         let mut h = SqlHinter::new(schema);
         let history = empty_history();
@@ -1135,7 +876,6 @@ mod tests {
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT * FROM use", 17);
         let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
-        // "users" (5) comes before "user_role" (9) and "user_store" (10)
         let pos_users = names.iter().position(|&n| n == "users").unwrap();
         let pos_role  = names.iter().position(|&n| n == "user_role").unwrap();
         let pos_store = names.iter().position(|&n| n == "user_store").unwrap();
@@ -1152,7 +892,6 @@ mod tests {
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT  FROM orders", 7);
         let names: Vec<&str> = results.iter().map(|(r, _)| r.as_str()).collect();
-        // "id" (2) < "status" (6) < "created_at" (10)
         let pos_id         = names.iter().position(|&n| n == "id").unwrap();
         let pos_status     = names.iter().position(|&n| n == "status").unwrap();
         let pos_created_at = names.iter().position(|&n| n == "created_at").unwrap();
@@ -1162,7 +901,6 @@ mod tests {
 
     #[test]
     fn hinter_shows_common_prefix_for_ambiguous_tables() {
-        // "use" with [users, user_role, user_store] → common prefix "user" → hint "r"
         let schema = schema_with(&["users", "user_role", "user_store"], &[]);
         let mut h = SqlHinter::new(schema);
         let history = empty_history();

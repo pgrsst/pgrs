@@ -1,9 +1,7 @@
-mod alias;
 mod command_handler;
 mod completer;
 mod csv;
 mod executor;
-mod tokenizer;
 mod describe;
 mod sql_utils;
 mod ui;

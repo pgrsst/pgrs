@@ -5,7 +5,7 @@ use crate::core::ports::repl_port::ReplPort;
 use crate::core::ports::schema_port::SchemaPort;
 use crate::core::services::analytics::service::AnalyticsSvc;
 use crate::core::services::schema::service::{SchemaService, SchemaSvc};
-use super::alias::extract_referenced_tables;
+use crate::core::query::alias::extract_referenced_tables;
 use super::executor::format_result;
 use super::sql_utils::{is_ddl, extract_column_refs};
 

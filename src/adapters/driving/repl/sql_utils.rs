@@ -1,6 +1,6 @@
 use crate::core::services::schema::service::SchemaSvc;
-use super::tokenizer::{SqlToken, tokenize};
-use super::alias::SQL_KEYWORDS;
+use crate::core::query::tokenizer::{SqlToken, tokenize};
+use crate::core::query::alias::SQL_KEYWORDS;
 
 pub(super) fn is_complete_statement(s: &str) -> bool {
     let s = s.trim_end();

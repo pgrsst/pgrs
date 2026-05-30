@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use super::tokenizer::{SqlToken, tokenize};
+use crate::core::query::tokenizer::{SqlToken, tokenize};
 
 pub const SQL_KEYWORDS: &[&str] = &[
     "SELECT", "FROM", "WHERE", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER",
@@ -28,7 +28,7 @@ enum AliasState {
     Idle,
     ExpectTable,
     ExpectAlias { candidate: String },
-    ExpectQualifiedTable,  // saw "schema.", now expect the actual table name
+    ExpectQualifiedTable,
     ExpectAliasName { candidate: String },
     PostAlias,
     InSubquery { depth: usize },
@@ -89,7 +89,6 @@ pub fn build_alias_map(line: &str) -> AliasMap {
                 AliasState::PostAlias
             }
             (AliasState::ExpectAlias { .. }, _) => AliasState::Idle,
-            // After "schema.", the next word is the actual table name.
             (AliasState::ExpectQualifiedTable, SqlToken::Word(w))
                 if !SQL_KEYWORDS.contains(&w.to_uppercase().as_str()) =>
             {
@@ -216,7 +215,6 @@ pub fn extract_referenced_tables(line: &str) -> Vec<String> {
         };
     }
 
-    // Flush any table name pending at end of input (no alias followed)
     if let AliasState::ExpectAlias { candidate } = state {
         tables.push(candidate);
     }
@@ -236,7 +234,6 @@ pub fn extract_join_context(upper_query: &str, alias_map: &AliasMap) -> Option<J
     let last_join_pos = tokens.iter().rposition(|&t| t == "JOIN")?;
 
     let right_raw = tokens.get(last_join_pos + 1)?.to_lowercase();
-    // Strip schema prefix: "public.orders" → "orders"
     let right_base = right_raw.rsplit('.').next().unwrap_or(&right_raw);
     let right_table = alias_map
         .resolve(right_base)

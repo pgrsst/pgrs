@@ -1,6 +1,7 @@
 pub mod analytics;
 pub mod column_access;
 pub mod connection;
+pub mod query;
 pub mod query_history;
 pub mod schema;
 pub mod schema_cache;
