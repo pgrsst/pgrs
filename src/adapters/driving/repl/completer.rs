@@ -88,6 +88,7 @@ impl Completer for SqlCompleter {
         self.service
             .completions(line, pos)
             .into_iter()
+            .take(10)
             .map(|Completion { value, kind }| Suggestion {
                 value,
                 display_override: None,
