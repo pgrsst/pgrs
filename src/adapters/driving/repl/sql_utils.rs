@@ -1,6 +1,14 @@
+use sqlparser::ast::{Expr, Query, SelectItem, SetExpr, Statement};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
+
 use crate::core::services::schema::service::SchemaSvc;
-use crate::core::query::tokenizer::{SqlToken, tokenize};
-use crate::core::query::alias::SQL_KEYWORDS;
+
+fn parse_first_statement(query: &str) -> Option<Statement> {
+    Parser::parse_sql(&PostgreSqlDialect {}, query)
+        .ok()
+        .and_then(|mut stmts| if stmts.is_empty() { None } else { Some(stmts.remove(0)) })
+}
 
 pub(super) fn is_complete_statement(s: &str) -> bool {
     let s = s.trim_end();
@@ -34,47 +42,74 @@ pub(super) fn is_complete_statement(s: &str) -> bool {
 
 pub(super) fn is_ddl(query: &str) -> bool {
     matches!(
-        query
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_uppercase()
-            .as_str(),
-        "CREATE" | "DROP" | "ALTER" | "TRUNCATE"
+        parse_first_statement(query),
+        Some(
+            Statement::CreateTable(_)
+                | Statement::CreateView(_)
+                | Statement::CreateIndex(_)
+                | Statement::Drop { .. }
+                | Statement::AlterTable(_)
+                | Statement::AlterIndex { .. }
+                | Statement::AlterView { .. }
+                | Statement::Truncate(_)
+        )
+    )
+}
+
+fn query_contains_dml(q: &Query) -> bool {
+    if let Some(with) = &q.with {
+        if with
+            .cte_tables
+            .iter()
+            .any(|cte| query_contains_dml(&cte.query))
+        {
+            return true;
+        }
+    }
+    matches!(
+        q.body.as_ref(),
+        SetExpr::Insert(_) | SetExpr::Update(_) | SetExpr::Delete(_)
     )
 }
 
 pub(super) fn is_dml(query: &str) -> bool {
-    matches!(
-        query
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_uppercase()
-            .as_str(),
-        "INSERT" | "UPDATE" | "DELETE"
-    )
+    match parse_first_statement(query) {
+        Some(Statement::Insert(_) | Statement::Update(_) | Statement::Delete(_)) => true,
+        Some(Statement::Query(q)) => query_contains_dml(&q),
+        _ => false,
+    }
 }
 
 pub(super) fn extract_column_refs(query: &str, schema: &dyn SchemaSvc) -> Vec<(String, String)> {
-    let mut in_select = false;
-    let mut candidates: Vec<String> = Vec::new();
-
-    for token in tokenize(query) {
-        if let SqlToken::Word(w) = token {
-            let upper = w.to_uppercase();
-            if upper == "SELECT" { in_select = true; continue; }
-            if upper == "FROM" { break; }
-            if in_select && !SQL_KEYWORDS.contains(&upper.as_str()) && w != "*" {
-                candidates.push(w.to_lowercase());
+    let candidates: Vec<String> = parse_first_statement(query)
+        .and_then(|stmt| match stmt {
+            Statement::Query(q) => match *q.body {
+                SetExpr::Select(sel) => Some(sel.projection),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| match item {
+            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                Some(ident.value.to_lowercase())
             }
-        }
-    }
+            SelectItem::ExprWithAlias {
+                expr: Expr::Identifier(ident),
+                ..
+            } => Some(ident.value.to_lowercase()),
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                parts.last().map(|i| i.value.to_lowercase())
+            }
+            _ => None,
+        })
+        .collect();
 
     let mut refs = Vec::new();
     for col in candidates {
         for table in schema.tables() {
-            if schema.columns_for(table).iter().any(|c| c == &col) {
+            if schema.columns_for(table).iter().any(|c| c.to_lowercase() == col) {
                 refs.push((table.to_string(), col.clone()));
                 break;
             }
@@ -135,7 +170,34 @@ mod tests {
     #[test]
     fn is_dml_returns_false_for_select() {
         assert!(!is_dml("SELECT * FROM foo;"));
-        assert!(!is_dml("WITH cte AS (SELECT 1) SELECT * FROM cte;"));
+    }
+
+    #[test]
+    fn is_dml_detects_cte_wrapped_insert() {
+        assert!(is_dml(
+            "WITH cte AS (INSERT INTO foo VALUES (1) RETURNING id) SELECT * FROM cte;"
+        ));
+    }
+
+    #[test]
+    fn is_dml_detects_cte_wrapped_update() {
+        assert!(is_dml(
+            "WITH cte AS (UPDATE foo SET x = 1 RETURNING id) SELECT * FROM cte;"
+        ));
+    }
+
+    #[test]
+    fn is_dml_detects_cte_wrapped_delete() {
+        assert!(is_dml(
+            "WITH cte AS (DELETE FROM foo RETURNING id) SELECT * FROM cte;"
+        ));
+    }
+
+    #[test]
+    fn is_dml_plain_cte_select_is_false() {
+        assert!(!is_dml(
+            "WITH cte AS (SELECT 1) SELECT * FROM cte;"
+        ));
     }
 
     #[test]
