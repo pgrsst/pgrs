@@ -611,13 +611,17 @@ mod tests {
     }
 
     #[test]
-    fn select_without_from_suggests_keywords() {
-        let schema = schema_with(&["users"], &[]);
+    fn select_without_from_suggests_columns_from_all_tables() {
+        let schema = schema_with(&["users"], &[("users", &["id", "email"])]);
         let c = SqlCompleter::new(schema);
         let results = c.complete_input("SELECT ", 7);
         assert!(
-            results.iter().any(|(r, k)| r == "FROM" && matches!(k, CompletionKind::Keyword)),
-            "expected FROM keyword when no table referenced yet"
+            results.iter().any(|(r, k)| r == "id" && matches!(k, CompletionKind::Column)),
+            "expected columns when schema has tables, got: {:?}", results
+        );
+        assert!(
+            !results.iter().any(|(_, k)| matches!(k, CompletionKind::Keyword)),
+            "keywords should not appear when schema has tables"
         );
     }
 

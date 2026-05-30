@@ -132,7 +132,12 @@ impl QueryCompletionService {
             "SELECT" | "WHERE" | "SET" | "BY" => {
                 let table_refs = self.extract_table_refs(upper_query, alias_map);
                 if table_refs.is_empty() {
-                    self.keyword_completions("")
+                    let all_tables: Vec<String> = self.schema.tables().iter().cloned().collect();
+                    if all_tables.is_empty() {
+                        self.keyword_completions("")
+                    } else {
+                        self.column_completions(&all_tables, "")
+                    }
                 } else {
                     self.column_completions(&table_refs, "")
                 }
@@ -312,6 +317,16 @@ mod tests {
         let results = svc.completions(input, input.len());
         assert!(results.iter().any(|c| c.value == "users"));
         assert!(results.iter().any(|c| c.value == "orders"));
+    }
+
+    #[test]
+    fn completions_suggests_columns_after_select_without_from() {
+        let svc = service_with(&["users"], &[("users", &["id", "email"])]);
+        let input = "SELECT ";
+        let results = svc.completions(input, input.len());
+        assert!(results.iter().any(|c| c.value == "id"), "expected id in {:?}", results.iter().map(|c| &c.value).collect::<Vec<_>>());
+        assert!(results.iter().any(|c| c.value == "email"));
+        assert!(!results.iter().any(|c| matches!(c.kind, CompletionKind::Keyword)), "keywords should not appear when schema has tables");
     }
 
     #[test]
