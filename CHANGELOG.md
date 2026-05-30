@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.0] - 2026-05-30
+
+### Added
+- Tab-completion suggestions kini diurutkan berdasarkan frekuensi akses — kolom/tabel yang sering digunakan muncul lebih dulu
+- Completion kolom kini menyarankan tiga bentuk: `kolom`, `tabel.kolom`, dan `alias.kolom`
+
+### Fixed
+- Completion kolom kini muncul setelah `SELECT` meski belum ada klausa `FROM`
+
+### Changed
+- SQL parsing diganti dengan crate `sqlparser` — lebih robust untuk query kompleks
+- Alias & tokenizer dipindah ke `core/query` (keluar dari repl adapter)
+- `CompletionService` dipecah menjadi query dan command concerns
+- ID koneksi diganti dari UUID ke SQLite autoincrement
+- `Repl` struct dan `CommandHandler` diperkenalkan untuk konsistensi dengan pola CLI
+- CLI dipecah per handler, `ConnectionSvc` trait diinjeksi ke `Cli`
+- Berbagai service refactor untuk konsistensi trait (`AnalyticsSvc`, `SchemaSvc`)
+
 ## [0.5.0] - 2026-05-26
 
 ### Added
