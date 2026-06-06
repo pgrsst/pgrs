@@ -6,7 +6,7 @@ use crate::ports::column_access_repository::ColumnAccessRepository;
 use crate::ports::connection_repository::ConnectionRepository;
 use crate::ports::query_history_repository::QueryHistoryRepository;
 use crate::ports::table_access_repository::TableAccessRepository;
-use crate::query::alias::extract_referenced_tables;
+use crate::query::alias::{extract_column_refs, extract_referenced_tables};
 use crate::services::analytics::service::{AnalyticsService, AnalyticsSvc};
 use crate::services::column_access::service::{ColumnAccessService, ColumnAccessSvc};
 use crate::services::query_history::service::{QueryHistoryService, QueryHistorySvc};
@@ -47,7 +47,12 @@ impl AnalyticsApi {
     /// Table and column references are extracted from `sql` using `schema`.
     pub fn record_query(&self, connection_name: &str, sql: &str, schema: &SchemaApi) {
         let tables = extract_referenced_tables(sql);
-        let columns = extract_column_refs(sql, schema);
+        let schema_view: Vec<(&str, &[String])> = schema
+            .tables()
+            .iter()
+            .map(|t| (t.as_str(), schema.columns_for(t)))
+            .collect();
+        let columns = extract_column_refs(sql, &schema_view);
         self.svc.record_query(connection_name, sql, &tables, &columns);
     }
 
@@ -71,48 +76,4 @@ impl AnalyticsApi {
             .map(|e| (e.name, e.count))
             .collect()
     }
-}
-
-/// Resolve column references in a SELECT projection against the known schema,
-/// returning `(table, column)` pairs. Mirrors the previous REPL-side helper but
-/// lives in core so analytics extraction is a single responsibility of the API.
-fn extract_column_refs(query: &str, schema: &SchemaApi) -> Vec<(String, String)> {
-    use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
-    use sqlparser::dialect::PostgreSqlDialect;
-    use sqlparser::parser::Parser;
-
-    let candidates: Vec<String> = Parser::parse_sql(&PostgreSqlDialect {}, query)
-        .ok()
-        .and_then(|mut stmts| if stmts.is_empty() { None } else { Some(stmts.remove(0)) })
-        .and_then(|stmt| match stmt {
-            Statement::Query(q) => match *q.body {
-                SetExpr::Select(sel) => Some(sel.projection),
-                _ => None,
-            },
-            _ => None,
-        })
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| match item {
-            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => Some(ident.value.to_lowercase()),
-            SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), .. } => {
-                Some(ident.value.to_lowercase())
-            }
-            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
-                parts.last().map(|i| i.value.to_lowercase())
-            }
-            _ => None,
-        })
-        .collect();
-
-    let mut refs = Vec::new();
-    for col in candidates {
-        for table in schema.tables() {
-            if schema.columns_for(table).iter().any(|c| c.to_lowercase() == col) {
-                refs.push((table.to_string(), col.clone()));
-                break;
-            }
-        }
-    }
-    refs
 }

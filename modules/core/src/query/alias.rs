@@ -193,6 +193,50 @@ pub fn extract_referenced_tables(sql: &str) -> Vec<String> {
     tables
 }
 
+/// Resolve column references in a SELECT projection against a known schema view
+/// (`&[(table, columns)]`), returning `(table, column)` pairs. Lives in `query/`
+/// alongside `extract_referenced_tables` so SQL parsing stays out of the API
+/// facade; callers pass a schema view rather than the function reaching up into
+/// the schema service.
+pub fn extract_column_refs(query: &str, schema: &[(&str, &[String])]) -> Vec<(String, String)> {
+    use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
+
+    let candidates: Vec<String> = Parser::parse_sql(&PostgreSqlDialect {}, query)
+        .ok()
+        .and_then(|mut stmts| if stmts.is_empty() { None } else { Some(stmts.remove(0)) })
+        .and_then(|stmt| match stmt {
+            Statement::Query(q) => match *q.body {
+                SetExpr::Select(sel) => Some(sel.projection),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| match item {
+            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => Some(ident.value.to_lowercase()),
+            SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), .. } => {
+                Some(ident.value.to_lowercase())
+            }
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
+                parts.last().map(|i| i.value.to_lowercase())
+            }
+            _ => None,
+        })
+        .collect();
+
+    let mut refs = Vec::new();
+    for col in candidates {
+        for (table, columns) in schema {
+            if columns.iter().any(|c| c.to_lowercase() == col) {
+                refs.push((table.to_string(), col.clone()));
+                break;
+            }
+        }
+    }
+    refs
+}
+
 // extract_join_context uses simple string splitting because it operates on
 // partial (potentially unparseable) queries typed in the REPL mid-sentence.
 pub fn extract_join_context(upper_query: &str, alias_map: &AliasMap) -> Option<JoinContext> {
@@ -428,5 +472,30 @@ mod tests {
     fn extract_referenced_tables_schema_qualified() {
         let tables = extract_referenced_tables("SELECT * FROM public.users");
         assert_eq!(tables, vec!["users"]);
+    }
+
+    #[test]
+    fn extract_column_refs_resolves_unqualified_columns() {
+        let users_cols = vec!["id".to_string(), "email".to_string()];
+        let schema: Vec<(&str, &[String])> = vec![("users", users_cols.as_slice())];
+        let refs = extract_column_refs("SELECT id, email FROM users", &schema);
+        assert!(refs.contains(&("users".to_string(), "id".to_string())));
+        assert!(refs.contains(&("users".to_string(), "email".to_string())));
+    }
+
+    #[test]
+    fn extract_column_refs_picks_last_part_of_compound_identifier() {
+        let users_cols = vec!["id".to_string()];
+        let schema: Vec<(&str, &[String])> = vec![("users", users_cols.as_slice())];
+        let refs = extract_column_refs("SELECT u.id FROM users u", &schema);
+        assert_eq!(refs, vec![("users".to_string(), "id".to_string())]);
+    }
+
+    #[test]
+    fn extract_column_refs_ignores_unknown_columns() {
+        let users_cols = vec!["id".to_string()];
+        let schema: Vec<(&str, &[String])> = vec![("users", users_cols.as_slice())];
+        let refs = extract_column_refs("SELECT missing FROM users", &schema);
+        assert!(refs.is_empty());
     }
 }
