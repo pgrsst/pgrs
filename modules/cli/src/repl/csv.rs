@@ -145,7 +145,7 @@ mod tests {
         let analytics = core.analytics_api();
         let schema = SchemaApi::for_test(HashMap::new());
         for q in queries {
-            analytics.record_query(connection_name, q, &schema);
+            analytics.record_query(connection_name, q, &schema).unwrap();
         }
         let history = analytics.history(connection_name);
         let ids = queries

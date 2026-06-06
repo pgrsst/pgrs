@@ -1,13 +1,17 @@
 use std::sync::Arc;
 
 use crate::domain::analytics::FreqEntry;
+use crate::domain::error::DomainError;
 use crate::domain::query_history::QueryHistory;
 use crate::services::column_access::service::{ColumnAccessCreateInput, ColumnAccessSvc};
 use crate::services::query_history::service::{QueryHistoryCreateInput, QueryHistorySvc};
 use crate::services::table_access::service::{TableAccessCreateInput, TableAccessSvc};
 
 pub trait AnalyticsSvc: Send + Sync {
-    fn record_query(&self, connection_name: &str, query: &str, tables: &[String], columns: &[(String, String)]);
+    /// Record an executed query and its table/column references. Best-effort:
+    /// every write is attempted; the first error (if any) is returned so the
+    /// caller — not core — decides whether to surface it.
+    fn record_query(&self, connection_name: &str, query: &str, tables: &[String], columns: &[(String, String)]) -> Result<(), DomainError>;
     fn get_history(&self, connection_name: &str) -> Vec<QueryHistory>;
     fn get_frequent_tables(&self, connection_name: &str) -> Vec<FreqEntry>;
     fn get_frequent_columns(&self, connection_name: &str, table: &str) -> Vec<FreqEntry>;
@@ -40,36 +44,46 @@ impl AnalyticsSvc for AnalyticsService {
         query: &str,
         tables: &[String],
         columns: &[(String, String)],
-    ) {
+    ) -> Result<(), DomainError> {
         let input = QueryHistoryCreateInput {
             connection_name: connection_name.to_string(),
             query: query.to_string(),
         };
-        match self.history.record(input) {
-            Ok(query_id) => {
-                for table in tables {
-                    let input = TableAccessCreateInput {
-                        connection_name: connection_name.to_string(),
-                        table_name: table.clone(),
-                        query_id: Some(query_id),
-                    };
-                    if let Err(e) = self.table_access.record(input) {
-                        eprintln!("pgrs: analytics write failed: {e:?}");
-                    }
-                }
-                for (table, col) in columns {
-                    let input = ColumnAccessCreateInput {
-                        connection_name: connection_name.to_string(),
-                        table_name: table.clone(),
-                        column_name: col.clone(),
-                        query_id: Some(query_id),
-                    };
-                    if let Err(e) = self.column_access.record(input) {
-                        eprintln!("pgrs: analytics write failed: {e:?}");
-                    }
-                }
+        // Without a query_id there are no access rows to write, so a history
+        // failure is terminal — return it directly.
+        let query_id = self.history.record(input)?;
+
+        // Access writes are best-effort: attempt them all, remember the first
+        // failure, and report it once at the end.
+        let mut first_err: Option<DomainError> = None;
+        for table in tables {
+            let input = TableAccessCreateInput {
+                connection_name: connection_name.to_string(),
+                table_name: table.clone(),
+                query_id: Some(query_id),
+            };
+            if let Err(e) = self.table_access.record(input)
+                && first_err.is_none()
+            {
+                first_err = Some(e);
             }
-            Err(e) => eprintln!("pgrs: analytics write failed: {e:?}"),
+        }
+        for (table, col) in columns {
+            let input = ColumnAccessCreateInput {
+                connection_name: connection_name.to_string(),
+                table_name: table.clone(),
+                column_name: col.clone(),
+                query_id: Some(query_id),
+            };
+            if let Err(e) = self.column_access.record(input)
+                && first_err.is_none()
+            {
+                first_err = Some(e);
+            }
+        }
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(()),
         }
     }
 
@@ -178,7 +192,8 @@ mod tests {
             "SELECT 1",
             &["users".to_string()],
             &[("users".to_string(), "id".to_string())],
-        );
+        )
+        .unwrap();
         assert_eq!(t.recorded.lock().unwrap().as_slice(), &["users"]);
         assert_eq!(c.recorded.lock().unwrap().as_slice(), &["id"]);
     }

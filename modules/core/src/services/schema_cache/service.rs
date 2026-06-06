@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::domain::error::DomainError;
 use crate::services::schema_column::service::{SchemaColumnCreateInput, SchemaColumnSvc};
 use crate::services::schema_table::service::{SchemaTableCreateInput, SchemaTableSvc};
 
 pub trait SchemaCacheSvc: Send + Sync {
-    fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>);
+    fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>) -> Result<(), DomainError>;
     fn load(&self, connection_name: &str) -> Option<HashMap<String, Vec<String>>>;
-    fn invalidate(&self, connection_name: &str);
+    fn invalidate(&self, connection_name: &str) -> Result<(), DomainError>;
 }
 
 pub struct SchemaCacheService {
@@ -22,40 +23,29 @@ impl SchemaCacheService {
 }
 
 impl SchemaCacheSvc for SchemaCacheService {
-    fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>) {
+    fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>) -> Result<(), DomainError> {
         let now = crate::utils::unix_now();
 
-        if let Err(e) = self.table_svc.delete_by_connection(connection_name) {
-            eprintln!("pgrs: schema cache write failed: {e}");
-            return;
-        }
-        if let Err(e) = self.column_svc.delete_by_connection(connection_name) {
-            eprintln!("pgrs: schema cache write failed: {e}");
-            return;
-        }
+        self.table_svc.delete_by_connection(connection_name)?;
+        self.column_svc.delete_by_connection(connection_name)?;
 
         for (table_name, columns) in schema {
-            if let Err(e) = self.table_svc.save(SchemaTableCreateInput {
+            self.table_svc.save(SchemaTableCreateInput {
                 connection_name: connection_name.to_string(),
                 table_name: table_name.clone(),
                 cached_at: now,
-            }) {
-                eprintln!("pgrs: schema cache write failed: {e}");
-                return;
-            }
+            })?;
             for column_name in columns {
-                if let Err(e) = self.column_svc.save(SchemaColumnCreateInput {
+                self.column_svc.save(SchemaColumnCreateInput {
                     connection_name: connection_name.to_string(),
                     table_name: table_name.clone(),
                     column_name: column_name.clone(),
                     data_type: None,
                     cached_at: now,
-                }) {
-                    eprintln!("pgrs: schema cache write failed: {e}");
-                    return;
-                }
+                })?;
             }
         }
+        Ok(())
     }
 
     fn load(&self, connection_name: &str) -> Option<HashMap<String, Vec<String>>> {
@@ -70,13 +60,12 @@ impl SchemaCacheSvc for SchemaCacheService {
         Some(map)
     }
 
-    fn invalidate(&self, connection_name: &str) {
-        if let Err(e) = self.table_svc.delete_by_connection(connection_name) {
-            eprintln!("pgrs: schema cache invalidate failed: {e}");
-        }
-        if let Err(e) = self.column_svc.delete_by_connection(connection_name) {
-            eprintln!("pgrs: schema cache invalidate failed: {e}");
-        }
+    fn invalidate(&self, connection_name: &str) -> Result<(), DomainError> {
+        // Best-effort: attempt both deletes even if the first fails, then
+        // report the first error (if any) to the caller.
+        let tables = self.table_svc.delete_by_connection(connection_name);
+        let columns = self.column_svc.delete_by_connection(connection_name);
+        tables.and(columns)
     }
 }
 
@@ -143,7 +132,7 @@ mod tests {
 
         let mut schema = HashMap::new();
         schema.insert("users".to_string(), vec!["id".to_string(), "email".to_string()]);
-        svc.save("mydb", &schema);
+        svc.save("mydb", &schema).unwrap();
 
         let loaded = svc.load("mydb").unwrap();
         assert!(loaded.contains_key("users"));
@@ -161,7 +150,7 @@ mod tests {
         }]));
         let svc = make_svc(col_svc);
         assert!(svc.load("mydb").is_some());
-        svc.invalidate("mydb");
+        svc.invalidate("mydb").unwrap();
         assert!(svc.load("mydb").is_none());
     }
 
@@ -172,11 +161,11 @@ mod tests {
 
         let mut v1 = HashMap::new();
         v1.insert("users".to_string(), vec!["id".to_string()]);
-        svc.save("mydb", &v1);
+        svc.save("mydb", &v1).unwrap();
 
         let mut v2 = HashMap::new();
         v2.insert("orders".to_string(), vec!["id".to_string()]);
-        svc.save("mydb", &v2);
+        svc.save("mydb", &v2).unwrap();
 
         let loaded = svc.load("mydb").unwrap();
         assert!(!loaded.contains_key("users"), "old data should be replaced");

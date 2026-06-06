@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::domain::error::DomainError;
 use crate::domain::query_history::QueryHistory;
 use crate::query::alias::{extract_column_refs, extract_referenced_tables};
 use crate::services::analytics::service::AnalyticsSvc;
@@ -21,7 +22,10 @@ impl AnalyticsApi {
 
     /// Record an executed query plus the tables/columns it referenced.
     /// Table and column references are extracted from `sql` using `schema`.
-    pub fn record_query(&self, connection_name: &str, sql: &str, schema: &SchemaApi) {
+    ///
+    /// Best-effort: returns the first write error (if any) so the UI layer can
+    /// decide whether to surface it; core does no logging of its own.
+    pub fn record_query(&self, connection_name: &str, sql: &str, schema: &SchemaApi) -> Result<(), DomainError> {
         let tables = extract_referenced_tables(sql);
         let schema_view: Vec<(&str, &[String])> = schema
             .tables()
@@ -29,7 +33,7 @@ impl AnalyticsApi {
             .map(|t| (t.as_str(), schema.columns_for(t)))
             .collect();
         let columns = extract_column_refs(sql, &schema_view);
-        self.svc.record_query(connection_name, sql, &tables, &columns);
+        self.svc.record_query(connection_name, sql, &tables, &columns)
     }
 
     /// Recent query history for a connection (most recent first).

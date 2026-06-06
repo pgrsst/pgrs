@@ -125,8 +125,10 @@ impl CommandHandler {
                     }
                 }
 
-                if let Some(analytics) = opts.analytics {
-                    analytics.record_query(opts.connection_name, query, schema);
+                if let Some(analytics) = opts.analytics
+                    && let Err(e) = analytics.record_query(opts.connection_name, query, schema)
+                {
+                    eprintln!("pgrs: analytics write failed: {e}");
                 }
 
                 if is_ddl(query) {
@@ -445,8 +447,8 @@ mod tests {
         let core = core_with_connection("mydb");
         let analytics = core.analytics_api();
         let schema = schema_from(&[]);
-        analytics.record_query("mydb", "SELECT 1", &schema);
-        analytics.record_query("mydb", "SELECT 2", &schema);
+        analytics.record_query("mydb", "SELECT 1", &schema).unwrap();
+        analytics.record_query("mydb", "SELECT 2", &schema).unwrap();
         let mut out = Vec::new();
         handler().handle_history("mydb", &analytics, &mut out);
         let text = String::from_utf8(out).unwrap();
@@ -459,7 +461,7 @@ mod tests {
         let core = core_with_connection("mydb");
         let analytics = core.analytics_api();
         let schema = schema_from(&[("users", &["id", "email"])]);
-        analytics.record_query("mydb", "SELECT id FROM users", &schema);
+        analytics.record_query("mydb", "SELECT id FROM users", &schema).unwrap();
         let mut out = Vec::new();
         handler().handle_stats("mydb", None, &analytics, &mut out);
         let text = String::from_utf8(out).unwrap();
@@ -471,7 +473,7 @@ mod tests {
         let core = core_with_connection("mydb");
         let analytics = core.analytics_api();
         let schema = schema_from(&[("users", &["id", "email"])]);
-        analytics.record_query("mydb", "SELECT email FROM users", &schema);
+        analytics.record_query("mydb", "SELECT email FROM users", &schema).unwrap();
         let mut out = Vec::new();
         handler().handle_stats("mydb", Some("users"), &analytics, &mut out);
         let text = String::from_utf8(out).unwrap();

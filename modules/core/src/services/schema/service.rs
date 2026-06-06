@@ -34,7 +34,10 @@ impl SchemaService {
         }
         let columns = conn.list_columns()?;
         if let Some(cache) = &self.cache {
-            cache.save(connection_name, &columns);
+            // Cache writes are an optimization: a failure just means the next
+            // load re-reads from the DB, so it must not fail the load. Core
+            // does not log — intentionally drop the error here.
+            let _ = cache.save(connection_name, &columns);
         }
         self.tables = columns.keys().cloned().collect();
         self.tables.sort();
@@ -44,7 +47,9 @@ impl SchemaService {
 
     pub fn refresh(&mut self, conn: &dyn SchemaPort, connection_name: &str) -> Result<(), DomainError> {
         if let Some(cache) = &self.cache {
-            cache.invalidate(connection_name);
+            // Best-effort invalidate; a stale cache is corrected by the reload
+            // below, so do not fail refresh on a cache error.
+            let _ = cache.invalidate(connection_name);
         }
         self.load(conn, connection_name)
     }
@@ -105,15 +110,17 @@ mod tests {
         }
     }
     impl SchemaCacheSvc for StubCache {
-        fn save(&self, _: &str, schema: &HashMap<String, Vec<String>>) {
+        fn save(&self, _: &str, schema: &HashMap<String, Vec<String>>) -> Result<(), DomainError> {
             *self.store.write().unwrap() = Some(schema.clone());
             self.saved.write().unwrap().push(schema.clone());
+            Ok(())
         }
         fn load(&self, _: &str) -> Option<HashMap<String, Vec<String>>> {
             self.store.read().unwrap().clone()
         }
-        fn invalidate(&self, _: &str) {
+        fn invalidate(&self, _: &str) -> Result<(), DomainError> {
             *self.store.write().unwrap() = None;
+            Ok(())
         }
     }
 
