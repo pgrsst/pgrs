@@ -1,8 +1,15 @@
 use std::io::Write;
 
-use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi};
+use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi, is_ddl};
 use super::executor::format_result;
-use super::sql_utils::is_ddl;
+
+/// Print a `name -> count` frequency table, left-aligned to the widest name.
+fn print_freq(freq: &[(String, u64)], writer: &mut impl Write) {
+    let name_w = freq.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    for (name, count) in freq {
+        writeln!(writer, "  {:<name_w$}  {}", name, count).ok();
+    }
+}
 
 pub(super) struct CommandHandler;
 
@@ -31,17 +38,19 @@ impl CommandHandler {
         }
     }
 
-    const LIST_DATABASES_SQL: &'static str =
-        "SELECT datname AS database \
-         FROM pg_database \
-         WHERE datistemplate = false \
-         ORDER BY datname";
-
-    pub(super) fn handle_l(&self, query: &QueryApi, expanded: bool, writer: &mut impl Write) {
-        match query.execute(Self::LIST_DATABASES_SQL) {
-            Ok(result) => write!(writer, "{}", format_result(&result, expanded)).ok(),
-            Err(e) => { eprintln!("error: {}", e); None }
-        };
+    pub(super) fn handle_l(&self, query: &QueryApi, writer: &mut impl Write) {
+        match query.list_databases() {
+            Ok(databases) => {
+                for name in &databases {
+                    writeln!(writer, " {}", name).ok();
+                }
+                let n = databases.len();
+                writeln!(writer, "({} {})", n, if n == 1 { "database" } else { "databases" }).ok();
+            }
+            Err(e) => {
+                writeln!(writer, "error: {}", e).ok();
+            }
+        }
     }
 
     pub(super) fn handle_history(&self, connection_name: &str, analytics: &AnalyticsApi, writer: &mut impl Write) {
@@ -84,10 +93,7 @@ impl CommandHandler {
                     writeln!(writer, "No table statistics yet.").ok();
                     return;
                 }
-                let name_w = freq.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
-                for (name, count) in &freq {
-                    writeln!(writer, "  {:<name_w$}  {}", name, count).ok();
-                }
+                print_freq(&freq, writer);
             }
             Some(tbl) => {
                 let freq = analytics.frequent_columns(connection_name, tbl);
@@ -95,10 +101,7 @@ impl CommandHandler {
                     writeln!(writer, "No column statistics for '{}'.", tbl).ok();
                     return;
                 }
-                let name_w = freq.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
-                for (name, count) in &freq {
-                    writeln!(writer, "  {:<name_w$}  {}", name, count).ok();
-                }
+                print_freq(&freq, writer);
             }
         }
     }
@@ -128,7 +131,7 @@ impl CommandHandler {
                 if let Some(analytics) = opts.analytics
                     && let Err(e) = analytics.record_query(opts.connection_name, query, schema)
                 {
-                    eprintln!("pgrs: analytics write failed: {e}");
+                    writeln!(writer, "pgrs: analytics write failed: {e}").ok();
                 }
 
                 if is_ddl(query) {
@@ -137,11 +140,11 @@ impl CommandHandler {
                             rebuild(schema.clone());
                             writeln!(writer, "(schema refreshed)").ok();
                         }
-                        Err(e) => eprintln!("error: could not refresh schema: {e}"),
+                        Err(e) => { writeln!(writer, "error: could not refresh schema: {e}").ok(); }
                     }
                 }
             }
-            Err(e) => eprintln!("error: {}", e),
+            Err(e) => { writeln!(writer, "error: {}", e).ok(); }
         }
     }
 
@@ -158,7 +161,7 @@ impl CommandHandler {
                 rebuild(schema.clone());
                 writeln!(writer, "Schema refreshed.").ok();
             }
-            Err(e) => eprintln!("error: could not refresh schema: {e}"),
+            Err(e) => { writeln!(writer, "error: could not refresh schema: {e}").ok(); }
         }
     }
 }
@@ -281,7 +284,7 @@ mod tests {
             vec!["database".to_string()],
         ).into_query();
         let mut out = Vec::new();
-        handler().handle_l(&query, false, &mut out);
+        handler().handle_l(&query, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("mydb"), "expected db name in output, got: {text}");
     }
@@ -290,7 +293,9 @@ mod tests {
     fn handle_l_handles_db_error_gracefully() {
         let query = StubDb::err("connection lost").into_query();
         let mut out = Vec::new();
-        handler().handle_l(&query, false, &mut out);
+        handler().handle_l(&query, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("error"), "expected error written to output, got: {text}");
     }
 
     #[test]

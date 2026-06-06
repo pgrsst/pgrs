@@ -9,7 +9,7 @@ mod ui;
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-use reedline::Signal;
+use reedline::{Reedline, Signal};
 
 use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi};
 
@@ -32,6 +32,72 @@ fn freq_for_schema(
             m
         });
     (table_freq, column_freq)
+}
+
+/// Rebuild the reedline editor so completion/highlighting pick up a refreshed
+/// schema and the latest access-frequency ordering.
+fn rebuild_reedline(
+    rl: &mut Reedline,
+    analytics: &AnalyticsApi,
+    connection_name: &str,
+    schema: SchemaApi,
+) {
+    let (tf, cf) = freq_for_schema(analytics, connection_name, &schema);
+    *rl = ui::build_reedline(schema, tf, cf);
+}
+
+/// A single line of REPL input, classified. Keeping the (order-sensitive)
+/// backslash-command parsing here, separate from execution, makes the dispatch
+/// loop a flat match and lets the parser be unit-tested in isolation.
+enum ReplCommand<'a> {
+    Empty,
+    Quit,
+    Help,
+    ListTables,      // \dt
+    ListTablesPlain, // \d
+    ListDatabases,   // \l
+    ToggleExpanded,  // \x
+    ToggleTiming,    // \timing
+    Refresh,         // \refresh
+    History,         // \history
+    Stats(Option<&'a str>),
+    Describe { table: &'a str, extended: bool }, // \d <t> / \d+ <t>
+    DescribeUsage,                               // \d+ with no table
+    Export(Option<&'a str>),                     // None => bare \export
+    Sql(&'a str),
+}
+
+impl<'a> ReplCommand<'a> {
+    fn parse(trimmed: &'a str) -> ReplCommand<'a> {
+        match trimmed {
+            "" => ReplCommand::Empty,
+            "\\q" | "exit" => ReplCommand::Quit,
+            "\\help" | "\\?" => ReplCommand::Help,
+            "\\dt" => ReplCommand::ListTables,
+            "\\d" => ReplCommand::ListTablesPlain,
+            "\\l" => ReplCommand::ListDatabases,
+            "\\x" => ReplCommand::ToggleExpanded,
+            "\\timing" => ReplCommand::ToggleTiming,
+            "\\refresh" => ReplCommand::Refresh,
+            "\\history" => ReplCommand::History,
+            "\\stats" => ReplCommand::Stats(None),
+            "\\d+" => ReplCommand::DescribeUsage,
+            "\\export" => ReplCommand::Export(None),
+            _ => {
+                if let Some(t) = trimmed.strip_prefix("\\d+ ") {
+                    ReplCommand::Describe { table: t, extended: true }
+                } else if let Some(t) = trimmed.strip_prefix("\\d ") {
+                    ReplCommand::Describe { table: t, extended: false }
+                } else if let Some(t) = trimmed.strip_prefix("\\stats ") {
+                    ReplCommand::Stats(Some(t))
+                } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
+                    ReplCommand::Export(Some(rest))
+                } else {
+                    ReplCommand::Sql(trimmed)
+                }
+            }
+        }
+    }
 }
 
 pub struct Repl {
@@ -97,75 +163,64 @@ impl Repl {
                 Ok(Signal::Success(line)) => {
                     let trimmed = line.trim();
                     let mut stdout = io::stdout();
-                    match trimmed {
-                        "\\q" | "exit" => break,
-                        "\\help" | "\\?" => println!("{}", ui::repl_help_text()),
-                        "\\dt" => handler.handle_dt(&schema, &mut stdout),
-                        "\\l" => handler.handle_l(&query, expanded, &mut stdout),
-                        "\\x" => {
+                    match ReplCommand::parse(trimmed) {
+                        ReplCommand::Empty => {}
+                        ReplCommand::Quit => break,
+                        ReplCommand::Help => println!("{}", ui::repl_help_text()),
+                        ReplCommand::ListTables => handler.handle_dt(&schema, &mut stdout),
+                        ReplCommand::ListTablesPlain => handler.handle_d(&schema, &mut stdout),
+                        ReplCommand::ListDatabases => handler.handle_l(&query, &mut stdout),
+                        ReplCommand::ToggleExpanded => {
                             expanded = !expanded;
                             println!("Expanded display is {}.", if expanded { "on" } else { "off" });
                         }
-                        "\\timing" => {
+                        ReplCommand::ToggleTiming => {
                             timing = !timing;
                             println!("Timing is {}.", if timing { "on" } else { "off" });
                         }
-                        "\\refresh" => handler.handle_refresh(
+                        ReplCommand::Refresh => handler.handle_refresh(
                             &query,
                             &connection_name,
                             &mut schema,
-                            &mut |s: SchemaApi| {
-                                let (tf, cf) = freq_for_schema(&analytics, &connection_name, &s);
-                                rl = ui::build_reedline(s, tf, cf);
-                            },
+                            &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
                             &mut stdout,
                         ),
-                        "\\history" => handler.handle_history(&connection_name, &analytics, &mut stdout),
-                        "\\stats" => handler.handle_stats(&connection_name, None, &analytics, &mut stdout),
-                        "" => {}
-                        _ => {
-                            if let Some(name) = trimmed.strip_prefix("\\d+ ") {
-                                if let Err(e) = describe_table(&query, name, true, &mut stdout) {
-                                    eprintln!("error: {}", e);
-                                }
-                            } else if let Some(name) = trimmed.strip_prefix("\\d ") {
-                                if let Err(e) = describe_table(&query, name, false, &mut stdout) {
-                                    eprintln!("error: {}", e);
-                                }
-                            } else if trimmed == "\\d+" {
-                                println!("Usage: \\d+ <table>");
-                            } else if trimmed == "\\d" {
-                                handler.handle_d(&schema, &mut stdout);
-                            } else if let Some(tbl) = trimmed.strip_prefix("\\stats ") {
-                                handler.handle_stats(&connection_name, Some(tbl), &analytics, &mut stdout);
-                            } else if trimmed == "\\export" {
-                                writeln!(stdout, "Usage: \\export <id> <path>").ok();
-                            } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
-                                match csv::parse_export_args(rest) {
-                                    None => { writeln!(stdout, "Usage: \\export <id> <path>").ok(); }
-                                    Some((id, path)) => csv::handle_export(
-                                        id, &path, &connection_name, &query, &analytics, &mut stdout,
-                                    ),
-                                }
-                            } else {
-                                handler.handle_sql(
-                                    &query,
-                                    trimmed,
-                                    &SqlOptions {
-                                        expanded,
-                                        timing,
-                                        connection_name: &connection_name,
-                                        analytics: Some(&analytics),
-                                    },
-                                    &mut schema,
-                                    &mut |s: SchemaApi| {
-                                        let (tf, cf) = freq_for_schema(&analytics, &connection_name, &s);
-                                        rl = ui::build_reedline(s, tf, cf);
-                                    },
-                                    &mut stdout,
-                                );
+                        ReplCommand::History => {
+                            handler.handle_history(&connection_name, &analytics, &mut stdout)
+                        }
+                        ReplCommand::Stats(table) => {
+                            handler.handle_stats(&connection_name, table, &analytics, &mut stdout)
+                        }
+                        ReplCommand::Describe { table, extended } => {
+                            if let Err(e) = describe_table(&query, table, extended, &mut stdout) {
+                                writeln!(stdout, "error: {}", e).ok();
                             }
                         }
+                        ReplCommand::DescribeUsage => println!("Usage: \\d+ <table>"),
+                        ReplCommand::Export(None) => {
+                            writeln!(stdout, "Usage: \\export <id> <path>").ok();
+                        }
+                        ReplCommand::Export(Some(rest)) => match csv::parse_export_args(rest) {
+                            None => {
+                                writeln!(stdout, "Usage: \\export <id> <path>").ok();
+                            }
+                            Some((id, path)) => csv::handle_export(
+                                id, &path, &connection_name, &query, &analytics, &mut stdout,
+                            ),
+                        },
+                        ReplCommand::Sql(sql) => handler.handle_sql(
+                            &query,
+                            sql,
+                            &SqlOptions {
+                                expanded,
+                                timing,
+                                connection_name: &connection_name,
+                                analytics: Some(&analytics),
+                            },
+                            &mut schema,
+                            &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
+                            &mut stdout,
+                        ),
                     }
                 }
                 Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
@@ -176,5 +231,84 @@ impl Repl {
 
         println!("Bye.");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReplCommand;
+
+    #[test]
+    fn empty_line_is_empty() {
+        assert!(matches!(ReplCommand::parse(""), ReplCommand::Empty));
+    }
+
+    #[test]
+    fn quit_aliases() {
+        assert!(matches!(ReplCommand::parse("\\q"), ReplCommand::Quit));
+        assert!(matches!(ReplCommand::parse("exit"), ReplCommand::Quit));
+    }
+
+    #[test]
+    fn bare_d_lists_tables_but_d_space_describes() {
+        assert!(matches!(ReplCommand::parse("\\d"), ReplCommand::ListTablesPlain));
+        assert!(matches!(
+            ReplCommand::parse("\\d users"),
+            ReplCommand::Describe { table: "users", extended: false }
+        ));
+    }
+
+    #[test]
+    fn d_plus_describes_extended_and_bare_is_usage() {
+        assert!(matches!(ReplCommand::parse("\\d+"), ReplCommand::DescribeUsage));
+        assert!(matches!(
+            ReplCommand::parse("\\d+ orders"),
+            ReplCommand::Describe { table: "orders", extended: true }
+        ));
+    }
+
+    #[test]
+    fn stats_with_and_without_table() {
+        assert!(matches!(ReplCommand::parse("\\stats"), ReplCommand::Stats(None)));
+        assert!(matches!(
+            ReplCommand::parse("\\stats users"),
+            ReplCommand::Stats(Some("users"))
+        ));
+    }
+
+    #[test]
+    fn export_bare_vs_args() {
+        assert!(matches!(ReplCommand::parse("\\export"), ReplCommand::Export(None)));
+        assert!(matches!(
+            ReplCommand::parse("\\export 1 /tmp/out.csv"),
+            ReplCommand::Export(Some("1 /tmp/out.csv"))
+        ));
+    }
+
+    #[test]
+    fn toggles_and_simple_commands() {
+        assert!(matches!(ReplCommand::parse("\\x"), ReplCommand::ToggleExpanded));
+        assert!(matches!(ReplCommand::parse("\\timing"), ReplCommand::ToggleTiming));
+        assert!(matches!(ReplCommand::parse("\\dt"), ReplCommand::ListTables));
+        assert!(matches!(ReplCommand::parse("\\l"), ReplCommand::ListDatabases));
+        assert!(matches!(ReplCommand::parse("\\refresh"), ReplCommand::Refresh));
+        assert!(matches!(ReplCommand::parse("\\history"), ReplCommand::History));
+        assert!(matches!(ReplCommand::parse("\\help"), ReplCommand::Help));
+        assert!(matches!(ReplCommand::parse("\\?"), ReplCommand::Help));
+    }
+
+    #[test]
+    fn plain_sql_falls_through() {
+        assert!(matches!(
+            ReplCommand::parse("SELECT * FROM users;"),
+            ReplCommand::Sql("SELECT * FROM users;")
+        ));
+    }
+
+    #[test]
+    fn unknown_backslash_is_treated_as_sql() {
+        // Not a recognised command -> handed to the SQL executor, which surfaces
+        // the error. Parser stays dumb; it does not guess.
+        assert!(matches!(ReplCommand::parse("\\nope"), ReplCommand::Sql("\\nope")));
     }
 }

@@ -1,8 +1,6 @@
 use std::io::{self, Write};
 
-use pgrs_core::{AnalyticsApi, QueryApi, QueryResult};
-
-use super::sql_utils::{is_ddl, is_dml};
+use pgrs_core::{AnalyticsApi, QueryApi, QueryResult, is_ddl, is_dml};
 
 fn csv_quote(val: &str) -> String {
     if val.contains(',') || val.contains('"') || val.contains('\n') || val.contains('\r') {

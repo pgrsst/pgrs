@@ -822,7 +822,6 @@ dependencies = [
  "nu-ansi-term",
  "pgrs-core",
  "reedline",
- "sqlparser",
  "tempfile",
  "unicode-width",
 ]
