@@ -19,8 +19,10 @@ pub fn run() -> Result<(), String> {
 
 fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
     let db_path = data_dir.join("pgrs.db");
-    let core = Core::init(db_path.to_str().unwrap_or("pgrs.db"))
-        .map_err(|e| format!("pgrs: {e}"))?;
+    let db_path = db_path
+        .to_str()
+        .ok_or_else(|| format!("data directory path is not valid UTF-8: {}", db_path.display()))?;
+    let core = Core::init(db_path).map_err(|e| format!("pgrs: {e}"))?;
 
     match args.first().map(String::as_str) {
         Some("shell") => run_shell(&core, &args[1..]),
