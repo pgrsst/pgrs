@@ -6,6 +6,7 @@ use crate::domain::error::DomainError;
 use crate::ports::db_connection::QueryResult;
 use crate::ports::repl_port::ReplPort;
 use crate::ports::schema_port::SchemaPort;
+use crate::services::catalog::TableDescription;
 
 /// Public facade for executing SQL against a live PostgreSQL connection.
 ///
@@ -25,6 +26,21 @@ impl QueryApi {
     /// Run a SQL statement and return the result set.
     pub fn execute(&self, sql: &str) -> Result<QueryResult, DomainError> {
         self.db.execute(sql)
+    }
+
+    /// Describe a table (`\d` / `\d+`): columns, indexes, constraints, triggers.
+    /// The pg_catalog SQL lives in the core so front-ends only see the result.
+    pub fn describe_table(
+        &self,
+        table: &str,
+        extended: bool,
+    ) -> Result<TableDescription, DomainError> {
+        crate::services::catalog::describe_table(&*self.db, table, extended)
+    }
+
+    /// List user-visible database names (`\l`).
+    pub fn list_databases(&self) -> Result<Vec<String>, DomainError> {
+        crate::services::catalog::list_databases(&*self.db)
     }
 
     /// Build a `QueryApi` from any `ReplPort` implementation (test fakes).

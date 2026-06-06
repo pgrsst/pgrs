@@ -48,11 +48,13 @@ pub use enums::tls_mode::TlsMode;
 pub use ports::db_connection::{DbConnection, QueryResult};
 pub use ports::repl_port::ReplPort;
 pub use ports::schema_port::SchemaPort;
+pub use services::catalog::{NamedDef, TableDescription};
 pub use services::connection::service::{AddConnectionInput, EditConnectionInput};
 pub use services::query::completions::{Completion, CompletionKind};
 
 // --- SQL text helpers used by the REPL front-end for highlighting/tokenizing ---
 pub use query::alias::SQL_KEYWORDS;
+pub use query::classify::{is_ddl, is_dml};
 pub use query::tokenizer::{SqlToken, tokenize};
 
 /// Root composition object. Owns the shared SQLite store and hands out API

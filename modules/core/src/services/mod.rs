@@ -14,6 +14,7 @@ pub(crate) fn resolve_connection_id(
 }
 
 pub mod analytics;
+pub mod catalog;
 pub mod column_access;
 pub mod connection;
 pub mod query;
