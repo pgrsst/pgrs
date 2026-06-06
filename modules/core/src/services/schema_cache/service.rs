@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::services::schema_column::service::{SchemaColumnCreateInput, SchemaColumnSvc};
 use crate::services::schema_table::service::{SchemaTableCreateInput, SchemaTableSvc};
@@ -24,10 +23,7 @@ impl SchemaCacheService {
 
 impl SchemaCacheSvc for SchemaCacheService {
     fn save(&self, connection_name: &str, schema: &HashMap<String, Vec<String>>) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let now = crate::utils::unix_now();
 
         if let Err(e) = self.table_svc.delete_by_connection(connection_name) {
             eprintln!("pgrs: schema cache write failed: {e}");
