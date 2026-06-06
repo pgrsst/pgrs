@@ -32,10 +32,8 @@ impl QueryHistoryService {
 
 impl QueryHistorySvc for QueryHistoryService {
     fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError> {
-        let connection_id = self.connection_repo
-            .get_connection(&input.connection_name)?
-            .id
-            .ok_or_else(|| DomainError::StorageError("connection has no id".to_string()))?;
+        let connection_id =
+            crate::services::resolve_connection_id(self.connection_repo.as_ref(), &input.connection_name)?;
         let now = unix_now();
         let entity = QueryHistory {
             id: 0,
