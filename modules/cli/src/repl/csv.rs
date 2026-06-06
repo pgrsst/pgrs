@@ -99,11 +99,11 @@ pub(super) fn handle_export(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pgrs_core::{Core, DbConnection, QueryApi, QueryResult, SchemaApi, SchemaPort};
+    use pgrs_core::{Core, DbConnection, DomainError, QueryApi, QueryResult, SchemaApi, SchemaPort};
     use std::collections::HashMap;
 
     struct StubDb {
-        result: Result<QueryResult, String>,
+        result: Result<QueryResult, DomainError>,
     }
 
     impl StubDb {
@@ -115,13 +115,13 @@ mod tests {
     }
 
     impl DbConnection for StubDb {
-        fn execute(&self, _query: &str) -> Result<QueryResult, String> {
+        fn execute(&self, _query: &str) -> Result<QueryResult, DomainError> {
             self.result.clone()
         }
     }
 
     impl SchemaPort for StubDb {
-        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
             Ok(HashMap::new())
         }
     }

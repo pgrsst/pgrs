@@ -173,13 +173,13 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use pgrs_core::{
-        AddConnectionInput, Core, DbConnection, QueryApi, QueryResult, SchemaApi, SchemaPort,
-        TlsMode, DEFAULT_PORT,
+        AddConnectionInput, Core, DbConnection, DomainError, QueryApi, QueryResult, SchemaApi,
+        SchemaPort, TlsMode, DEFAULT_PORT,
     };
 
     struct StubDb {
         columns: HashMap<String, Vec<String>>,
-        result: Result<QueryResult, String>,
+        result: Result<QueryResult, DomainError>,
     }
 
     impl StubDb {
@@ -190,7 +190,7 @@ mod tests {
             }
         }
         fn err(msg: &str) -> Self {
-            Self { columns: HashMap::new(), result: Err(msg.to_string()) }
+            Self { columns: HashMap::new(), result: Err(DomainError::QueryError(msg.to_string())) }
         }
         fn with_schema(tables: &[(&str, &[&str])]) -> Self {
             let mut columns = HashMap::new();
@@ -205,13 +205,13 @@ mod tests {
     }
 
     impl DbConnection for StubDb {
-        fn execute(&self, _query: &str) -> Result<QueryResult, String> {
+        fn execute(&self, _query: &str) -> Result<QueryResult, DomainError> {
             self.result.clone()
         }
     }
 
     impl SchemaPort for StubDb {
-        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
             Ok(self.columns.clone())
         }
     }
@@ -376,13 +376,13 @@ mod tests {
         // A connection whose schema fetch (list_columns) fails.
         struct FailingDb;
         impl DbConnection for FailingDb {
-            fn execute(&self, _q: &str) -> Result<QueryResult, String> {
+            fn execute(&self, _q: &str) -> Result<QueryResult, DomainError> {
                 Ok(QueryResult { columns: vec![], rows: vec![], rows_affected: None })
             }
         }
         impl SchemaPort for FailingDb {
-            fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
-                Err("connection lost".to_string())
+            fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
+                Err(DomainError::QueryError("connection lost".to_string()))
             }
         }
         let query = QueryApi::from_repl(Box::new(FailingDb));

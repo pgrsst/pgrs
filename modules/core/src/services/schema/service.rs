@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::domain::error::DomainError;
 use crate::ports::schema_port::SchemaPort;
 use crate::services::schema_cache::service::SchemaCacheSvc;
 
@@ -22,7 +23,7 @@ impl SchemaService {
 
     // Uses `dyn SchemaPort` (not a generic) because callers pass `Box<dyn ReplPort>`,
     // whose concrete type is already erased by the time it reaches this function.
-    pub fn load(&mut self, conn: &dyn SchemaPort, connection_name: &str) -> Result<(), String> {
+    pub fn load(&mut self, conn: &dyn SchemaPort, connection_name: &str) -> Result<(), DomainError> {
         if let Some(cache) = &self.cache
             && let Some(columns) = cache.load(connection_name)
         {
@@ -41,7 +42,7 @@ impl SchemaService {
         Ok(())
     }
 
-    pub fn refresh(&mut self, conn: &dyn SchemaPort, connection_name: &str) -> Result<(), String> {
+    pub fn refresh(&mut self, conn: &dyn SchemaPort, connection_name: &str) -> Result<(), DomainError> {
         if let Some(cache) = &self.cache {
             cache.invalidate(connection_name);
         }
@@ -67,7 +68,7 @@ mod tests {
     }
 
     impl SchemaPort for MockDb {
-        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
             Ok(self.columns.clone())
         }
     }

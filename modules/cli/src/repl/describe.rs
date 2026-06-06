@@ -150,10 +150,10 @@ fn validate_table_name(name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use pgrs_core::{DbConnection, QueryApi, QueryResult, SchemaPort};
+    use pgrs_core::{DbConnection, DomainError, QueryApi, QueryResult, SchemaPort};
 
     struct StubDb {
-        responses: HashMap<&'static str, Result<QueryResult, String>>,
+        responses: HashMap<&'static str, Result<QueryResult, DomainError>>,
     }
 
     impl StubDb {
@@ -161,14 +161,14 @@ mod tests {
             Self { responses: HashMap::new() }
         }
 
-        fn with(mut self, key: &'static str, result: Result<QueryResult, String>) -> Self {
+        fn with(mut self, key: &'static str, result: Result<QueryResult, DomainError>) -> Self {
             self.responses.insert(key, result);
             self
         }
     }
 
     impl DbConnection for StubDb {
-        fn execute(&self, query: &str) -> Result<QueryResult, String> {
+        fn execute(&self, query: &str) -> Result<QueryResult, DomainError> {
             for (key, result) in &self.responses {
                 if query.contains(key) {
                     return result.clone();
@@ -179,7 +179,7 @@ mod tests {
     }
 
     impl SchemaPort for StubDb {
-        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
             Ok(HashMap::new())
         }
     }

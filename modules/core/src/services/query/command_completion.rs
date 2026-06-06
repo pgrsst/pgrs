@@ -38,7 +38,7 @@ mod tests {
     }
 
     impl crate::ports::schema_port::SchemaPort for TestDb {
-        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, crate::domain::error::DomainError> {
             Ok(self.columns.clone())
         }
     }

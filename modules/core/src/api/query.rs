@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::adapters::driven::postgres_db::PostgresDb;
 use crate::domain::connection::Connection;
+use crate::domain::error::DomainError;
 use crate::ports::db_connection::QueryResult;
 use crate::ports::repl_port::ReplPort;
 use crate::ports::schema_port::SchemaPort;
@@ -16,13 +17,13 @@ pub struct QueryApi {
 
 impl QueryApi {
     /// Open a live connection to the database described by `connection`.
-    pub fn connect(connection: &Connection) -> Result<Self, String> {
+    pub fn connect(connection: &Connection) -> Result<Self, DomainError> {
         let db = PostgresDb::new(connection)?;
         Ok(Self { db: Box::new(db) })
     }
 
     /// Run a SQL statement and return the result set.
-    pub fn execute(&self, sql: &str) -> Result<QueryResult, String> {
+    pub fn execute(&self, sql: &str) -> Result<QueryResult, DomainError> {
         self.db.execute(sql)
     }
 
@@ -36,7 +37,7 @@ impl QueryApi {
 // Lets `SchemaApi::load`/`refresh` accept a `&QueryApi` directly: the schema
 // loader only needs the `SchemaPort` capability, which we delegate to the inner db.
 impl SchemaPort for QueryApi {
-    fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+    fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
         self.db.list_columns()
     }
 }

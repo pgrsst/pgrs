@@ -1,11 +1,15 @@
 use std::fmt;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DomainError {
     NotFound(String),
     AlreadyExists(String),
     ValidationError(String),
     StorageError(String),
+    /// Failure talking to a live database: connecting, executing a query, or
+    /// reading schema metadata. Distinct from `StorageError` (the local SQLite
+    /// config store) so the port boundary uses one error type, not `String`.
+    QueryError(String),
 }
 
 impl fmt::Display for DomainError {
@@ -14,7 +18,8 @@ impl fmt::Display for DomainError {
             DomainError::NotFound(msg)
             | DomainError::AlreadyExists(msg)
             | DomainError::ValidationError(msg)
-            | DomainError::StorageError(msg) => write!(f, "{}", msg),
+            | DomainError::StorageError(msg)
+            | DomainError::QueryError(msg) => write!(f, "{}", msg),
         }
     }
 }

@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::domain::connection::Connection;
+use crate::domain::error::DomainError;
 use crate::enums::tls_mode::TlsMode;
 use crate::ports::db_connection::{DbConnection, QueryResult};
 use crate::ports::schema_port::SchemaPort;
@@ -11,7 +12,7 @@ pub struct PostgresDb {
 }
 
 impl PostgresDb {
-    pub fn new(connection: &Connection) -> Result<Self, String> {
+    pub fn new(connection: &Connection) -> Result<Self, DomainError> {
         let mut config = postgres::Config::new();
         config
             .host(&connection.host)
@@ -20,29 +21,29 @@ impl PostgresDb {
             .password(connection.password.as_bytes())
             .dbname(&connection.database);
 
+        let connect_err = |e: postgres::Error| {
+            DomainError::QueryError(format!("could not connect to '{}': {}", connection.name, e))
+        };
+        let tls_err = |e: native_tls::Error| {
+            DomainError::QueryError(format!("failed to build TLS connector: {}", e))
+        };
+
         let client = match connection.tls {
-            TlsMode::Disable => config
-                .connect(postgres::NoTls)
-                .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?,
+            TlsMode::Disable => config.connect(postgres::NoTls).map_err(connect_err)?,
             TlsMode::Require => {
                 // Encrypt without verifying the server certificate (matches psql sslmode=require).
                 let tls = native_tls::TlsConnector::builder()
                     .danger_accept_invalid_certs(true)
                     .danger_accept_invalid_hostnames(true)
                     .build()
-                    .map_err(|e| format!("failed to build TLS connector: {}", e))?;
+                    .map_err(tls_err)?;
                 let tls = postgres_native_tls::MakeTlsConnector::new(tls);
-                config
-                    .connect(tls)
-                    .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?
+                config.connect(tls).map_err(connect_err)?
             }
             TlsMode::VerifyFull => {
-                let tls = native_tls::TlsConnector::new()
-                    .map_err(|e| format!("failed to build TLS connector: {}", e))?;
+                let tls = native_tls::TlsConnector::new().map_err(tls_err)?;
                 let tls = postgres_native_tls::MakeTlsConnector::new(tls);
-                config
-                    .connect(tls)
-                    .map_err(|e| format!("could not connect to '{}': {}", connection.name, e))?
+                config.connect(tls).map_err(connect_err)?
             }
         };
 
@@ -53,11 +54,13 @@ impl PostgresDb {
 }
 
 impl DbConnection for PostgresDb {
-    fn execute(&self, query: &str) -> Result<QueryResult, String> {
+    fn execute(&self, query: &str) -> Result<QueryResult, DomainError> {
         use postgres::SimpleQueryMessage;
 
         let mut client = self.client.borrow_mut();
-        let messages = client.simple_query(query).map_err(|e| e.to_string())?;
+        let messages = client
+            .simple_query(query)
+            .map_err(|e| DomainError::QueryError(e.to_string()))?;
 
         let mut columns: Vec<String> = vec![];
         let mut rows: Vec<Vec<String>> = vec![];
@@ -95,7 +98,7 @@ impl DbConnection for PostgresDb {
 }
 
 impl SchemaPort for PostgresDb {
-    fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, String> {
+    fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
         let mut client = self.client.borrow_mut();
         let rows = client
             .query(
@@ -104,7 +107,7 @@ impl SchemaPort for PostgresDb {
                  ORDER BY table_name, ordinal_position",
                 &[],
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| DomainError::QueryError(e.to_string()))?;
 
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for row in &rows {

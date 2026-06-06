@@ -1,3 +1,4 @@
+use crate::domain::error::DomainError;
 use crate::services::schema::service::SchemaService;
 
 use super::query::QueryApi;
@@ -17,12 +18,12 @@ impl SchemaApi {
     }
 
     /// Load schema metadata for `connection_name`, using the cache when present.
-    pub fn load(&mut self, query: &QueryApi, connection_name: &str) -> Result<(), String> {
+    pub fn load(&mut self, query: &QueryApi, connection_name: &str) -> Result<(), DomainError> {
         self.inner.load(query, connection_name)
     }
 
     /// Invalidate the cache and reload schema metadata from the database.
-    pub fn refresh(&mut self, query: &QueryApi, connection_name: &str) -> Result<(), String> {
+    pub fn refresh(&mut self, query: &QueryApi, connection_name: &str) -> Result<(), DomainError> {
         self.inner.refresh(query, connection_name)
     }
 
@@ -48,7 +49,7 @@ impl SchemaApi {
         impl SchemaPort for InMemory {
             fn list_columns(
                 &self,
-            ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+            ) -> Result<std::collections::HashMap<String, Vec<String>>, DomainError> {
                 Ok(self.0.clone())
             }
         }
