@@ -53,7 +53,8 @@ lib.rs                  — Core::init(db_path) composition root + public re-exp
                           Owns Arc<SqliteRepository>; hands out API facades.
 api/                    — the ONLY surface pgrs-cli may use:
   connection.rs         — ConnectionApi: add/list/delete/edit/rename/find/get
-  query.rs              — QueryApi: connect(&Connection), execute(&str) → QueryResult;
+  query.rs              — QueryApi: connect(&Connection), execute(&str) → QueryResult,
+                          describe_table/list_databases (pg_catalog behind the facade);
                           impls SchemaPort by delegating to the live DB
   schema.rs             — SchemaApi: load/refresh(&QueryApi, conn), tables(), columns_for()
   completions.rs        — CompletionsApi: completions(query, cursor) → Vec<Completion>
@@ -67,10 +68,12 @@ ports/                  — one trait per repository/capability boundary:
   query_history_repository.rs, table_access_repository.rs, column_access_repository.rs,
   schema_table_repository.rs, schema_column_repository.rs
 services/               — connection, schema, analytics, schema_cache, query_history,
-                          table_access, column_access, schema_table, schema_column;
+                          table_access, column_access, schema_table, schema_column,
+                          catalog (pg_catalog \d/\l SQL → TableDescription/NamedDef);
                           query/ holds completions + command_completion + query_completion
 query/                  — tokenizer.rs (SqlToken + tokenize), alias.rs (AliasMap,
-                          build_alias_map, extract_join_context, extract_referenced_tables, SQL_KEYWORDS)
+                          build_alias_map, extract_join_context, extract_referenced_tables, SQL_KEYWORDS),
+                          classify.rs (is_ddl / is_dml, sqlparser-based)
 adapters/driven/
   sqlite/               — SqliteRepository across sub-stores (connection_store,
                           query_history_store, table_access_store, column_access_store,
@@ -96,8 +99,8 @@ repl/                   — interactive SQL REPL (reedline-based)
   completer.rs          — SqlCompleter, SqlHighlighter, SqlHinter backed by CompletionsApi/SchemaApi
   executor.rs           — formats and prints QueryResult (normal and expanded \x mode)
   csv.rs                — CSV export for \export
-  describe.rs           — \d <table>: columns, indexes, FK, constraints via pg_catalog (uses QueryApi)
-  sql_utils.rs          — is_complete_statement, is_ddl, is_dml (sqlparser-based)
+  describe.rs           — \d <table>: formats QueryApi::describe_table (TableDescription); no SQL
+  sql_utils.rs          — is_complete_statement (multi-line buffering; SQL classification is in core)
   ui.rs                 — builds reedline editor, PgrsPrompt, validator, help text
 completions.rs /
 completions/            — shell completion scripts (bash, zsh, fish)
@@ -105,7 +108,7 @@ completions/            — shell completion scripts (bash, zsh, fish)
 
 **Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>` and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `QueryApi::connect(&conn)` + `Repl::new(...)`. All analytics and schema-cache state is backed by the same SQLite file.
 
-**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, SqlToken, tokenize, SQL_KEYWORDS, DEFAULT_PORT, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
+**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, TableDescription, NamedDef, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
 
 **CLI argument parsing:** No external arg-parsing library. Args are matched with `--key=value` prefix stripping via `optional_option` in `cli/args.rs`. Port defaults to 5432 (`DEFAULT_PORT`).
 
