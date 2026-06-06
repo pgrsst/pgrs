@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::query::alias::{build_alias_map, extract_join_context, AliasMap, SQL_KEYWORDS};
 use crate::services::schema::service::SchemaService;
 
+use super::completion_ranker::CompletionRanker;
 use super::completions::{Completion, CompletionKind};
 
 const TABLE_TRIGGERS: &[&str] = &["FROM", "JOIN", "INTO", "UPDATE"];
@@ -10,8 +11,7 @@ const COLUMN_TRIGGERS: &[&str] = &["SELECT", "WHERE", "ON", "SET", "BY"];
 
 pub struct QueryCompletionService {
     schema: SchemaService,
-    table_freq: HashMap<String, u64>,
-    column_freq: HashMap<String, u64>,
+    ranker: CompletionRanker,
 }
 
 impl QueryCompletionService {
@@ -20,7 +20,7 @@ impl QueryCompletionService {
         table_freq: HashMap<String, u64>,
         column_freq: HashMap<String, u64>,
     ) -> Self {
-        Self { schema, table_freq, column_freq }
+        Self { schema, ranker: CompletionRanker::new(table_freq, column_freq) }
     }
 
     pub fn completions(&self, query: &str, cursor: usize) -> Vec<Completion> {
@@ -34,7 +34,17 @@ impl QueryCompletionService {
         let (effective_trigger, current_word) = resolve_trigger_and_word(input);
         let candidates =
             self.candidates_for_trigger(&effective_trigger, &query.to_uppercase(), &alias_map);
-        self.filter_and_sort(candidates, &effective_trigger, &current_word)
+
+        let mut results = self.filter(candidates, &effective_trigger, &current_word);
+        // The ON path is already prefix-filtered and de-duplicated by `filter`;
+        // its ordering is intentionally the generation order (matched columns
+        // first), so it is not re-ranked.
+        if effective_trigger == "ON" {
+            return results;
+        }
+        self.ranker.rank(&mut results);
+        results.dedup_by(|a, b| a.value == b.value && a.kind == b.kind);
+        results
     }
 
     fn table_completions(&self, prefix: &str) -> Vec<Completion> {
@@ -185,7 +195,12 @@ impl QueryCompletionService {
         }
     }
 
-    fn filter_and_sort(
+    /// Keep only candidates whose value matches `current_word` as a prefix
+    /// (case-insensitive; also matching the part after a `.` for qualified
+    /// names). The ON trigger additionally de-duplicates by value, preserving
+    /// the generation order. Ordering by frequency is a separate concern,
+    /// handled by `CompletionRanker`.
+    fn filter(
         &self,
         candidates: Vec<Completion>,
         effective_trigger: &str,
@@ -208,7 +223,7 @@ impl QueryCompletionService {
                 .collect();
         }
 
-        let mut results: Vec<Completion> = candidates
+        candidates
             .into_iter()
             .filter(|c| {
                 let upper = c.value.to_uppercase();
@@ -217,31 +232,7 @@ impl QueryCompletionService {
                         && c.value.contains('.')
                         && upper.split('.').next_back().is_some_and(|p| p.starts_with(&prefix_upper)))
             })
-            .collect();
-
-        results.sort_by(|a, b| match (&a.kind, &b.kind) {
-            (CompletionKind::Keyword, CompletionKind::Keyword) => a.value.cmp(&b.value),
-            (CompletionKind::Table, CompletionKind::Table) if !self.table_freq.is_empty() => {
-                let ca = self.table_freq.get(&a.value).copied().unwrap_or(0);
-                let cb = self.table_freq.get(&b.value).copied().unwrap_or(0);
-                cb.cmp(&ca).then_with(|| a.value.len().cmp(&b.value.len()).then_with(|| a.value.cmp(&b.value)))
-            }
-            (CompletionKind::Column, CompletionKind::Column)
-                if !self.column_freq.is_empty() || !self.table_freq.is_empty() =>
-            {
-                let ta = a.value.find('.').map(|i| self.table_freq.get(&a.value[..i]).copied().unwrap_or(0)).unwrap_or(0);
-                let tb = b.value.find('.').map(|i| self.table_freq.get(&b.value[..i]).copied().unwrap_or(0)).unwrap_or(0);
-                let ca = self.column_freq.get(a.value.split('.').next_back().unwrap_or(&a.value)).copied().unwrap_or(0);
-                let cb = self.column_freq.get(b.value.split('.').next_back().unwrap_or(&b.value)).copied().unwrap_or(0);
-                tb.cmp(&ta)
-                    .then_with(|| cb.cmp(&ca))
-                    .then_with(|| a.value.len().cmp(&b.value.len()))
-                    .then_with(|| a.value.cmp(&b.value))
-            }
-            _ => a.value.len().cmp(&b.value.len()).then_with(|| a.value.cmp(&b.value)),
-        });
-        results.dedup_by(|a, b| a.value == b.value && a.kind == b.kind);
-        results
+            .collect()
     }
 
     fn extract_table_refs(&self, upper_query: &str, alias_map: &AliasMap) -> Vec<String> {
