@@ -1,16 +1,8 @@
 use std::sync::Arc;
 
-use crate::adapters::driven::sqlite::SqliteRepository;
 use crate::domain::query_history::QueryHistory;
-use crate::ports::column_access_repository::ColumnAccessRepository;
-use crate::ports::connection_repository::ConnectionRepository;
-use crate::ports::query_history_repository::QueryHistoryRepository;
-use crate::ports::table_access_repository::TableAccessRepository;
 use crate::query::alias::{extract_column_refs, extract_referenced_tables};
-use crate::services::analytics::service::{AnalyticsService, AnalyticsSvc};
-use crate::services::column_access::service::{ColumnAccessService, ColumnAccessSvc};
-use crate::services::query_history::service::{QueryHistoryService, QueryHistorySvc};
-use crate::services::table_access::service::{TableAccessService, TableAccessSvc};
+use crate::services::analytics::service::AnalyticsSvc;
 
 use super::schema::SchemaApi;
 
@@ -21,25 +13,9 @@ pub struct AnalyticsApi {
 }
 
 impl AnalyticsApi {
-    pub(crate) fn from_sqlite(sqlite: &Arc<SqliteRepository>) -> Self {
-        let conn_repo = Arc::clone(sqlite) as Arc<dyn ConnectionRepository>;
-        let query_history = Arc::new(QueryHistoryService::new(
-            Arc::clone(&conn_repo),
-            Arc::clone(sqlite) as Arc<dyn QueryHistoryRepository>,
-        ));
-        let table_access = Arc::new(TableAccessService::new(
-            Arc::clone(&conn_repo),
-            Arc::clone(sqlite) as Arc<dyn TableAccessRepository>,
-        ));
-        let column_access = Arc::new(ColumnAccessService::new(
-            Arc::clone(&conn_repo),
-            Arc::clone(sqlite) as Arc<dyn ColumnAccessRepository>,
-        ));
-        let svc = Arc::new(AnalyticsService::new(
-            query_history as Arc<dyn QueryHistorySvc>,
-            table_access as Arc<dyn TableAccessSvc>,
-            column_access as Arc<dyn ColumnAccessSvc>,
-        ));
+    /// Wrap an assembled `AnalyticsSvc`. Service wiring lives in the
+    /// composition root (`Core`); this facade stays a thin delegator.
+    pub(crate) fn new(svc: Arc<dyn AnalyticsSvc>) -> Self {
         Self { svc }
     }
 

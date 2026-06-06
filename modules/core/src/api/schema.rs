@@ -1,13 +1,4 @@
-use std::sync::Arc;
-
-use crate::adapters::driven::sqlite::SqliteRepository;
-use crate::ports::connection_repository::ConnectionRepository;
-use crate::ports::schema_column_repository::SchemaColumnRepository;
-use crate::ports::schema_table_repository::SchemaTableRepository;
 use crate::services::schema::service::SchemaService;
-use crate::services::schema_cache::service::{SchemaCacheService, SchemaCacheSvc};
-use crate::services::schema_column::service::{SchemaColumnService, SchemaColumnSvc};
-use crate::services::schema_table::service::{SchemaTableService, SchemaTableSvc};
 
 use super::query::QueryApi;
 
@@ -19,23 +10,10 @@ pub struct SchemaApi {
 }
 
 impl SchemaApi {
-    pub(crate) fn from_sqlite(sqlite: &Arc<SqliteRepository>) -> Self {
-        let conn_repo = Arc::clone(sqlite) as Arc<dyn ConnectionRepository>;
-        let table_svc = Arc::new(SchemaTableService::new(
-            Arc::clone(&conn_repo),
-            Arc::clone(sqlite) as Arc<dyn SchemaTableRepository>,
-        ));
-        let column_svc = Arc::new(SchemaColumnService::new(
-            Arc::clone(&conn_repo),
-            Arc::clone(sqlite) as Arc<dyn SchemaColumnRepository>,
-        ));
-        let cache = Arc::new(SchemaCacheService::new(
-            table_svc as Arc<dyn SchemaTableSvc>,
-            column_svc as Arc<dyn SchemaColumnSvc>,
-        ));
-        Self {
-            inner: SchemaService::new(Some(cache as Arc<dyn SchemaCacheSvc>)),
-        }
+    /// Wrap an assembled `SchemaService`. Service wiring lives in the
+    /// composition root (`Core`); this facade stays a thin delegator.
+    pub(crate) fn new(inner: SchemaService) -> Self {
+        Self { inner }
     }
 
     /// Load schema metadata for `connection_name`, using the cache when present.
