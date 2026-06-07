@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use sqlparser::ast::{
-    FromTable, ObjectNamePart, Query, SetExpr, Statement, TableFactor, TableObject, TableWithJoins,
+    Expr, FromTable, Function, FunctionArg, FunctionArgExpr, FunctionArguments, JoinConstraint,
+    JoinOperator, ObjectNamePart, Query, Select, SelectItem, SelectItemQualifiedWildcardKind,
+    SetExpr, Statement, TableFactor, TableObject, TableWithJoins,
 };
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -193,47 +195,230 @@ pub fn extract_referenced_tables(sql: &str) -> Vec<String> {
     tables
 }
 
-/// Resolve column references in a SELECT projection against a known schema view
-/// (`&[(table, columns)]`), returning `(table, column)` pairs. Lives in `query/`
-/// alongside `extract_referenced_tables` so SQL parsing stays out of the API
-/// facade; callers pass a schema view rather than the function reaching up into
-/// the schema service.
-pub fn extract_column_refs(query: &str, schema: &[(&str, &[String])]) -> Vec<(String, String)> {
-    use sqlparser::ast::{Expr, SelectItem, SetExpr, Statement};
+/// A column mention pulled from a query before it is resolved to a table.
+enum ColumnToken {
+    /// Unqualified column, e.g. `email` — table inferred from the FROM clause.
+    Bare(String),
+    /// Qualified column, e.g. `u.email` or `users.email` — table given explicitly.
+    Qualified { qualifier: String, name: String },
+}
 
-    let candidates: Vec<String> = Parser::parse_sql(&PostgreSqlDialect {}, query)
-        .ok()
-        .and_then(|mut stmts| if stmts.is_empty() { None } else { Some(stmts.remove(0)) })
-        .and_then(|stmt| match stmt {
-            Statement::Query(q) => match *q.body {
-                SetExpr::Select(sel) => Some(sel.projection),
-                _ => None,
-            },
-            _ => None,
-        })
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|item| match item {
-            SelectItem::UnnamedExpr(Expr::Identifier(ident)) => Some(ident.value.to_lowercase()),
-            SelectItem::ExprWithAlias { expr: Expr::Identifier(ident), .. } => {
-                Some(ident.value.to_lowercase())
-            }
-            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => {
-                parts.last().map(|i| i.value.to_lowercase())
-            }
-            _ => None,
-        })
-        .collect();
+/// Schema columns for `table` (case-insensitive table match), if known.
+fn schema_columns<'a>(table: &str, schema: &'a [(&str, &[String])]) -> Option<&'a [String]> {
+    schema
+        .iter()
+        .find(|(t, _)| t.eq_ignore_ascii_case(table))
+        .map(|(_, cols)| *cols)
+}
 
-    let mut refs = Vec::new();
-    for col in candidates {
-        for (table, columns) in schema {
-            if columns.iter().any(|c| c.to_lowercase() == col) {
-                refs.push((table.to_string(), col.clone()));
-                break;
+/// Walk an expression tree (WHERE / ON / projection exprs / function args) and
+/// collect every column identifier it mentions. Unhandled variants are simply
+/// skipped — a missed exotic column only means a slightly less complete stat.
+fn collect_expr_columns(expr: &Expr, out: &mut Vec<ColumnToken>) {
+    match expr {
+        Expr::Identifier(ident) => out.push(ColumnToken::Bare(ident.value.to_lowercase())),
+        Expr::CompoundIdentifier(parts) => {
+            let mut rev = parts.iter().rev();
+            if let Some(name) = rev.next() {
+                let name = name.value.to_lowercase();
+                match rev.next() {
+                    Some(qualifier) => out.push(ColumnToken::Qualified {
+                        qualifier: qualifier.value.to_lowercase(),
+                        name,
+                    }),
+                    None => out.push(ColumnToken::Bare(name)),
+                }
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_expr_columns(left, out);
+            collect_expr_columns(right, out);
+        }
+        Expr::UnaryOp { expr, .. }
+        | Expr::Nested(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Collate { expr, .. }
+        | Expr::Cast { expr, .. } => collect_expr_columns(expr, out),
+        Expr::InList { expr, list, .. } => {
+            collect_expr_columns(expr, out);
+            for e in list {
+                collect_expr_columns(e, out);
+            }
+        }
+        Expr::Between { expr, low, high, .. } => {
+            collect_expr_columns(expr, out);
+            collect_expr_columns(low, out);
+            collect_expr_columns(high, out);
+        }
+        Expr::Like { expr, pattern, .. } => {
+            collect_expr_columns(expr, out);
+            collect_expr_columns(pattern, out);
+        }
+        Expr::Tuple(list) => {
+            for e in list {
+                collect_expr_columns(e, out);
+            }
+        }
+        Expr::Function(func) => collect_function_columns(func, out),
+        _ => {}
+    }
+}
+
+/// Collect column identifiers from a function's arguments, e.g. `count(id)`.
+fn collect_function_columns(func: &Function, out: &mut Vec<ColumnToken>) {
+    let FunctionArguments::List(list) = &func.args else {
+        return;
+    };
+    for arg in &list.args {
+        let arg_expr = match arg {
+            FunctionArg::Named { arg, .. } | FunctionArg::ExprNamed { arg, .. } => arg,
+            FunctionArg::Unnamed(arg) => arg,
+        };
+        if let FunctionArgExpr::Expr(e) = arg_expr {
+            collect_expr_columns(e, out);
+        }
+    }
+}
+
+/// The ON expression of a join, for the constraint-bearing join operators.
+fn join_on_expr(op: &JoinOperator) -> Option<&Expr> {
+    use JoinOperator::*;
+    let constraint = match op {
+        Join(c) | Inner(c) | Left(c) | LeftOuter(c) | Right(c) | RightOuter(c) | FullOuter(c)
+        | CrossJoin(c) | Semi(c) | LeftSemi(c) | RightSemi(c) | Anti(c) | LeftAnti(c)
+        | RightAnti(c) | StraightJoin(c) => c,
+        _ => return None,
+    };
+    match constraint {
+        JoinConstraint::On(expr) => Some(expr),
+        _ => None,
+    }
+}
+
+/// First `SELECT` reachable from a query body (descends plain nested queries).
+fn first_select(body: &SetExpr) -> Option<&Select> {
+    match body {
+        SetExpr::Select(sel) => Some(sel),
+        SetExpr::Query(inner) => first_select(&inner.body),
+        _ => None,
+    }
+}
+
+/// Resolve one column token to a `(table, column)` pair against the schema.
+///
+/// Qualified tokens are attributed to the table their alias/name points at.
+/// Bare tokens are matched against the tables actually referenced in the query
+/// (so a shared column name lands on the queried table, not the first schema
+/// match); when no table was referenced we fall back to the whole schema.
+fn resolve_token(
+    token: &ColumnToken,
+    alias_map: &AliasMap,
+    referenced: &[String],
+    schema: &[(&str, &[String])],
+) -> Option<(String, String)> {
+    let has_col = |table: &str, col: &str| {
+        schema_columns(table, schema).is_some_and(|cols| cols.iter().any(|c| c.eq_ignore_ascii_case(col)))
+    };
+    match token {
+        ColumnToken::Qualified { qualifier, name } => {
+            let table = alias_map.resolve(qualifier).map(str::to_string).unwrap_or_else(|| qualifier.clone());
+            has_col(&table, name).then(|| (table, name.clone()))
+        }
+        ColumnToken::Bare(name) => {
+            let owner = if referenced.is_empty() {
+                schema.iter().map(|(t, _)| t.to_string()).find(|t| has_col(t, name))
+            } else {
+                referenced.iter().find(|t| has_col(t, name)).cloned()
+            };
+            owner.map(|t| (t, name.clone()))
+        }
+    }
+}
+
+/// Resolve the columns named by a (possibly qualified) wildcard. `qualifier`
+/// is `None` for `*` (expands every referenced table) or the alias/table for
+/// `t.*`. Emits one `(table, column)` per expanded column.
+fn expand_wildcard(
+    qualifier: Option<&str>,
+    alias_map: &AliasMap,
+    referenced: &[String],
+    schema: &[(&str, &[String])],
+    out: &mut Vec<(String, String)>,
+) {
+    let tables: Vec<String> = match qualifier {
+        None => referenced.to_vec(),
+        Some(q) => vec![alias_map.resolve(q).map(str::to_string).unwrap_or_else(|| q.to_string())],
+    };
+    for table in tables {
+        if let Some(cols) = schema_columns(&table, schema) {
+            for col in cols {
+                out.push((table.clone(), col.to_lowercase()));
             }
         }
     }
+}
+
+/// Resolve the column references in a query against a known schema view
+/// (`&[(table, columns)]`), returning `(table, column)` pairs. Covers the
+/// SELECT projection (including `*` / `alias.*` wildcards), the WHERE clause and
+/// JOIN ... ON conditions, so `\stats <table>` reflects real column usage rather
+/// than only explicitly projected identifiers. Lives in `query/` alongside
+/// `extract_referenced_tables` so SQL parsing stays out of the API facade;
+/// callers pass a schema view rather than the function reaching up into the
+/// schema service.
+pub fn extract_column_refs(query: &str, schema: &[(&str, &[String])]) -> Vec<(String, String)> {
+    let stmts = parse_statements(query);
+    let Some(select) = stmts.iter().find_map(|stmt| match stmt {
+        Statement::Query(q) => first_select(&q.body),
+        _ => None,
+    }) else {
+        return vec![];
+    };
+
+    let alias_map = build_alias_map(query);
+    let referenced = extract_referenced_tables(query);
+
+    let mut refs: Vec<(String, String)> = Vec::new();
+    let mut tokens: Vec<ColumnToken> = Vec::new();
+
+    for item in &select.projection {
+        match item {
+            SelectItem::Wildcard(_) => {
+                expand_wildcard(None, &alias_map, &referenced, schema, &mut refs)
+            }
+            SelectItem::QualifiedWildcard(SelectItemQualifiedWildcardKind::ObjectName(name), _) => {
+                if let Some(q) = last_ident(name) {
+                    expand_wildcard(Some(&q), &alias_map, &referenced, schema, &mut refs);
+                }
+            }
+            SelectItem::UnnamedExpr(e)
+            | SelectItem::ExprWithAlias { expr: e, .. }
+            | SelectItem::ExprWithAliases { expr: e, .. } => collect_expr_columns(e, &mut tokens),
+            _ => {}
+        }
+    }
+
+    if let Some(selection) = &select.selection {
+        collect_expr_columns(selection, &mut tokens);
+    }
+    for twj in &select.from {
+        for join in &twj.joins {
+            if let Some(on) = join_on_expr(&join.join_operator) {
+                collect_expr_columns(on, &mut tokens);
+            }
+        }
+    }
+
+    for token in &tokens {
+        if let Some(pair) = resolve_token(token, &alias_map, &referenced, schema) {
+            refs.push(pair);
+        }
+    }
+
+    refs.dedup();
+    refs.sort();
+    refs.dedup();
     refs
 }
 
@@ -497,5 +682,69 @@ mod tests {
         let schema: Vec<(&str, &[String])> = vec![("users", users_cols.as_slice())];
         let refs = extract_column_refs("SELECT missing FROM users", &schema);
         assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn extract_column_refs_expands_unqualified_wildcard() {
+        let cols = vec!["id".to_string(), "email".to_string()];
+        let schema: Vec<(&str, &[String])> = vec![("users", cols.as_slice())];
+        let refs = extract_column_refs("SELECT * FROM users", &schema);
+        assert!(refs.contains(&("users".to_string(), "id".to_string())));
+        assert!(refs.contains(&("users".to_string(), "email".to_string())));
+    }
+
+    #[test]
+    fn extract_column_refs_expands_qualified_wildcard() {
+        let cols = vec!["id".to_string(), "email".to_string()];
+        let schema: Vec<(&str, &[String])> = vec![("users", cols.as_slice())];
+        let refs = extract_column_refs("SELECT u.* FROM users u", &schema);
+        assert!(refs.contains(&("users".to_string(), "id".to_string())));
+        assert!(refs.contains(&("users".to_string(), "email".to_string())));
+    }
+
+    #[test]
+    fn extract_column_refs_captures_where_columns() {
+        let cols = vec!["id".to_string(), "email".to_string()];
+        let schema: Vec<(&str, &[String])> = vec![("users", cols.as_slice())];
+        let refs = extract_column_refs("SELECT id FROM users WHERE email = 'x'", &schema);
+        assert!(refs.contains(&("users".to_string(), "id".to_string())));
+        assert!(refs.contains(&("users".to_string(), "email".to_string())));
+    }
+
+    #[test]
+    fn extract_column_refs_captures_join_on_columns() {
+        let users = vec!["id".to_string()];
+        let orders = vec!["user_id".to_string(), "id".to_string()];
+        let schema: Vec<(&str, &[String])> =
+            vec![("users", users.as_slice()), ("orders", orders.as_slice())];
+        let refs = extract_column_refs(
+            "SELECT u.id FROM users u JOIN orders o ON o.user_id = u.id",
+            &schema,
+        );
+        assert!(refs.contains(&("users".to_string(), "id".to_string())));
+        assert!(refs.contains(&("orders".to_string(), "user_id".to_string())));
+    }
+
+    #[test]
+    fn extract_column_refs_attributes_qualified_to_correct_table() {
+        // both tables have `id`; the alias must decide which table owns the ref
+        let users = vec!["id".to_string()];
+        let orders = vec!["id".to_string()];
+        let schema: Vec<(&str, &[String])> =
+            vec![("orders", orders.as_slice()), ("users", users.as_slice())];
+        let refs = extract_column_refs("SELECT u.id FROM users u", &schema);
+        assert_eq!(refs, vec![("users".to_string(), "id".to_string())]);
+    }
+
+    #[test]
+    fn extract_column_refs_bare_column_prefers_referenced_table() {
+        // `accounts` is listed first in schema but not referenced by the query;
+        // a bare `id` must attribute to the queried table, not the first match.
+        let accounts = vec!["id".to_string()];
+        let users = vec!["id".to_string()];
+        let schema: Vec<(&str, &[String])> =
+            vec![("accounts", accounts.as_slice()), ("users", users.as_slice())];
+        let refs = extract_column_refs("SELECT id FROM users", &schema);
+        assert_eq!(refs, vec![("users".to_string(), "id".to_string())]);
     }
 }
