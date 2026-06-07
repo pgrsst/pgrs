@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.7.0] - 2026-06-07
+
+### Added
+- Postgres query errors kini menampilkan SQLSTATE code, detail/hint, dan penanda caret (`^`) pada posisi error
+
+### Fixed
+- `\stats <table>` tidak lagi kosong — penggunaan kolom nyata kini direkam dengan benar
+- Path data dir yang bukan UTF-8 kini memunculkan error eksplisit, bukan fallback diam-diam
+
+### Changed
+- **BREAKING (internal):** kode dipecah menjadi Cargo workspace `pgrs-core` + `pgrs-cli`; boundary hexagonal ditegakkan compiler (perilaku CLI tidak berubah)
+- `pg_catalog` lookups & klasifikasi SQL (DDL/DML) dipindah ke core
+- Error port diseragamkan ke `DomainError`; service membubble-up error alih-alih `eprintln!`
+- DI analytics/schema dipindah ke composition root; REPL dispatch diratakan
+
 ## [0.6.0] - 2026-05-30
 
 ### Added
