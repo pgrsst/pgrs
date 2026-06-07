@@ -1,4 +1,3 @@
-use std::sync::Mutex;
 use rusqlite::Connection;
 
 const SCHEMA_V1: &str = "
@@ -112,8 +111,7 @@ CREATE TABLE schema_columns (
 );
 ";
 
-pub(super) fn migrate(conn: &Mutex<Connection>) -> Result<(), rusqlite::Error> {
-    let conn = conn.lock().unwrap();
+pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
         conn.execute_batch(SCHEMA_V1)?;

@@ -5,7 +5,7 @@ use super::SqliteRepository;
 
 impl SchemaColumnRepository for SqliteRepository {
     fn save(&self, entity: &SchemaColumn) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT OR REPLACE INTO schema_columns
              (connection_id, table_name, column_name, data_type, cached_at)
@@ -17,7 +17,10 @@ impl SchemaColumnRepository for SqliteRepository {
     }
 
     fn list_by_connection(&self, connection_id: i64) -> Vec<SchemaColumn> {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.lock() else {
+            eprintln!("pgrs: schema_column read failed: database lock poisoned");
+            return vec![];
+        };
         let result: Result<Vec<SchemaColumn>, rusqlite::Error> = (|| {
             let mut stmt = conn.prepare(
                 "SELECT connection_id, table_name, column_name, data_type, cached_at
@@ -44,7 +47,7 @@ impl SchemaColumnRepository for SqliteRepository {
     }
 
     fn delete_by_connection(&self, connection_id: i64) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "DELETE FROM schema_columns WHERE connection_id = ?1",
             rusqlite::params![connection_id],

@@ -7,32 +7,48 @@ pub(crate) mod schema_table_store;
 pub(crate) mod schema_column_store;
 
 use rusqlite::Connection;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+
+use crate::domain::error::DomainError;
 
 pub struct SqliteRepository {
     pub(crate) conn: Mutex<Connection>,
 }
 
 impl SqliteRepository {
+    /// Lock the shared connection, mapping a poisoned mutex to a
+    /// [`DomainError::StorageError`] instead of panicking. A mutex is poisoned
+    /// only when another thread panicked while holding it; in a long-running
+    /// front-end that must surface as a recoverable error, not a process abort.
+    pub(crate) fn lock(&self) -> Result<MutexGuard<'_, Connection>, DomainError> {
+        self.conn
+            .lock()
+            .map_err(|e| DomainError::StorageError(format!("database lock poisoned: {e}")))
+    }
+
     pub fn open(path: &str) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        let repo = Self { conn: Mutex::new(conn) };
-        repo.migrate()?;
-        Ok(repo)
+        // Migrate while we still hold the connection exclusively, before wrapping
+        // it in the shared Mutex — no lock (and so no poison path) is involved.
+        migrations::migrate(&conn)?;
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
         let conn = Connection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        let repo = Self { conn: Mutex::new(conn) };
-        repo.migrate()?;
-        Ok(repo)
+        migrations::migrate(&conn)?;
+        Ok(Self { conn: Mutex::new(conn) })
     }
 
-    pub(crate) fn migrate(&self) -> Result<(), rusqlite::Error> {
-        migrations::migrate(&self.conn)
+    /// Re-run migrations against the live (shared) connection. Only used by the
+    /// idempotency test; the constructors migrate before sharing the connection.
+    #[cfg(test)]
+    pub(crate) fn migrate(&self) -> Result<(), DomainError> {
+        let conn = self.lock()?;
+        migrations::migrate(&conn).map_err(|e| DomainError::StorageError(e.to_string()))
     }
 
     pub(crate) fn connection_id_for(conn: &rusqlite::Connection, name: &str) -> Option<i64> {

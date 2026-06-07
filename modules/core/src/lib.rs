@@ -17,8 +17,10 @@ pub(crate) mod utils;
 
 use std::sync::Arc;
 
+use crate::adapters::driven::postgres_db::PostgresConnector;
 use crate::adapters::driven::sqlite::SqliteRepository;
 use crate::ports::column_access_repository::ColumnAccessRepository;
+use crate::ports::db_connector::DbConnector;
 use crate::ports::connection_repository::ConnectionRepository;
 use crate::ports::query_history_repository::QueryHistoryRepository;
 use crate::ports::schema_column_repository::SchemaColumnRepository;
@@ -45,10 +47,12 @@ pub use domain::connection::{Connection, DEFAULT_PORT};
 pub use domain::error::DomainError;
 pub use domain::query_history::QueryHistory;
 pub use enums::tls_mode::TlsMode;
-pub use ports::db_connection::{DbConnection, QueryResult};
+pub use domain::catalog::{NamedDef, TableDescription};
+pub use domain::query_result::QueryResult;
+pub use ports::catalog_port::CatalogPort;
+pub use ports::db_connection::DbConnection;
 pub use ports::repl_port::ReplPort;
 pub use ports::schema_port::SchemaPort;
-pub use services::catalog::{NamedDef, TableDescription};
 pub use services::connection::service::{AddConnectionInput, EditConnectionInput};
 pub use services::query::completions::{Completion, CompletionKind};
 
@@ -61,6 +65,9 @@ pub use query::tokenizer::{SqlToken, tokenize};
 /// facades wired against it. Construct once at process start via [`Core::init`].
 pub struct Core {
     sqlite: Arc<SqliteRepository>,
+    /// Opens live DB connections; injected so `Core`/`QueryApi` stay
+    /// driver-agnostic (the Postgres adapter implements [`DbConnector`]).
+    connector: Arc<dyn DbConnector>,
     /// Connection management facade (always available; needs no live DB).
     pub connection: ConnectionApi,
 }
@@ -72,7 +79,15 @@ impl Core {
             SqliteRepository::open(db_path).map_err(|e| format!("could not open database: {e}"))?,
         );
         let connection = ConnectionApi::from_sqlite(&sqlite);
-        Ok(Self { sqlite, connection })
+        let connector = Arc::new(PostgresConnector) as Arc<dyn DbConnector>;
+        Ok(Self { sqlite, connector, connection })
+    }
+
+    /// Open a live query session against `connection` via the injected
+    /// connector. Front-ends call this instead of naming a concrete DB driver.
+    pub fn connect(&self, connection: &Connection) -> Result<QueryApi, DomainError> {
+        let db = self.connector.connect(connection)?;
+        Ok(QueryApi::from_port(db))
     }
 
     /// Analytics facade (query history + access frequency), backed by the store.
@@ -94,7 +109,8 @@ impl Core {
             SqliteRepository::open_in_memory().expect("open in-memory sqlite for tests"),
         );
         let connection = ConnectionApi::from_sqlite(&sqlite);
-        Self { sqlite, connection }
+        let connector = Arc::new(PostgresConnector) as Arc<dyn DbConnector>;
+        Self { sqlite, connector, connection }
     }
 }
 

@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use pgrs_core::{Core, QueryApi};
+use pgrs_core::Core;
 
 use crate::cli::Cli;
 use crate::repl::Repl;
@@ -37,7 +37,7 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
 fn run_shell(core: &Core, args: &[String]) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
     let conn = core.connection.find(name).map_err(|e| e.to_string())?;
-    let query = QueryApi::connect(&conn)?;
+    let query = core.connect(&conn)?;
 
     Repl::new(
         query,
@@ -54,7 +54,8 @@ fn run_test(core: &Core, args: &[String]) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs test <connection-name>")?;
     let conn = core.connection.find(name).map_err(|e| e.to_string())?;
     let conn_name = conn.name.clone();
-    let query = QueryApi::connect(&conn)
+    let query = core
+        .connect(&conn)
         .map_err(|e| format!("connection '{}' failed: {}", conn_name, e))?;
     query
         .execute("SELECT 1")

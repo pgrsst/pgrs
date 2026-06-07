@@ -14,7 +14,7 @@ pub(super) fn tls_from_str(s: &str) -> TlsMode {
 
 impl ConnectionRepository for SqliteRepository {
     fn add(&self, connection: DomainConnection) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO connections (name, host, port, username, password, database, tls, environment)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -40,7 +40,7 @@ impl ConnectionRepository for SqliteRepository {
     }
 
     fn list(&self) -> Result<Vec<DomainConnection>, DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, name, host, port, username, password, database, tls, environment
@@ -68,7 +68,7 @@ impl ConnectionRepository for SqliteRepository {
     }
 
     fn delete(&self, name: &str) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let n = conn
             .execute("DELETE FROM connections WHERE name = ?1", rusqlite::params![name])
             .map_err(|e| DomainError::StorageError(e.to_string()))?;
@@ -79,7 +79,7 @@ impl ConnectionRepository for SqliteRepository {
     }
 
     fn get_connection(&self, name: &str) -> Result<DomainConnection, DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.query_row(
             "SELECT id, name, host, port, username, password, database, tls, environment
              FROM connections WHERE name = ?1",
@@ -109,7 +109,7 @@ impl ConnectionRepository for SqliteRepository {
     }
 
     fn update(&self, connection: DomainConnection) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let n = conn
             .execute(
                 "UPDATE connections SET host=?1, port=?2, username=?3, password=?4,
@@ -133,7 +133,7 @@ impl ConnectionRepository for SqliteRepository {
     }
 
     fn rename(&self, old_name: &str, new_name: &str) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         let n = conn
             .execute(
                 "UPDATE connections SET name = ?1 WHERE name = ?2",

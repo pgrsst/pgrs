@@ -5,19 +5,34 @@ use crate::domain::error::DomainError;
 use crate::ports::schema_port::SchemaPort;
 use crate::services::schema_cache::service::SchemaCacheSvc;
 
+/// Immutable snapshot of a loaded schema. Held behind an `Arc` so cloning a
+/// `SchemaService` (done on every editor rebuild and completion setup) is a
+/// refcount bump rather than a deep copy of the whole table/column map.
+#[derive(Default)]
+struct SchemaState {
+    tables: Vec<String>,
+    columns: HashMap<String, Vec<String>>,
+}
+
+impl SchemaState {
+    fn from_columns(columns: HashMap<String, Vec<String>>) -> Self {
+        let mut tables: Vec<String> = columns.keys().cloned().collect();
+        tables.sort();
+        Self { tables, columns }
+    }
+}
+
 #[derive(Clone)]
 pub struct SchemaService {
     cache: Option<Arc<dyn SchemaCacheSvc>>,
-    tables: Vec<String>,
-    columns: HashMap<String, Vec<String>>,
+    state: Arc<SchemaState>,
 }
 
 impl SchemaService {
     pub fn new(cache: Option<Arc<dyn SchemaCacheSvc>>) -> Self {
         Self {
             cache,
-            tables: vec![],
-            columns: HashMap::new(),
+            state: Arc::new(SchemaState::default()),
         }
     }
 
@@ -27,9 +42,7 @@ impl SchemaService {
         if let Some(cache) = &self.cache
             && let Some(columns) = cache.load(connection_name)
         {
-            self.tables = columns.keys().cloned().collect();
-            self.tables.sort();
-            self.columns = columns;
+            self.state = Arc::new(SchemaState::from_columns(columns));
             return Ok(());
         }
         let columns = conn.list_columns()?;
@@ -39,9 +52,7 @@ impl SchemaService {
             // does not log — intentionally drop the error here.
             let _ = cache.save(connection_name, &columns);
         }
-        self.tables = columns.keys().cloned().collect();
-        self.tables.sort();
-        self.columns = columns;
+        self.state = Arc::new(SchemaState::from_columns(columns));
         Ok(())
     }
 
@@ -55,11 +66,11 @@ impl SchemaService {
     }
 
     pub fn tables(&self) -> &[String] {
-        &self.tables
+        &self.state.tables
     }
 
     pub fn columns_for(&self, table: &str) -> &[String] {
-        self.columns.get(table).map(Vec::as_slice).unwrap_or(&[])
+        self.state.columns.get(table).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 

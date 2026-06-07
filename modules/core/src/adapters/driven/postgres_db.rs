@@ -3,9 +3,22 @@ use std::collections::HashMap;
 
 use crate::domain::connection::Connection;
 use crate::domain::error::DomainError;
+use crate::domain::query_result::QueryResult;
 use crate::enums::tls_mode::TlsMode;
-use crate::ports::db_connection::{DbConnection, QueryResult};
+use crate::ports::db_connection::DbConnection;
+use crate::ports::db_connector::DbConnector;
+use crate::ports::repl_port::ReplPort;
 use crate::ports::schema_port::SchemaPort;
+
+/// Driven adapter that opens live PostgreSQL connections. Holds no state; it
+/// exists so the composition root can inject connection-opening as a port.
+pub struct PostgresConnector;
+
+impl DbConnector for PostgresConnector {
+    fn connect(&self, connection: &Connection) -> Result<Box<dyn ReplPort>, DomainError> {
+        Ok(Box::new(PostgresDb::new(connection)?))
+    }
+}
 
 pub struct PostgresDb {
     client: RefCell<postgres::Client>,
@@ -57,7 +70,10 @@ impl DbConnection for PostgresDb {
     fn execute(&self, query: &str) -> Result<QueryResult, DomainError> {
         use postgres::SimpleQueryMessage;
 
-        let mut client = self.client.borrow_mut();
+        let mut client = self
+            .client
+            .try_borrow_mut()
+            .map_err(|e| DomainError::QueryError(format!("connection busy: {e}")))?;
         let messages = client
             .simple_query(query)
             .map_err(|e| DomainError::QueryError(format_pg_error(query, &e)))?;
@@ -180,7 +196,10 @@ fn format_pg_error(query: &str, err: &postgres::Error) -> String {
 
 impl SchemaPort for PostgresDb {
     fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
-        let mut client = self.client.borrow_mut();
+        let mut client = self
+            .client
+            .try_borrow_mut()
+            .map_err(|e| DomainError::QueryError(format!("connection busy: {e}")))?;
         let rows = client
             .query(
                 "SELECT table_name, column_name FROM information_schema.columns \

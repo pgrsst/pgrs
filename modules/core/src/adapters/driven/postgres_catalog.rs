@@ -1,34 +1,18 @@
-//! pg_catalog / system-catalog lookups behind the `\d`, `\d+`, and `\l` REPL
-//! commands. These queries are PostgreSQL-specific, so they live in the core
-//! (behind the `QueryApi` facade) instead of leaking into the UI layer — a
-//! front-end only ever sees the structured [`TableDescription`] / database list.
+//! PostgreSQL catalog adapter: fulfils [`CatalogPort`] by issuing pg_catalog /
+//! `information_schema` queries over the generic [`DbConnection`] capability.
+//!
+//! The SQL here is PostgreSQL-specific, so it lives in the driven-adapter layer
+//! instead of leaking into the application layer — front-ends only ever see the
+//! structured [`TableDescription`] / database list.
+//!
+//! It is expressed as a blanket impl over every `DbConnection`: there is a
+//! single SQL dialect today, so any live connection is described the same way.
+//! If a second engine is added, replace this blanket impl with per-adapter ones.
 
+use crate::domain::catalog::{NamedDef, TableDescription};
 use crate::domain::error::DomainError;
-use crate::ports::db_connection::{DbConnection, QueryResult};
-
-/// A named database object together with its definition — an index, a
-/// foreign-key/check constraint, or a trigger.
-#[derive(Debug, Clone)]
-pub struct NamedDef {
-    pub name: String,
-    pub definition: String,
-}
-
-/// Structured result of describing a single table (`\d` / `\d+`).
-///
-/// The column listing is kept as a [`QueryResult`] so front-ends can reuse
-/// their generic table formatter; the remaining sections are plain value lists.
-#[derive(Debug, Clone)]
-pub struct TableDescription {
-    pub schema: String,
-    pub name: String,
-    pub extended: bool,
-    pub columns: QueryResult,
-    pub indexes: Vec<NamedDef>,
-    pub foreign_keys: Vec<NamedDef>,
-    pub checks: Vec<NamedDef>,
-    pub triggers: Vec<NamedDef>,
-}
+use crate::ports::catalog_port::CatalogPort;
+use crate::ports::db_connection::DbConnection;
 
 const COLUMNS_SQL: &str = "\
     SELECT \
@@ -102,7 +86,9 @@ const LIST_DATABASES_SQL: &str = "\
     ORDER BY datname";
 
 /// Reject anything that isn't a bare (optionally schema-qualified) identifier
-/// before it is spliced into a catalog query as a literal.
+/// before it is spliced into a catalog query as a literal. This allowlist is
+/// the sole guard against SQL injection on the `TABLE_NAME` splice below, so it
+/// must stay strict: letters, digits, underscores, and dots only.
 fn validate_table_name(name: &str) -> Result<(), DomainError> {
     if name.is_empty() {
         return Err(DomainError::ValidationError(
@@ -150,59 +136,58 @@ fn fetch_named<D: DbConnection + ?Sized>(db: &D, sql_template: &str, table: &str
         .unwrap_or_default()
 }
 
-/// Describe a single table: columns plus indexes, FK/check constraints, and
-/// (when `extended`) triggers. Errors with [`DomainError::NotFound`] if the
-/// relation does not exist.
-pub fn describe_table<D: DbConnection + ?Sized>(
-    db: &D,
-    table: &str,
-    extended: bool,
-) -> Result<TableDescription, DomainError> {
-    validate_table_name(table)?;
+impl<T: DbConnection + ?Sized> CatalogPort for T {
+    fn describe_table(&self, table: &str, extended: bool) -> Result<TableDescription, DomainError> {
+        // `simple_query` (the only execution path on this port) takes no bind
+        // params, so the table name is spliced into the SQL as a literal. It is
+        // safe only because `validate_table_name` allowlists it first; keep that
+        // check immediately before every `replace("TABLE_NAME", ...)` below.
+        validate_table_name(table)?;
 
-    let col_sql = if extended {
-        COLUMNS_EXTENDED_SQL.replace("TABLE_NAME", table)
-    } else {
-        COLUMNS_SQL.replace("TABLE_NAME", table)
-    };
-
-    let not_found =
-        || DomainError::NotFound(format!("Did not find any relation named \"{}\".", table));
-
-    let columns = match db.execute(&col_sql) {
-        Ok(result) if !result.rows.is_empty() => result,
-        _ => return Err(not_found()),
-    };
-
-    Ok(TableDescription {
-        schema: fetch_schema(db, table),
-        name: table.to_string(),
-        extended,
-        columns,
-        indexes: fetch_named(db, INDEXES_SQL, table),
-        foreign_keys: fetch_named(db, FK_SQL, table),
-        checks: fetch_named(db, CHECK_SQL, table),
-        triggers: if extended {
-            fetch_named(db, TRIGGERS_SQL, table)
+        let col_sql = if extended {
+            COLUMNS_EXTENDED_SQL.replace("TABLE_NAME", table)
         } else {
-            Vec::new()
-        },
-    })
-}
+            COLUMNS_SQL.replace("TABLE_NAME", table)
+        };
 
-/// List user-visible database names (the `\l` command).
-pub fn list_databases<D: DbConnection + ?Sized>(db: &D) -> Result<Vec<String>, DomainError> {
-    let result = db.execute(LIST_DATABASES_SQL)?;
-    Ok(result
-        .rows
-        .into_iter()
-        .filter_map(|mut row| if row.is_empty() { None } else { Some(row.remove(0)) })
-        .collect())
+        let not_found =
+            || DomainError::NotFound(format!("Did not find any relation named \"{}\".", table));
+
+        let columns = match self.execute(&col_sql) {
+            Ok(result) if !result.rows.is_empty() => result,
+            _ => return Err(not_found()),
+        };
+
+        Ok(TableDescription {
+            schema: fetch_schema(self, table),
+            name: table.to_string(),
+            extended,
+            columns,
+            indexes: fetch_named(self, INDEXES_SQL, table),
+            foreign_keys: fetch_named(self, FK_SQL, table),
+            checks: fetch_named(self, CHECK_SQL, table),
+            triggers: if extended {
+                fetch_named(self, TRIGGERS_SQL, table)
+            } else {
+                Vec::new()
+            },
+        })
+    }
+
+    fn list_databases(&self) -> Result<Vec<String>, DomainError> {
+        let result = self.execute(LIST_DATABASES_SQL)?;
+        Ok(result
+            .rows
+            .into_iter()
+            .filter_map(|mut row| if row.is_empty() { None } else { Some(row.remove(0)) })
+            .collect())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::query_result::QueryResult;
     use std::collections::HashMap;
 
     struct StubDb {
@@ -262,7 +247,7 @@ mod tests {
     #[test]
     fn describe_rejects_invalid_name() {
         let db = StubDb::new();
-        let err = describe_table(&db, "bad'name", false).unwrap_err();
+        let err = db.describe_table("bad'name", false).unwrap_err();
         assert!(matches!(err, DomainError::ValidationError(_)));
     }
 
@@ -270,7 +255,7 @@ mod tests {
     fn describe_missing_relation_is_not_found() {
         // No "pg_attribute" response -> empty columns -> NotFound.
         let db = StubDb::new();
-        let err = describe_table(&db, "ghost", false).unwrap_err();
+        let err = db.describe_table("ghost", false).unwrap_err();
         assert!(matches!(err, DomainError::NotFound(_)), "got: {err:?}");
     }
 
@@ -284,7 +269,7 @@ mod tests {
         let db = StubDb::new()
             .with("pg_attribute", Ok(columns_result()))
             .with("pg_indexes", Ok(indexes));
-        let desc = describe_table(&db, "users", false).unwrap();
+        let desc = db.describe_table("users", false).unwrap();
         assert_eq!(desc.name, "users");
         assert_eq!(desc.schema, "public"); // SCHEMA_SQL stub falls through to default
         assert_eq!(desc.columns.rows.len(), 1);
@@ -303,7 +288,7 @@ mod tests {
         let db = StubDb::new()
             .with("attstorage", Ok(columns_result()))
             .with("pg_trigger", Ok(triggers));
-        let desc = describe_table(&db, "users", true).unwrap();
+        let desc = db.describe_table("users", true).unwrap();
         assert!(desc.extended);
         assert_eq!(desc.triggers.len(), 1);
         assert_eq!(desc.triggers[0].name, "audit");
@@ -319,7 +304,7 @@ mod tests {
                 rows_affected: None,
             }),
         );
-        let dbs = list_databases(&db).unwrap();
+        let dbs = db.list_databases().unwrap();
         assert_eq!(dbs, vec!["app".to_string(), "analytics".to_string()]);
     }
 
@@ -327,6 +312,6 @@ mod tests {
     fn list_databases_propagates_error() {
         let db = StubDb::new()
             .with("pg_database", Err(DomainError::QueryError("connection lost".into())));
-        assert!(list_databases(&db).is_err());
+        assert!(db.list_databases().is_err());
     }
 }

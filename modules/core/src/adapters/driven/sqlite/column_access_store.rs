@@ -6,7 +6,7 @@ use super::SqliteRepository;
 
 impl ColumnAccessRepository for SqliteRepository {
     fn save(&self, entity: &ColumnAccess) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO column_access (connection_id, table_name, column_name, query_id, accessed_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -22,7 +22,10 @@ impl ColumnAccessRepository for SqliteRepository {
         table_name: &str,
         limit: usize,
     ) -> Vec<FreqEntry> {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.lock() else {
+            eprintln!("pgrs: column_access read failed: database lock poisoned");
+            return vec![];
+        };
         let Some(connection_id) = SqliteRepository::connection_id_for(&conn, connection_name) else {
             return vec![];
         };

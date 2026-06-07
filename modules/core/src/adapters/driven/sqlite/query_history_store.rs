@@ -5,7 +5,7 @@ use super::SqliteRepository;
 
 impl QueryHistoryRepository for SqliteRepository {
     fn save(&self, entity: &QueryHistory) -> Result<i64, DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO query_history (connection_id, query, executed_at) VALUES (?1, ?2, ?3)
              ON CONFLICT(connection_id, query) DO UPDATE SET executed_at = excluded.executed_at",
@@ -21,7 +21,10 @@ impl QueryHistoryRepository for SqliteRepository {
     }
 
     fn list_recent(&self, connection_name: &str, limit: usize) -> Vec<QueryHistory> {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.lock() else {
+            eprintln!("pgrs: query_history read failed: database lock poisoned");
+            return vec![];
+        };
         let Some(connection_id) = SqliteRepository::connection_id_for(&conn, connection_name) else {
             return vec![];
         };

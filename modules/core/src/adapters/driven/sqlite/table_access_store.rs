@@ -6,7 +6,7 @@ use super::SqliteRepository;
 
 impl TableAccessRepository for SqliteRepository {
     fn save(&self, entity: &TableAccess) -> Result<(), DomainError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock()?;
         conn.execute(
             "INSERT INTO table_access (connection_id, table_name, query_id, accessed_at)
              VALUES (?1, ?2, ?3, ?4)",
@@ -17,7 +17,10 @@ impl TableAccessRepository for SqliteRepository {
     }
 
     fn list_frequent(&self, connection_name: &str, limit: usize) -> Vec<FreqEntry> {
-        let conn = self.conn.lock().unwrap();
+        let Ok(conn) = self.lock() else {
+            eprintln!("pgrs: table_access read failed: database lock poisoned");
+            return vec![];
+        };
         let Some(connection_id) = SqliteRepository::connection_id_for(&conn, connection_name) else {
             return vec![];
         };
