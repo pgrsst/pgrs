@@ -53,23 +53,27 @@ lib.rs                  — Core::init(db_path) composition root + public re-exp
                           Owns Arc<SqliteRepository>; hands out API facades.
 api/                    — the ONLY surface pgrs-cli may use:
   connection.rs         — ConnectionApi: add/list/delete/edit/rename/find/get
-  query.rs              — QueryApi: connect(&Connection), execute(&str) → QueryResult,
-                          describe_table/list_databases (pg_catalog behind the facade);
-                          impls SchemaPort by delegating to the live DB
+  query.rs              — QueryApi: execute(&str) → QueryResult, describe_table/
+                          list_databases (delegated to the CatalogPort on the live
+                          connection); impls SchemaPort by delegating to the live DB.
+                          Built by Core::connect via the DbConnector port (no driver ref)
   schema.rs             — SchemaApi: load/refresh(&QueryApi, conn), tables(), columns_for()
   completions.rs        — CompletionsApi: completions(query, cursor) → Vec<Completion>
   analytics.rs          — AnalyticsApi: record_query(conn, sql, &SchemaApi) [extracts
                           referenced tables/columns internally], history(), frequent_tables/columns()
-domain/                 — pure value types: Connection, DomainError, analytics/access/schema types
+domain/                 — pure value types: Connection, DomainError, QueryResult,
+                          catalog (TableDescription/NamedDef), analytics/access/schema types
 enums/tls_mode.rs       — TlsMode (Disable | Require | VerifyFull)
-ports/                  — one trait per repository/capability boundary:
-  connection_repository.rs, db_connection.rs (DbConnection + QueryResult),
+ports/                  — one trait per repository/capability boundary (live-connection
+                          ports omit Send+Sync by design — REPL is single-threaded):
+  connection_repository.rs, db_connection.rs (DbConnection),
+  db_connector.rs (DbConnector: opens a Connection → Box<dyn ReplPort>),
+  catalog_port.rs (CatalogPort; value types live in domain::catalog),
   schema_port.rs (SchemaPort), repl_port.rs (ReplPort = DbConnection + SchemaPort),
   query_history_repository.rs, table_access_repository.rs, column_access_repository.rs,
   schema_table_repository.rs, schema_column_repository.rs
 services/               — connection, schema, analytics, schema_cache, query_history,
-                          table_access, column_access, schema_table, schema_column,
-                          catalog (pg_catalog \d/\l SQL → TableDescription/NamedDef);
+                          table_access, column_access, schema_table, schema_column;
                           query/ holds completions + command_completion + query_completion
 query/                  — tokenizer.rs (SqlToken + tokenize), alias.rs (AliasMap,
                           build_alias_map, extract_join_context, extract_referenced_tables, SQL_KEYWORDS),
@@ -79,7 +83,10 @@ adapters/driven/
                           query_history_store, table_access_store, column_access_store,
                           schema_table_store, schema_column_store) + migrations.rs
                           (open / open_in_memory[test-support] / user_version migrations)
-  postgres_db.rs        — PostgresDb: implements DbConnection via the postgres crate
+  postgres_db.rs        — PostgresDb: implements DbConnection via the postgres crate;
+                          PostgresConnector: implements DbConnector (opens connections)
+  postgres_catalog.rs   — Postgres CatalogPort impl: pg_catalog \d/\l SQL →
+                          TableDescription/NamedDef (blanket impl over DbConnection)
 ```
 
 ### `pgrs-cli` (`modules/cli/src/`)
@@ -106,7 +113,7 @@ completions.rs /
 completions/            — shell completion scripts (bash, zsh, fish)
 ```
 
-**Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>` and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `QueryApi::connect(&conn)` + `Repl::new(...)`. All analytics and schema-cache state is backed by the same SQLite file.
+**Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>`, injects the `PostgresConnector` (as `Arc<dyn DbConnector>`), and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()` / `core.connect(&conn)`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `core.connect(&conn)` + `Repl::new(...)`. The Postgres adapter is named only here — `QueryApi` opens connections through the `DbConnector` port. All analytics and schema-cache state is backed by the same SQLite file.
 
 **API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, TableDescription, NamedDef, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
 
