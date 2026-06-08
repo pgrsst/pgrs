@@ -264,6 +264,13 @@ impl Repl {
                             ),
                         },
                         ReplCommand::Sql(sql) => {
+                            if dml_requires_tx(*tx.lock().unwrap(), sql) {
+                                writeln!(
+                                    stdout,
+                                    "error: INSERT/UPDATE/DELETE requires an explicit transaction. Run BEGIN (or \\begin) first."
+                                ).ok();
+                                continue;
+                            }
                             let ok = handler.handle_sql(
                                 &query,
                                 sql,
