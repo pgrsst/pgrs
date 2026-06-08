@@ -98,7 +98,8 @@ pub(super) fn repl_help_text() -> String {
         .join("\n");
     format!(
         "  Type any SQL and end it with ';' to run it (Enter alone continues a\n\
-           multi-line statement until the ';').\n\n\
+           multi-line statement until the ';').\n\
+           INSERT/UPDATE/DELETE require an open transaction — run BEGIN (\\begin) first.\n\n\
          {commands}"
     )
 }
@@ -299,5 +300,14 @@ mod tests {
         assert!(text.contains("\\begin"), "help should mention \\begin, got: {text}");
         assert!(text.contains("\\commit"), "help should mention \\commit, got: {text}");
         assert!(text.contains("\\rollback"), "help should mention \\rollback, got: {text}");
+    }
+
+    #[test]
+    fn help_mentions_transaction_requirement_for_dml() {
+        let text = repl_help_text();
+        assert!(
+            text.contains("INSERT/UPDATE/DELETE"),
+            "help should explain DML needs a transaction, got: {text}"
+        );
     }
 }

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use reedline::{Reedline, Signal};
 
-use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi, TxState, next_tx_state, tx_effect};
+use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi, TxState, is_dml, next_tx_state, tx_effect};
 
 use command_handler::{CommandHandler, SqlOptions};
 use describe::describe_table;
@@ -45,6 +45,13 @@ fn rebuild_reedline(
 ) {
     let (tf, cf) = freq_for_schema(analytics, connection_name, &schema);
     *rl = ui::build_reedline(schema, tf, cf);
+}
+
+/// True if `sql` is a row-mutating statement (INSERT/UPDATE/DELETE, including
+/// CTE-wrapped DML) submitted with no open transaction. Such statements are
+/// rejected so the user always retains a ROLLBACK escape hatch.
+fn dml_requires_tx(state: TxState, sql: &str) -> bool {
+    state == TxState::Idle && is_dml(sql)
 }
 
 /// True only for an explicit affirmative confirmation.
@@ -257,6 +264,13 @@ impl Repl {
                             ),
                         },
                         ReplCommand::Sql(sql) => {
+                            if dml_requires_tx(*tx.lock().unwrap(), sql) {
+                                writeln!(
+                                    stdout,
+                                    "error: INSERT/UPDATE/DELETE requires an explicit transaction. Run BEGIN (or \\begin) first."
+                                ).ok();
+                                continue;
+                            }
                             let ok = handler.handle_sql(
                                 &query,
                                 sql,
@@ -392,5 +406,37 @@ mod tests {
         assert!(!super::is_yes("n"));
         assert!(!super::is_yes(""));
         assert!(!super::is_yes("nope"));
+    }
+
+    #[test]
+    fn dml_without_transaction_is_blocked() {
+        use pgrs_core::TxState;
+        assert!(super::dml_requires_tx(TxState::Idle, "INSERT INTO t VALUES (1)"));
+        assert!(super::dml_requires_tx(TxState::Idle, "UPDATE t SET x = 1"));
+        assert!(super::dml_requires_tx(TxState::Idle, "DELETE FROM t"));
+    }
+
+    #[test]
+    fn cte_wrapped_dml_without_transaction_is_blocked() {
+        use pgrs_core::TxState;
+        assert!(super::dml_requires_tx(
+            TxState::Idle,
+            "WITH c AS (INSERT INTO t VALUES (1) RETURNING id) SELECT * FROM c"
+        ));
+    }
+
+    #[test]
+    fn dml_inside_transaction_is_allowed() {
+        use pgrs_core::TxState;
+        assert!(!super::dml_requires_tx(TxState::InTransaction, "INSERT INTO t VALUES (1)"));
+        assert!(!super::dml_requires_tx(TxState::Failed, "DELETE FROM t"));
+    }
+
+    #[test]
+    fn non_dml_is_never_blocked() {
+        use pgrs_core::TxState;
+        assert!(!super::dml_requires_tx(TxState::Idle, "SELECT * FROM t"));
+        assert!(!super::dml_requires_tx(TxState::Idle, "CREATE TABLE t (id int)"));
+        assert!(!super::dml_requires_tx(TxState::Idle, "BEGIN"));
     }
 }
