@@ -8,10 +8,11 @@ mod ui;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 
 use reedline::{Reedline, Signal};
 
-use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi};
+use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi, TxState, next_tx_state, tx_effect};
 
 use command_handler::{CommandHandler, SqlOptions};
 use describe::describe_table;
@@ -148,10 +149,12 @@ impl Repl {
         let (table_freq, column_freq) = freq_for_schema(&analytics, &connection_name, &schema);
         let mut rl = ui::build_reedline(schema.clone(), table_freq, column_freq);
 
+        let tx = Arc::new(Mutex::new(TxState::Idle));
+
         let prompt = ui::PgrsPrompt {
             db_name: db_name.clone(),
             environment: environment.clone(),
-            tx: std::sync::Arc::new(std::sync::Mutex::new(pgrs_core::TxState::Idle)),
+            tx: Arc::clone(&tx),
         };
 
         println!(
@@ -213,7 +216,7 @@ impl Repl {
                             ),
                         },
                         ReplCommand::Sql(sql) => {
-                            handler.handle_sql(
+                            let ok = handler.handle_sql(
                                 &query,
                                 sql,
                                 &SqlOptions {
@@ -226,6 +229,15 @@ impl Repl {
                                 &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
                                 &mut stdout,
                             );
+                            let prev = *tx.lock().unwrap();
+                            let next = next_tx_state(prev, tx_effect(sql), ok);
+                            *tx.lock().unwrap() = next;
+                            if prev == TxState::InTransaction && next == TxState::Failed {
+                                writeln!(
+                                    stdout,
+                                    "Transaction aborted. Run \\rollback (or ROLLBACK) to recover."
+                                ).ok();
+                            }
                         }
                     }
                 }
