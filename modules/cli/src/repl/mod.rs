@@ -148,6 +148,7 @@ impl Repl {
         let prompt = ui::PgrsPrompt {
             db_name: db_name.clone(),
             environment: environment.clone(),
+            tx: std::sync::Arc::new(std::sync::Mutex::new(pgrs_core::TxState::Idle)),
         };
 
         println!(

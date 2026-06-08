@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use reedline::{
     ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
@@ -7,13 +8,16 @@ use reedline::{
     ValidationResult, Validator, default_emacs_keybindings,
 };
 
-use pgrs_core::SchemaApi;
+use pgrs_core::{SchemaApi, TxState};
 use super::completer::{SqlCompleter, SqlHighlighter, SqlHinter};
 use super::sql_utils::is_complete_statement;
 
 pub(super) struct PgrsPrompt {
     pub(super) db_name: String,
     pub(super) environment: Option<String>,
+    /// Shared with the REPL loop, which updates it after each statement so the
+    /// prompt reflects the current transaction status.
+    pub(super) tx: Arc<Mutex<TxState>>,
 }
 
 impl Prompt for PgrsPrompt {
@@ -27,7 +31,11 @@ impl Prompt for PgrsPrompt {
         Cow::Borrowed("")
     }
     fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
-        Cow::Borrowed("> ")
+        match *self.tx.lock().unwrap() {
+            TxState::Idle => Cow::Borrowed("> "),
+            TxState::InTransaction => Cow::Borrowed("*> "),
+            TxState::Failed => Cow::Borrowed("!> "),
+        }
     }
     fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
         Cow::Borrowed("   -> ")
@@ -131,12 +139,41 @@ pub(super) fn build_reedline(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use pgrs_core::TxState;
+
+    fn prompt_with_tx(state: TxState) -> PgrsPrompt {
+        PgrsPrompt {
+            db_name: "mydb".to_string(),
+            environment: None,
+            tx: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    #[test]
+    fn indicator_is_plain_when_idle() {
+        let p = prompt_with_tx(TxState::Idle);
+        assert_eq!(p.render_prompt_indicator(reedline::PromptEditMode::Default).as_ref(), "> ");
+    }
+
+    #[test]
+    fn indicator_marks_open_transaction() {
+        let p = prompt_with_tx(TxState::InTransaction);
+        assert_eq!(p.render_prompt_indicator(reedline::PromptEditMode::Default).as_ref(), "*> ");
+    }
+
+    #[test]
+    fn indicator_marks_failed_transaction() {
+        let p = prompt_with_tx(TxState::Failed);
+        assert_eq!(p.render_prompt_indicator(reedline::PromptEditMode::Default).as_ref(), "!> ");
+    }
 
     #[test]
     fn prompt_left_with_environment_shows_env() {
         let prompt = PgrsPrompt {
             db_name: "mydb".to_string(),
             environment: Some("production".to_string()),
+            tx: Arc::new(Mutex::new(TxState::Idle)),
         };
         let left = prompt.render_prompt_left();
         assert_eq!(left.as_ref(), "pgrs(mydb:production)");
@@ -147,6 +184,7 @@ mod tests {
         let prompt = PgrsPrompt {
             db_name: "mydb".to_string(),
             environment: None,
+            tx: Arc::new(Mutex::new(TxState::Idle)),
         };
         let left = prompt.render_prompt_left();
         assert_eq!(left.as_ref(), "pgrs(mydb)");
@@ -157,6 +195,7 @@ mod tests {
         let prompt = PgrsPrompt {
             db_name: "mydb".to_string(),
             environment: None,
+            tx: Arc::new(Mutex::new(TxState::Idle)),
         };
         let left = prompt.render_prompt_left();
         assert!(
@@ -170,6 +209,7 @@ mod tests {
         let prompt = PgrsPrompt {
             db_name: "production".to_string(),
             environment: None,
+            tx: Arc::new(Mutex::new(TxState::Idle)),
         };
         let left = prompt.render_prompt_left();
         assert_eq!(left.as_ref(), "pgrs(production)");
