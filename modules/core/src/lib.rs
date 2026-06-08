@@ -60,6 +60,7 @@ pub use services::query::completions::{Completion, CompletionKind};
 pub use query::alias::SQL_KEYWORDS;
 pub use query::classify::{is_ddl, is_dml};
 pub use query::tokenizer::{SqlToken, tokenize};
+pub use query::transaction::{next_tx_state, tx_effect, TxEffect, TxState};
 
 /// Root composition object. Owns the shared SQLite store and hands out API
 /// facades wired against it. Construct once at process start via [`Core::init`].
