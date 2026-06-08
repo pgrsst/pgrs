@@ -208,19 +208,21 @@ impl Repl {
                                 id, &path, &connection_name, &query, &analytics, &mut stdout,
                             ),
                         },
-                        ReplCommand::Sql(sql) => handler.handle_sql(
-                            &query,
-                            sql,
-                            &SqlOptions {
-                                expanded,
-                                timing,
-                                connection_name: &connection_name,
-                                analytics: Some(&analytics),
-                            },
-                            &mut schema,
-                            &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
-                            &mut stdout,
-                        ),
+                        ReplCommand::Sql(sql) => {
+                            handler.handle_sql(
+                                &query,
+                                sql,
+                                &SqlOptions {
+                                    expanded,
+                                    timing,
+                                    connection_name: &connection_name,
+                                    analytics: Some(&analytics),
+                                },
+                                &mut schema,
+                                &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
+                                &mut stdout,
+                            );
+                        }
                     }
                 }
                 Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
