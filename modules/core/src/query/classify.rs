@@ -7,7 +7,7 @@ use sqlparser::ast::{Query, SetExpr, Statement};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 
-fn parse_first_statement(query: &str) -> Option<Statement> {
+pub(super) fn parse_first_statement(query: &str) -> Option<Statement> {
     Parser::parse_sql(&PostgreSqlDialect {}, query)
         .ok()
         .and_then(|mut stmts| if stmts.is_empty() { None } else { Some(stmts.remove(0)) })

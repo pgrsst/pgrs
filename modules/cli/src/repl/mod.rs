@@ -8,10 +8,11 @@ mod ui;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 
 use reedline::{Reedline, Signal};
 
-use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi};
+use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi, TxState, next_tx_state, tx_effect};
 
 use command_handler::{CommandHandler, SqlOptions};
 use describe::describe_table;
@@ -44,6 +45,43 @@ fn rebuild_reedline(
 ) {
     let (tf, cf) = freq_for_schema(analytics, connection_name, &schema);
     *rl = ui::build_reedline(schema, tf, cf);
+}
+
+/// True only for an explicit affirmative confirmation.
+fn is_yes(input: &str) -> bool {
+    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Handle a quit request. Returns `true` if the REPL should exit. With an open
+/// transaction, warns and asks for confirmation; on "yes" (or EOF, since we
+/// can't keep prompting) it issues `ROLLBACK` and exits, otherwise it cancels.
+fn handle_quit_request(
+    query: &QueryApi,
+    tx: &Arc<Mutex<TxState>>,
+    writer: &mut impl Write,
+) -> bool {
+    if *tx.lock().unwrap() == TxState::Idle {
+        return true;
+    }
+    writeln!(writer, "A transaction is in progress. Roll back and quit? [y/N]").ok();
+    writer.flush().ok();
+
+    let mut input = String::new();
+    let confirmed = match io::stdin().read_line(&mut input) {
+        Ok(0) | Err(_) => true, // EOF or read error: cannot keep asking — roll back and quit.
+        Ok(_) => is_yes(&input),
+    };
+
+    if confirmed {
+        if let Err(e) = query.execute("ROLLBACK") {
+            writeln!(writer, "warning: rollback failed: {e}").ok();
+        }
+        *tx.lock().unwrap() = TxState::Idle;
+        true
+    } else {
+        writeln!(writer, "Quit cancelled.").ok();
+        false
+    }
 }
 
 /// A single line of REPL input, classified. Keeping the (order-sensitive)
@@ -79,6 +117,9 @@ impl<'a> ReplCommand<'a> {
             "\\x" => ReplCommand::ToggleExpanded,
             "\\timing" => ReplCommand::ToggleTiming,
             "\\refresh" => ReplCommand::Refresh,
+            "\\begin" => ReplCommand::Sql("BEGIN"),
+            "\\commit" => ReplCommand::Sql("COMMIT"),
+            "\\rollback" => ReplCommand::Sql("ROLLBACK"),
             "\\history" => ReplCommand::History,
             "\\stats" => ReplCommand::Stats(None),
             "\\d+" => ReplCommand::DescribeUsage,
@@ -145,9 +186,12 @@ impl Repl {
         let (table_freq, column_freq) = freq_for_schema(&analytics, &connection_name, &schema);
         let mut rl = ui::build_reedline(schema.clone(), table_freq, column_freq);
 
+        let tx = Arc::new(Mutex::new(TxState::Idle));
+
         let prompt = ui::PgrsPrompt {
             db_name: db_name.clone(),
             environment: environment.clone(),
+            tx: Arc::clone(&tx),
         };
 
         println!(
@@ -165,7 +209,11 @@ impl Repl {
                     let mut stdout = io::stdout();
                     match ReplCommand::parse(trimmed) {
                         ReplCommand::Empty => {}
-                        ReplCommand::Quit => break,
+                        ReplCommand::Quit => {
+                            if handle_quit_request(&query, &tx, &mut stdout) {
+                                break;
+                            }
+                        }
                         ReplCommand::Help => println!("{}", ui::repl_help_text()),
                         ReplCommand::ListTables => handler.handle_dt(&schema, &mut stdout),
                         ReplCommand::ListTablesPlain => handler.handle_d(&schema, &mut stdout),
@@ -208,22 +256,38 @@ impl Repl {
                                 id, &path, &connection_name, &query, &analytics, &mut stdout,
                             ),
                         },
-                        ReplCommand::Sql(sql) => handler.handle_sql(
-                            &query,
-                            sql,
-                            &SqlOptions {
-                                expanded,
-                                timing,
-                                connection_name: &connection_name,
-                                analytics: Some(&analytics),
-                            },
-                            &mut schema,
-                            &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
-                            &mut stdout,
-                        ),
+                        ReplCommand::Sql(sql) => {
+                            let ok = handler.handle_sql(
+                                &query,
+                                sql,
+                                &SqlOptions {
+                                    expanded,
+                                    timing,
+                                    connection_name: &connection_name,
+                                    analytics: Some(&analytics),
+                                },
+                                &mut schema,
+                                &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
+                                &mut stdout,
+                            );
+                            let prev = *tx.lock().unwrap();
+                            let next = next_tx_state(prev, tx_effect(sql), ok);
+                            *tx.lock().unwrap() = next;
+                            if prev == TxState::InTransaction && next == TxState::Failed {
+                                writeln!(
+                                    stdout,
+                                    "Transaction aborted. Run \\rollback (or ROLLBACK) to recover."
+                                ).ok();
+                            }
+                        }
                     }
                 }
-                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
+                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => {
+                    let mut stdout = io::stdout();
+                    if handle_quit_request(&query, &tx, &mut stdout) {
+                        break;
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => return Err(e.to_string()),
             }
@@ -310,5 +374,23 @@ mod tests {
         // Not a recognised command -> handed to the SQL executor, which surfaces
         // the error. Parser stays dumb; it does not guess.
         assert!(matches!(ReplCommand::parse("\\nope"), ReplCommand::Sql("\\nope")));
+    }
+
+    #[test]
+    fn tx_command_aliases_map_to_sql() {
+        assert!(matches!(ReplCommand::parse("\\begin"), ReplCommand::Sql("BEGIN")));
+        assert!(matches!(ReplCommand::parse("\\commit"), ReplCommand::Sql("COMMIT")));
+        assert!(matches!(ReplCommand::parse("\\rollback"), ReplCommand::Sql("ROLLBACK")));
+    }
+
+    #[test]
+    fn quit_confirmation_accepts_yes_only() {
+        assert!(super::is_yes("y"));
+        assert!(super::is_yes("Y"));
+        assert!(super::is_yes("yes"));
+        assert!(super::is_yes("  Yes  "));
+        assert!(!super::is_yes("n"));
+        assert!(!super::is_yes(""));
+        assert!(!super::is_yes("nope"));
     }
 }

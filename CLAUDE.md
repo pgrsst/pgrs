@@ -77,7 +77,8 @@ services/               — connection, schema, analytics, schema_cache, query_h
                           query/ holds completions + command_completion + query_completion
 query/                  — tokenizer.rs (SqlToken + tokenize), alias.rs (AliasMap,
                           build_alias_map, extract_join_context, extract_referenced_tables, SQL_KEYWORDS),
-                          classify.rs (is_ddl / is_dml, sqlparser-based)
+                          classify.rs (is_ddl / is_dml, sqlparser-based),
+                          transaction.rs (TxState, TxEffect, tx_effect, next_tx_state — client-side transaction-state tracking)
 adapters/driven/
   sqlite/               — SqliteRepository across sub-stores (connection_store,
                           query_history_store, table_access_store, column_access_store,
@@ -115,7 +116,7 @@ completions/            — shell completion scripts (bash, zsh, fish)
 
 **Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>`, injects the `PostgresConnector` (as `Arc<dyn DbConnector>`), and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()` / `core.connect(&conn)`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `core.connect(&conn)` + `Repl::new(...)`. The Postgres adapter is named only here — `QueryApi` opens connections through the `DbConnector` port. All analytics and schema-cache state is backed by the same SQLite file.
 
-**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, TableDescription, NamedDef, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
+**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, TableDescription, NamedDef, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, tx_effect, next_tx_state, TxState, TxEffect, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
 
 **CLI argument parsing:** No external arg-parsing library. Args are matched with `--key=value` prefix stripping via `optional_option` in `cli/args.rs`. Port defaults to 5432 (`DEFAULT_PORT`).
 

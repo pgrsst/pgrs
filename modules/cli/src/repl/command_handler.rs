@@ -114,7 +114,7 @@ impl CommandHandler {
         schema: &mut SchemaApi,
         rebuild: &mut impl FnMut(SchemaApi),
         writer: &mut impl Write,
-    ) {
+    ) -> bool {
         let start = std::time::Instant::now();
         match query_api.execute(query) {
             Ok(result) => {
@@ -143,8 +143,12 @@ impl CommandHandler {
                         Err(e) => { writeln!(writer, "error: could not refresh schema: {e}").ok(); }
                     }
                 }
+                true
             }
-            Err(e) => { writeln!(writer, "error: {}", e).ok(); }
+            Err(e) => {
+                writeln!(writer, "error: {}", e).ok();
+                false
+            }
         }
     }
 
@@ -483,5 +487,23 @@ mod tests {
         handler().handle_stats("mydb", Some("users"), &analytics, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("email"), "expected column name, got: {text}");
+    }
+
+    #[test]
+    fn handle_sql_returns_true_on_success() {
+        let query = StubDb::ok(vec![vec!["1".to_string()]], vec!["id".to_string()]).into_query();
+        let mut schema = schema_from(&[]);
+        let mut out = Vec::new();
+        let ok = handler().handle_sql(&query, "SELECT 1", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
+        assert!(ok, "successful execution should return true");
+    }
+
+    #[test]
+    fn handle_sql_returns_false_on_error() {
+        let query = StubDb::err("syntax error").into_query();
+        let mut schema = schema_from(&[]);
+        let mut out = Vec::new();
+        let ok = handler().handle_sql(&query, "SELEKT *", &SqlOptions { expanded: false, timing: false, connection_name: "mydb", analytics: None }, &mut schema, &mut |_| {}, &mut out);
+        assert!(!ok, "failed execution should return false");
     }
 }
