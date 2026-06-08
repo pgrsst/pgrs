@@ -82,6 +82,9 @@ pub(super) const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\export <id> <path>", "export query result from history to CSV file"),
     ("\\stats",              "show most frequently queried tables"),
     ("\\stats <table>",      "show most frequently queried columns for table"),
+    ("\\begin",              "begin a transaction (BEGIN)"),
+    ("\\commit",             "commit the current transaction (COMMIT)"),
+    ("\\rollback",           "roll back the current transaction (ROLLBACK)"),
     ("\\help, \\?",          "show this help"),
     ("\\q, exit",            "quit (or Ctrl+D)"),
 ];
@@ -288,5 +291,13 @@ mod tests {
     fn help_text_mentions_export_command() {
         let text = repl_help_text();
         assert!(text.contains("\\export"), "help should mention \\export, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_transaction_commands() {
+        let text = repl_help_text();
+        assert!(text.contains("\\begin"), "help should mention \\begin, got: {text}");
+        assert!(text.contains("\\commit"), "help should mention \\commit, got: {text}");
+        assert!(text.contains("\\rollback"), "help should mention \\rollback, got: {text}");
     }
 }

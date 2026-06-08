@@ -79,6 +79,9 @@ impl<'a> ReplCommand<'a> {
             "\\x" => ReplCommand::ToggleExpanded,
             "\\timing" => ReplCommand::ToggleTiming,
             "\\refresh" => ReplCommand::Refresh,
+            "\\begin" => ReplCommand::Sql("BEGIN"),
+            "\\commit" => ReplCommand::Sql("COMMIT"),
+            "\\rollback" => ReplCommand::Sql("ROLLBACK"),
             "\\history" => ReplCommand::History,
             "\\stats" => ReplCommand::Stats(None),
             "\\d+" => ReplCommand::DescribeUsage,
@@ -313,5 +316,12 @@ mod tests {
         // Not a recognised command -> handed to the SQL executor, which surfaces
         // the error. Parser stays dumb; it does not guess.
         assert!(matches!(ReplCommand::parse("\\nope"), ReplCommand::Sql("\\nope")));
+    }
+
+    #[test]
+    fn tx_command_aliases_map_to_sql() {
+        assert!(matches!(ReplCommand::parse("\\begin"), ReplCommand::Sql("BEGIN")));
+        assert!(matches!(ReplCommand::parse("\\commit"), ReplCommand::Sql("COMMIT")));
+        assert!(matches!(ReplCommand::parse("\\rollback"), ReplCommand::Sql("ROLLBACK")));
     }
 }
