@@ -122,6 +122,8 @@ completions/            — shell completion scripts (bash, zsh, fish)
 
 **`shell` vs `connect`:** `shell` opens the built-in pgrs REPL (reedline, tab-completion, `\x` expanded display). `connect` execs `psql` directly, replacing the process.
 
+**DML transaction guard:** In the `shell` REPL, `INSERT`/`UPDATE`/`DELETE` (and CTE-wrapped DML) are rejected unless a transaction is open — the user must run `BEGIN`/`\begin` first. Enforced in `repl/mod.rs` via `dml_requires_tx` (built on core's `is_dml` + the tracked `TxState`); `connect`/`psql` is unaffected.
+
 **Schema refresh:** After DDL queries the REPL auto-refreshes `SchemaApi` (cache invalidate + reload). Manual refresh via `\refresh`. `sql_utils::is_ddl` decides when.
 
 **Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers via `sql_utils::is_complete_statement`).
