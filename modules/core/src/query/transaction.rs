@@ -35,7 +35,8 @@ pub fn tx_effect(sql: &str) -> TxEffect {
 }
 
 /// The session's transaction status, tracked client-side and surfaced in the
-/// REPL prompt. `Copy` so it can live in a `Cell` shared with the prompt.
+/// REPL prompt. `Copy` so the REPL can read the current state out of its shared
+/// `Mutex` without cloning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TxState {
     /// No open transaction (autocommit).
