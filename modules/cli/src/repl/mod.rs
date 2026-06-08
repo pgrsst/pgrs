@@ -47,6 +47,43 @@ fn rebuild_reedline(
     *rl = ui::build_reedline(schema, tf, cf);
 }
 
+/// True only for an explicit affirmative confirmation.
+fn is_yes(input: &str) -> bool {
+    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Handle a quit request. Returns `true` if the REPL should exit. With an open
+/// transaction, warns and asks for confirmation; on "yes" (or EOF, since we
+/// can't keep prompting) it issues `ROLLBACK` and exits, otherwise it cancels.
+fn handle_quit_request(
+    query: &QueryApi,
+    tx: &Arc<Mutex<TxState>>,
+    writer: &mut impl Write,
+) -> bool {
+    if *tx.lock().unwrap() == TxState::Idle {
+        return true;
+    }
+    writeln!(writer, "A transaction is in progress. Roll back and quit? [y/N]").ok();
+    writer.flush().ok();
+
+    let mut input = String::new();
+    let confirmed = match io::stdin().read_line(&mut input) {
+        Ok(0) | Err(_) => true, // EOF or read error: cannot keep asking — roll back and quit.
+        Ok(_) => is_yes(&input),
+    };
+
+    if confirmed {
+        if let Err(e) = query.execute("ROLLBACK") {
+            writeln!(writer, "warning: rollback failed: {e}").ok();
+        }
+        *tx.lock().unwrap() = TxState::Idle;
+        true
+    } else {
+        writeln!(writer, "Quit cancelled.").ok();
+        false
+    }
+}
+
 /// A single line of REPL input, classified. Keeping the (order-sensitive)
 /// backslash-command parsing here, separate from execution, makes the dispatch
 /// loop a flat match and lets the parser be unit-tested in isolation.
@@ -172,7 +209,11 @@ impl Repl {
                     let mut stdout = io::stdout();
                     match ReplCommand::parse(trimmed) {
                         ReplCommand::Empty => {}
-                        ReplCommand::Quit => break,
+                        ReplCommand::Quit => {
+                            if handle_quit_request(&query, &tx, &mut stdout) {
+                                break;
+                            }
+                        }
                         ReplCommand::Help => println!("{}", ui::repl_help_text()),
                         ReplCommand::ListTables => handler.handle_dt(&schema, &mut stdout),
                         ReplCommand::ListTablesPlain => handler.handle_d(&schema, &mut stdout),
@@ -241,7 +282,12 @@ impl Repl {
                         }
                     }
                 }
-                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => break,
+                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => {
+                    let mut stdout = io::stdout();
+                    if handle_quit_request(&query, &tx, &mut stdout) {
+                        break;
+                    }
+                }
                 Ok(_) => {}
                 Err(e) => return Err(e.to_string()),
             }
@@ -335,5 +381,16 @@ mod tests {
         assert!(matches!(ReplCommand::parse("\\begin"), ReplCommand::Sql("BEGIN")));
         assert!(matches!(ReplCommand::parse("\\commit"), ReplCommand::Sql("COMMIT")));
         assert!(matches!(ReplCommand::parse("\\rollback"), ReplCommand::Sql("ROLLBACK")));
+    }
+
+    #[test]
+    fn quit_confirmation_accepts_yes_only() {
+        assert!(super::is_yes("y"));
+        assert!(super::is_yes("Y"));
+        assert!(super::is_yes("yes"));
+        assert!(super::is_yes("  Yes  "));
+        assert!(!super::is_yes("n"));
+        assert!(!super::is_yes(""));
+        assert!(!super::is_yes("nope"));
     }
 }
