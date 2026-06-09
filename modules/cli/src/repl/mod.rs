@@ -4,6 +4,7 @@ mod csv;
 mod executor;
 mod describe;
 mod explain;
+mod pager;
 mod sql_utils;
 mod ui;
 

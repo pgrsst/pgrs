@@ -818,6 +818,7 @@ name = "pgrs-cli"
 version = "0.7.0"
 dependencies = [
  "chrono",
+ "crossterm",
  "dirs",
  "nu-ansi-term",
  "pgrs-core",
@@ -836,6 +837,7 @@ dependencies = [
  "postgres",
  "postgres-native-tls",
  "rusqlite",
+ "serde_json",
  "sqlparser",
  "tempfile",
 ]
