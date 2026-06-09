@@ -105,6 +105,7 @@ enum ReplCommand<'a> {
     ListDatabases,   // \l
     ToggleExpanded,  // \x
     ToggleTiming,    // \timing
+    TogglePager,     // \pager
     Refresh,         // \refresh
     History,         // \history
     Stats(Option<&'a str>),
@@ -127,6 +128,7 @@ impl<'a> ReplCommand<'a> {
             "\\l" => ReplCommand::ListDatabases,
             "\\x" => ReplCommand::ToggleExpanded,
             "\\timing" => ReplCommand::ToggleTiming,
+            "\\pager" => ReplCommand::TogglePager,
             "\\refresh" => ReplCommand::Refresh,
             "\\begin" => ReplCommand::Sql("BEGIN"),
             "\\commit" => ReplCommand::Sql("COMMIT"),
@@ -217,6 +219,7 @@ impl Repl {
 
         let mut expanded = false;
         let mut timing = false;
+        let mut pager_enabled = true;
 
         loop {
             match rl.read_line(&prompt) {
@@ -241,6 +244,10 @@ impl Repl {
                         ReplCommand::ToggleTiming => {
                             timing = !timing;
                             println!("Timing is {}.", if timing { "on" } else { "off" });
+                        }
+                        ReplCommand::TogglePager => {
+                            pager_enabled = !pager_enabled;
+                            println!("Pager is {}.", if pager_enabled { "on" } else { "off" });
                         }
                         ReplCommand::Refresh => handler.handle_refresh(
                             &query,
@@ -283,7 +290,9 @@ impl Repl {
                                 ).ok();
                                 continue;
                             }
-                            explain::handle_explain(&query, sql, analyze, &mut stdout);
+                            let mut buf: Vec<u8> = Vec::new();
+                            explain::handle_explain(&query, sql, analyze, &mut buf);
+                            pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, &mut stdout);
                         }
                         ReplCommand::Sql(sql) => {
                             if dml_requires_tx(*tx.lock().unwrap(), sql) {
@@ -293,6 +302,7 @@ impl Repl {
                                 ).ok();
                                 continue;
                             }
+                            let mut buf: Vec<u8> = Vec::new();
                             let ok = handler.handle_sql(
                                 &query,
                                 sql,
@@ -304,8 +314,9 @@ impl Repl {
                                 },
                                 &mut schema,
                                 &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
-                                &mut stdout,
+                                &mut buf,
                             );
+                            pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, &mut stdout);
                             let prev = *tx.lock().unwrap();
                             let next = next_tx_state(prev, tx_effect(sql), ok);
                             *tx.lock().unwrap() = next;
@@ -460,6 +471,11 @@ mod tests {
         assert!(!super::dml_requires_tx(TxState::Idle, "SELECT * FROM t"));
         assert!(!super::dml_requires_tx(TxState::Idle, "CREATE TABLE t (id int)"));
         assert!(!super::dml_requires_tx(TxState::Idle, "BEGIN"));
+    }
+
+    #[test]
+    fn pager_toggle_parses() {
+        assert!(matches!(ReplCommand::parse("\\pager"), ReplCommand::TogglePager));
     }
 
     #[test]
