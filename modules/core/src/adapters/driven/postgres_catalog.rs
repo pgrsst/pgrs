@@ -11,6 +11,7 @@
 
 use crate::domain::catalog::{NamedDef, TableDescription};
 use crate::domain::error::DomainError;
+use crate::domain::explain::{ExplainNode, ExplainPlan};
 use crate::ports::catalog_port::CatalogPort;
 use crate::ports::db_connection::DbConnection;
 
@@ -136,6 +137,35 @@ fn fetch_named<D: DbConnection + ?Sized>(db: &D, sql_template: &str, table: &str
         .unwrap_or_default()
 }
 
+/// Scalar attribute keys surfaced as detail lines, in display order. This list
+/// is intentionally selective (the common predicate/join attributes); extend it
+/// as new attributes prove useful.
+const EXPLAIN_DETAIL_KEYS: &[&str] = &["Join Type", "Index Cond", "Hash Cond", "Filter"];
+
+fn parse_explain_node(node: &serde_json::Value) -> ExplainNode {
+    let detail = EXPLAIN_DETAIL_KEYS
+        .iter()
+        .filter_map(|key| node.get(*key).and_then(|v| v.as_str()).map(|v| format!("{key}: {v}")))
+        .collect();
+
+    let children = node
+        .get("Plans")
+        .and_then(|p| p.as_array())
+        .map(|arr| arr.iter().map(parse_explain_node).collect())
+        .unwrap_or_default();
+
+    ExplainNode {
+        node_type: node.get("Node Type").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+        relation: node.get("Relation Name").and_then(|v| v.as_str()).map(String::from),
+        total_cost: node.get("Total Cost").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        plan_rows: node.get("Plan Rows").and_then(|v| v.as_u64()).unwrap_or(0),
+        actual_time_ms: node.get("Actual Total Time").and_then(|v| v.as_f64()),
+        actual_rows: node.get("Actual Rows").and_then(|v| v.as_u64()),
+        detail,
+        children,
+    }
+}
+
 impl<T: DbConnection + ?Sized> CatalogPort for T {
     fn describe_table(&self, table: &str, extended: bool) -> Result<TableDescription, DomainError> {
         // `simple_query` (the only execution path on this port) takes no bind
@@ -181,6 +211,34 @@ impl<T: DbConnection + ?Sized> CatalogPort for T {
             .into_iter()
             .filter_map(|mut row| if row.is_empty() { None } else { Some(row.remove(0)) })
             .collect())
+    }
+
+    fn explain(&self, sql: &str, analyze: bool) -> Result<ExplainPlan, DomainError> {
+        let options = if analyze {
+            "FORMAT JSON, ANALYZE true, BUFFERS true"
+        } else {
+            "FORMAT JSON"
+        };
+        let query = format!("EXPLAIN ({options}) {sql}");
+        let result = self.execute(&query)?;
+
+        let json_text = result
+            .rows
+            .into_iter()
+            .next()
+            .and_then(|row| row.into_iter().next())
+            .ok_or_else(|| DomainError::QueryError("EXPLAIN returned no plan".to_string()))?;
+
+        let parsed: serde_json::Value = serde_json::from_str(&json_text)
+            .map_err(|e| DomainError::QueryError(format!("could not parse EXPLAIN output: {e}")))?;
+
+        let plan_obj = parsed
+            .as_array()
+            .and_then(|arr| arr.first())
+            .and_then(|entry| entry.get("Plan"))
+            .ok_or_else(|| DomainError::QueryError("EXPLAIN output missing Plan".to_string()))?;
+
+        Ok(ExplainPlan { root: parse_explain_node(plan_obj) })
     }
 }
 
@@ -313,5 +371,54 @@ mod tests {
         let db = StubDb::new()
             .with("pg_database", Err(DomainError::QueryError("connection lost".into())));
         assert!(db.list_databases().is_err());
+    }
+
+    fn explain_json_row(json: &str) -> QueryResult {
+        QueryResult {
+            columns: vec!["QUERY PLAN".into()],
+            rows: vec![vec![json.into()]],
+            rows_affected: None,
+        }
+    }
+
+    #[test]
+    fn explain_parses_single_node() {
+        let json = r#"[{"Plan":{"Node Type":"Seq Scan","Relation Name":"users","Total Cost":18.50,"Plan Rows":850,"Filter":"(active = true)"}}]"#;
+        let db = StubDb::new().with("EXPLAIN", Ok(explain_json_row(json)));
+        let plan = db.explain("SELECT * FROM users", false).unwrap();
+        assert_eq!(plan.root.node_type, "Seq Scan");
+        assert_eq!(plan.root.relation.as_deref(), Some("users"));
+        assert_eq!(plan.root.total_cost, 18.50);
+        assert_eq!(plan.root.plan_rows, 850);
+        assert!(plan.root.actual_time_ms.is_none(), "no ANALYZE -> no actuals");
+        assert_eq!(plan.root.detail, vec!["Filter: (active = true)".to_string()]);
+        assert!(plan.root.children.is_empty());
+    }
+
+    #[test]
+    fn explain_parses_nested_plans_and_actuals() {
+        let json = r#"[{"Plan":{"Node Type":"Hash Join","Total Cost":42.0,"Plan Rows":10,"Actual Total Time":1.25,"Actual Rows":9,"Plans":[{"Node Type":"Seq Scan","Relation Name":"a","Total Cost":1.0,"Plan Rows":1}]}}]"#;
+        let db = StubDb::new().with("EXPLAIN", Ok(explain_json_row(json)));
+        let plan = db.explain("SELECT 1", true).unwrap();
+        assert_eq!(plan.root.node_type, "Hash Join");
+        assert_eq!(plan.root.actual_time_ms, Some(1.25));
+        assert_eq!(plan.root.actual_rows, Some(9));
+        assert_eq!(plan.root.children.len(), 1);
+        assert_eq!(plan.root.children[0].relation.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn explain_errors_on_unparseable_output() {
+        let db = StubDb::new().with("EXPLAIN", Ok(explain_json_row("not json")));
+        let err = db.explain("SELECT 1", false).unwrap_err();
+        assert!(matches!(err, DomainError::QueryError(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn explain_errors_on_valid_json_without_plan() {
+        // Valid JSON but wrong shape (no "Plan" key) -> structural error path.
+        let db = StubDb::new().with("EXPLAIN", Ok(explain_json_row("[{}]")));
+        let err = db.explain("SELECT 1", false).unwrap_err();
+        assert!(matches!(err, DomainError::QueryError(_)), "got: {err:?}");
     }
 }
