@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::domain::catalog::TableDescription;
 use crate::domain::error::DomainError;
+use crate::domain::explain::ExplainPlan;
 use crate::domain::query_result::QueryResult;
 use crate::ports::catalog_port::CatalogPort;
 use crate::ports::repl_port::ReplPort;
@@ -44,6 +45,12 @@ impl QueryApi {
         self.db.list_databases()
     }
 
+    /// Run `EXPLAIN` (`\explain`) or `EXPLAIN ANALYZE` (`\explain+`) and return
+    /// the parsed plan tree. The pg-specific SQL/JSON lives in the adapter.
+    pub fn explain(&self, sql: &str, analyze: bool) -> Result<ExplainPlan, DomainError> {
+        self.db.explain(sql, analyze)
+    }
+
     /// Build a `QueryApi` from any `ReplPort` implementation (test fakes).
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_repl(db: Box<dyn ReplPort>) -> Self {
@@ -56,5 +63,42 @@ impl QueryApi {
 impl SchemaPort for QueryApi {
     fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
         self.db.list_columns()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::error::DomainError;
+    use crate::ports::db_connection::DbConnection;
+    use crate::ports::schema_port::SchemaPort;
+    use std::collections::HashMap;
+
+    struct StubDb {
+        json: String,
+    }
+
+    impl DbConnection for StubDb {
+        fn execute(&self, _sql: &str) -> Result<QueryResult, DomainError> {
+            Ok(QueryResult {
+                columns: vec!["QUERY PLAN".into()],
+                rows: vec![vec![self.json.clone()]],
+                rows_affected: None,
+            })
+        }
+    }
+
+    impl SchemaPort for StubDb {
+        fn list_columns(&self) -> Result<HashMap<String, Vec<String>>, DomainError> {
+            Ok(HashMap::new())
+        }
+    }
+
+    #[test]
+    fn explain_delegates_to_port_and_returns_plan() {
+        let json = r#"[{"Plan":{"Node Type":"Seq Scan","Total Cost":1.0,"Plan Rows":1}}]"#;
+        let api = QueryApi::from_port(Box::new(StubDb { json: json.to_string() }));
+        let plan = api.explain("SELECT 1", false).unwrap();
+        assert_eq!(plan.root.node_type, "Seq Scan");
     }
 }
