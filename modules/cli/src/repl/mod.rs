@@ -110,6 +110,8 @@ enum ReplCommand<'a> {
     Describe { table: &'a str, extended: bool }, // \d <t> / \d+ <t>
     DescribeUsage,                               // \d+ with no table
     Export(Option<&'a str>),                     // None => bare \export
+    Explain { sql: &'a str, analyze: bool },     // \explain <sql> / \explain+ <sql>
+    ExplainUsage,                                // bare \explain / \explain+
     Sql(&'a str),
 }
 
@@ -132,8 +134,13 @@ impl<'a> ReplCommand<'a> {
             "\\stats" => ReplCommand::Stats(None),
             "\\d+" => ReplCommand::DescribeUsage,
             "\\export" => ReplCommand::Export(None),
+            "\\explain" | "\\explain+" => ReplCommand::ExplainUsage,
             _ => {
-                if let Some(t) = trimmed.strip_prefix("\\d+ ") {
+                if let Some(sql) = trimmed.strip_prefix("\\explain+ ") {
+                    ReplCommand::Explain { sql, analyze: true }
+                } else if let Some(sql) = trimmed.strip_prefix("\\explain ") {
+                    ReplCommand::Explain { sql, analyze: false }
+                } else if let Some(t) = trimmed.strip_prefix("\\d+ ") {
                     ReplCommand::Describe { table: t, extended: true }
                 } else if let Some(t) = trimmed.strip_prefix("\\d ") {
                     ReplCommand::Describe { table: t, extended: false }
@@ -264,6 +271,19 @@ impl Repl {
                                 id, &path, &connection_name, &query, &analytics, &mut stdout,
                             ),
                         },
+                        ReplCommand::ExplainUsage => {
+                            writeln!(stdout, "Usage: \\explain <query>  (\\explain+ runs ANALYZE)").ok();
+                        }
+                        ReplCommand::Explain { sql, analyze } => {
+                            if analyze && dml_requires_tx(*tx.lock().unwrap(), sql) {
+                                writeln!(
+                                    stdout,
+                                    "error: \\explain+ runs ANALYZE which executes the statement; INSERT/UPDATE/DELETE requires an explicit transaction. Run BEGIN (or \\begin) first."
+                                ).ok();
+                                continue;
+                            }
+                            explain::handle_explain(&query, sql, analyze, &mut stdout);
+                        }
                         ReplCommand::Sql(sql) => {
                             if dml_requires_tx(*tx.lock().unwrap(), sql) {
                                 writeln!(
@@ -439,5 +459,19 @@ mod tests {
         assert!(!super::dml_requires_tx(TxState::Idle, "SELECT * FROM t"));
         assert!(!super::dml_requires_tx(TxState::Idle, "CREATE TABLE t (id int)"));
         assert!(!super::dml_requires_tx(TxState::Idle, "BEGIN"));
+    }
+
+    #[test]
+    fn explain_variants_parse() {
+        assert!(matches!(ReplCommand::parse("\\explain"), ReplCommand::ExplainUsage));
+        assert!(matches!(ReplCommand::parse("\\explain+"), ReplCommand::ExplainUsage));
+        assert!(matches!(
+            ReplCommand::parse("\\explain SELECT 1"),
+            ReplCommand::Explain { sql: "SELECT 1", analyze: false }
+        ));
+        assert!(matches!(
+            ReplCommand::parse("\\explain+ SELECT 1"),
+            ReplCommand::Explain { sql: "SELECT 1", analyze: true }
+        ));
     }
 }
