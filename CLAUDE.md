@@ -62,9 +62,11 @@ api/                    — the ONLY surface pgrs-cli may use:
   completions.rs        — CompletionsApi: completions(query, cursor) → Vec<Completion>
   analytics.rs          — AnalyticsApi: record_query(conn, sql, &SchemaApi) [extracts
                           referenced tables/columns internally], history(), frequent_tables/columns()
+  saved_query.rs        — SavedQueryApi: save/list/get/delete per-connection saved
+                          queries (the REPL's "favorites"); built by Core::saved_query_api()
 domain/                 — pure value types: Connection, DomainError, QueryResult,
                           catalog (TableDescription/NamedDef), analytics/access/schema types,
-                          explain (ExplainPlan/ExplainNode)
+                          explain (ExplainPlan/ExplainNode), SavedQuery
 enums/tls_mode.rs       — TlsMode (Disable | Require | VerifyFull)
 ports/                  — one trait per repository/capability boundary (live-connection
                           ports omit Send+Sync by design — REPL is single-threaded):
@@ -72,10 +74,10 @@ ports/                  — one trait per repository/capability boundary (live-c
   db_connector.rs (DbConnector: opens a Connection → Box<dyn ReplPort>),
   catalog_port.rs (CatalogPort; value types live in domain::catalog),
   schema_port.rs (SchemaPort), repl_port.rs (ReplPort = DbConnection + SchemaPort),
-  query_history_repository.rs, table_access_repository.rs, column_access_repository.rs,
-  schema_table_repository.rs, schema_column_repository.rs
+  query_history_repository.rs, saved_query_repository.rs, table_access_repository.rs,
+  column_access_repository.rs, schema_table_repository.rs, schema_column_repository.rs
 services/               — connection, schema, analytics, schema_cache, query_history,
-                          table_access, column_access, schema_table, schema_column;
+                          saved_query, table_access, column_access, schema_table, schema_column;
                           query/ holds completions + command_completion + query_completion
 query/                  — tokenizer.rs (SqlToken + tokenize), alias.rs (AliasMap,
                           build_alias_map, extract_join_context, extract_referenced_tables, SQL_KEYWORDS),
@@ -83,9 +85,10 @@ query/                  — tokenizer.rs (SqlToken + tokenize), alias.rs (AliasM
                           transaction.rs (TxState, TxEffect, tx_effect, next_tx_state — client-side transaction-state tracking)
 adapters/driven/
   sqlite/               — SqliteRepository across sub-stores (connection_store,
-                          query_history_store, table_access_store, column_access_store,
-                          schema_table_store, schema_column_store) + migrations.rs
-                          (open / open_in_memory[test-support] / user_version migrations)
+                          query_history_store, saved_query_store, table_access_store,
+                          column_access_store, schema_table_store, schema_column_store) +
+                          migrations.rs (open / open_in_memory[test-support] / user_version
+                          migrations; v3 adds the saved_queries table)
   postgres_db.rs        — PostgresDb: implements DbConnection via the postgres crate;
                           PostgresConnector: implements DbConnector (opens connections)
   postgres_catalog.rs   — Postgres CatalogPort impl: pg_catalog \d/\l SQL →
@@ -104,11 +107,14 @@ cli/
   common_handler.rs     — help / version / completions
   args.rs               — --key=value parsing, URL parsing, TLS-mode parsing
 repl/                   — interactive SQL REPL (reedline-based)
-  mod.rs                — REPL loop, dispatches backslash commands, DDL auto-refresh
+  mod.rs                — REPL loop, dispatches backslash commands, DDL auto-refresh;
+                          run_statement (shared SQL exec path: DML guard + handle_sql + tx state)
   command_handler.rs    — \d / \dt / \l / \history / \stats / SQL exec / \refresh
   completer.rs          — SqlCompleter, SqlHighlighter, SqlHinter backed by CompletionsApi/SchemaApi
   executor.rs           — formats and prints QueryResult (normal and expanded \x mode)
   csv.rs                — CSV export for \export
+  saved.rs              — \save / \saved / \run / \unsave: parse_save_args + handlers
+                          over SavedQueryApi; \run resolves SQL, the loop executes it via run_statement
   describe.rs           — \d <table>: formats QueryApi::describe_table (TableDescription); no SQL
   explain.rs            — \explain / \explain+: renders QueryApi::explain (ExplainPlan) as an ASCII tree; no SQL
   pager.rs              — routes long REPL output through $PAGER (fallback less -SR); \pager toggles
@@ -118,9 +124,9 @@ completions.rs /
 completions/            — shell completion scripts (bash, zsh, fish)
 ```
 
-**Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>`, injects the `PostgresConnector` (as `Arc<dyn DbConnector>`), and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()` / `core.connect(&conn)`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `core.connect(&conn)` + `Repl::new(...)`. The Postgres adapter is named only here — `QueryApi` opens connections through the `DbConnector` port. All analytics and schema-cache state is backed by the same SQLite file.
+**Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>`, injects the `PostgresConnector` (as `Arc<dyn DbConnector>`), and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()` / `core.saved_query_api()` / `core.connect(&conn)`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `core.connect(&conn)` + `Repl::new(...)`. The Postgres adapter is named only here — `QueryApi` opens connections through the `DbConnector` port. All analytics and schema-cache state is backed by the same SQLite file.
 
-**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, TableDescription, NamedDef, ExplainPlan, ExplainNode, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, tx_effect, next_tx_state, TxState, TxEffect, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
+**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, SavedQueryApi, SavedQuery, TableDescription, NamedDef, ExplainPlan, ExplainNode, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, tx_effect, next_tx_state, TxState, TxEffect, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
 
 **CLI argument parsing:** No external arg-parsing library. Args are matched with `--key=value` prefix stripping via `optional_option` in `cli/args.rs`. Port defaults to 5432 (`DEFAULT_PORT`).
 
@@ -131,6 +137,8 @@ completions/            — shell completion scripts (bash, zsh, fish)
 **Schema refresh:** After DDL queries the REPL auto-refreshes `SchemaApi` (cache invalidate + reload). Manual refresh via `\refresh`. `sql_utils::is_ddl` decides when.
 
 **EXPLAIN:** `\explain <query>` renders the plan tree — core runs `EXPLAIN (FORMAT JSON)` behind the `CatalogPort` and returns an `ExplainPlan`; the CLI (`repl/explain.rs`) renders it. `\explain+` adds `ANALYZE` and therefore executes the statement, so it is subject to the same DML transaction guard as INSERT/UPDATE/DELETE.
+
+**Saved queries:** Per-connection "favorites" persisted in `~/.pgrs/pgrs.db` (table `saved_queries`, migration v3). `\save <name> <id>` looks up history entry `<id>` for the active connection and stores its SQL under `<name>` (errors if the id is unknown or the name is taken — no overwrite). `\saved` lists them, `\unsave <name>` deletes one, and `\run <name>` executes the saved SQL through the same `run_statement` path as typed SQL — so analytics, DDL auto-refresh, and the DML transaction guard all still apply. Backed by `SavedQueryApi`; the SQL-lookup/handlers live in `repl/saved.rs`.
 
 **Pager:** REPL query/EXPLAIN output is buffered and routed through `repl/pager.rs`, which pages via `$PAGER` (fallback `less -SR`) only when output exceeds the terminal height and stdout is a TTY. `\pager` toggles it (default on); on any failure it falls back to a direct write so output is never lost.
 

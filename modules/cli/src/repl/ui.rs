@@ -82,6 +82,10 @@ pub(super) const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\refresh",            "reload schema (after CREATE/DROP/ALTER TABLE)"),
     ("\\history",            "show recent query history"),
     ("\\export <id> <path>", "export query result from history to CSV file"),
+    ("\\save <name> <id>",   "save a query from history (by id) under a name"),
+    ("\\saved",              "list saved queries for this connection"),
+    ("\\run <name>",         "run a saved query"),
+    ("\\unsave <name>",      "delete a saved query"),
     ("\\stats",              "show most frequently queried tables"),
     ("\\stats <table>",      "show most frequently queried columns for table"),
     ("\\begin",              "begin a transaction (BEGIN)"),
@@ -308,6 +312,15 @@ mod tests {
     fn help_text_mentions_explain_command() {
         let text = repl_help_text();
         assert!(text.contains("\\explain"), "help should mention \\explain, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_saved_query_commands() {
+        let text = repl_help_text();
+        assert!(text.contains("\\save"), "help should mention \\save, got: {text}");
+        assert!(text.contains("\\saved"), "help should mention \\saved, got: {text}");
+        assert!(text.contains("\\run"), "help should mention \\run, got: {text}");
+        assert!(text.contains("\\unsave"), "help should mention \\unsave, got: {text}");
     }
 
     #[test]

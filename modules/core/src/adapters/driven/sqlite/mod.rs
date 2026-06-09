@@ -1,6 +1,7 @@
 pub(crate) mod migrations;
 pub(crate) mod connection_store;
 pub(crate) mod query_history_store;
+pub(crate) mod saved_query_store;
 pub(crate) mod table_access_store;
 pub(crate) mod column_access_store;
 pub(crate) mod schema_table_store;
@@ -108,13 +109,13 @@ mod tests {
     }
 
     #[test]
-    fn migration_sets_user_version_to_2() {
+    fn migration_sets_user_version_to_3() {
         let repo = SqliteRepository::open_in_memory().unwrap();
         let conn = repo.conn.lock().unwrap();
         let version: i32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
@@ -239,6 +240,107 @@ mod tests {
         assert_eq!(freq[0].count, 2);
         assert_eq!(freq[1].name, "id");
         assert_eq!(freq[1].count, 1);
+    }
+
+    // --- SavedQueryRepository tests ---
+    // Nested in its own module so importing `SavedQueryRepository` here doesn't
+    // make `repo.delete(..)`/`repo.save(..)` ambiguous in the connection tests.
+    mod saved_query {
+        use super::super::SqliteRepository;
+        use super::add_conn;
+        use crate::domain::error::DomainError;
+        use crate::ports::connection_repository::ConnectionRepository;
+        use crate::ports::saved_query_repository::SavedQueryRepository;
+
+        #[test]
+        fn save_and_find_by_name_round_trips() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "mydb");
+            repo.save("mydb", "recent_users", "SELECT * FROM users").unwrap();
+
+            let found = repo.find_by_name("mydb", "recent_users").unwrap();
+            assert_eq!(found.name, "recent_users");
+            assert_eq!(found.sql, "SELECT * FROM users");
+        }
+
+        #[test]
+        fn find_by_name_returns_none_when_absent() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "mydb");
+            assert!(repo.find_by_name("mydb", "ghost").is_none());
+        }
+
+        #[test]
+        fn list_by_connection_returns_saved_queries() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "mydb");
+            repo.save("mydb", "a", "SELECT 1").unwrap();
+            repo.save("mydb", "b", "SELECT 2").unwrap();
+
+            let list = repo.list_by_connection("mydb");
+            assert_eq!(list.len(), 2);
+            let names: Vec<&str> = list.iter().map(|q| q.name.as_str()).collect();
+            assert!(names.contains(&"a"));
+            assert!(names.contains(&"b"));
+        }
+
+        #[test]
+        fn save_duplicate_name_errors() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "mydb");
+            repo.save("mydb", "dup", "SELECT 1").unwrap();
+            let err = repo.save("mydb", "dup", "SELECT 2").unwrap_err();
+            assert!(matches!(err, DomainError::AlreadyExists(_)));
+        }
+
+        #[test]
+        fn save_errors_for_unknown_connection() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            let err = repo.save("ghost", "q", "SELECT 1").unwrap_err();
+            assert!(matches!(err, DomainError::NotFound(_)));
+        }
+
+        #[test]
+        fn saved_queries_are_isolated_per_connection() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "db1");
+            add_conn(&repo, "db2");
+            repo.save("db1", "shared", "SELECT 1").unwrap();
+            // Same name allowed on a different connection.
+            repo.save("db2", "shared", "SELECT 2").unwrap();
+
+            assert_eq!(repo.list_by_connection("db1").len(), 1);
+            assert_eq!(repo.find_by_name("db1", "shared").unwrap().sql, "SELECT 1");
+            assert_eq!(repo.find_by_name("db2", "shared").unwrap().sql, "SELECT 2");
+        }
+
+        #[test]
+        fn delete_removes_saved_query() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "mydb");
+            repo.save("mydb", "q", "SELECT 1").unwrap();
+            SavedQueryRepository::delete(&repo, "mydb", "q").unwrap();
+            assert!(repo.find_by_name("mydb", "q").is_none());
+        }
+
+        #[test]
+        fn delete_errors_when_not_found() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "mydb");
+            let err = SavedQueryRepository::delete(&repo, "mydb", "ghost").unwrap_err();
+            assert!(matches!(err, DomainError::NotFound(_)));
+        }
+
+        #[test]
+        fn delete_connection_cascades_to_saved_queries() {
+            let repo = SqliteRepository::open_in_memory().unwrap();
+            add_conn(&repo, "mydb");
+            repo.save("mydb", "q", "SELECT 1").unwrap();
+            assert_eq!(repo.list_by_connection("mydb").len(), 1);
+
+            ConnectionRepository::delete(&repo, "mydb").unwrap();
+            assert!(repo.list_by_connection("mydb").is_empty());
+        }
     }
 
     // --- Cascade delete test ---

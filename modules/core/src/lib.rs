@@ -23,12 +23,14 @@ use crate::ports::column_access_repository::ColumnAccessRepository;
 use crate::ports::db_connector::DbConnector;
 use crate::ports::connection_repository::ConnectionRepository;
 use crate::ports::query_history_repository::QueryHistoryRepository;
+use crate::ports::saved_query_repository::SavedQueryRepository;
 use crate::ports::schema_column_repository::SchemaColumnRepository;
 use crate::ports::schema_table_repository::SchemaTableRepository;
 use crate::ports::table_access_repository::TableAccessRepository;
 use crate::services::analytics::service::{AnalyticsService, AnalyticsSvc};
 use crate::services::column_access::service::{ColumnAccessService, ColumnAccessSvc};
 use crate::services::query_history::service::{QueryHistoryService, QueryHistorySvc};
+use crate::services::saved_query::service::{SavedQueryService, SavedQuerySvc};
 use crate::services::schema::service::SchemaService;
 use crate::services::schema_cache::service::{SchemaCacheService, SchemaCacheSvc};
 use crate::services::schema_column::service::{SchemaColumnService, SchemaColumnSvc};
@@ -40,12 +42,14 @@ pub use api::analytics::AnalyticsApi;
 pub use api::completions::CompletionsApi;
 pub use api::connection::ConnectionApi;
 pub use api::query::QueryApi;
+pub use api::saved_query::SavedQueryApi;
 pub use api::schema::SchemaApi;
 
 // --- Value types used in API signatures ---
 pub use domain::connection::{Connection, DEFAULT_PORT};
 pub use domain::error::DomainError;
 pub use domain::query_history::QueryHistory;
+pub use domain::saved_query::SavedQuery;
 pub use enums::tls_mode::TlsMode;
 pub use domain::catalog::{NamedDef, TableDescription};
 pub use domain::explain::{ExplainNode, ExplainPlan};
@@ -102,6 +106,11 @@ impl Core {
         build_schema_api(&self.sqlite)
     }
 
+    /// Saved-queries facade (per-connection "favorites"), backed by the store.
+    pub fn saved_query_api(&self) -> SavedQueryApi {
+        build_saved_query_api(&self.sqlite)
+    }
+
     /// Build a `Core` backed by an in-memory SQLite store. All facades handed
     /// out share the same store, so connections seeded via `connection` are
     /// visible to `analytics_api`/`schema_api`. For downstream test suites.
@@ -144,6 +153,14 @@ fn build_analytics_api(sqlite: &Arc<SqliteRepository>) -> AnalyticsApi {
         column_access as Arc<dyn ColumnAccessSvc>,
     ));
     AnalyticsApi::new(svc as Arc<dyn AnalyticsSvc>)
+}
+
+/// Assemble the saved-query service and wrap it in a [`SavedQueryApi`] facade.
+fn build_saved_query_api(sqlite: &Arc<SqliteRepository>) -> SavedQueryApi {
+    let svc = Arc::new(SavedQueryService::new(
+        Arc::clone(sqlite) as Arc<dyn SavedQueryRepository>,
+    ));
+    SavedQueryApi::new(svc as Arc<dyn SavedQuerySvc>)
 }
 
 /// Assemble the schema service (with a SQLite-backed cache) and wrap it in a

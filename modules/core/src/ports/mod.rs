@@ -5,6 +5,7 @@ pub mod db_connection;
 pub mod db_connector;
 pub mod query_history_repository;
 pub mod repl_port;
+pub mod saved_query_repository;
 pub mod schema_column_repository;
 pub mod schema_port;
 pub mod schema_table_repository;

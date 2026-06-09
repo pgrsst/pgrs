@@ -5,6 +5,7 @@ mod executor;
 mod describe;
 mod explain;
 mod pager;
+mod saved;
 mod sql_utils;
 mod ui;
 
@@ -14,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use reedline::{Reedline, Signal};
 
-use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi, TxState, is_dml, next_tx_state, tx_effect};
+use pgrs_core::{AnalyticsApi, QueryApi, SavedQueryApi, SchemaApi, TxState, is_dml, next_tx_state, tx_effect};
 
 use command_handler::{CommandHandler, SqlOptions};
 use describe::describe_table;
@@ -93,6 +94,59 @@ fn handle_quit_request(
     }
 }
 
+/// Execute a SQL statement through the shared path: enforce the DML
+/// transaction guard, run it (recording analytics + auto-refreshing schema on
+/// DDL via `handle_sql`), page the output, then advance the tracked
+/// transaction state. Used by both plain `Sql` input and `\run <name>` so the
+/// guard and side-effects are identical.
+#[allow(clippy::too_many_arguments)]
+fn run_statement(
+    handler: &CommandHandler,
+    query: &QueryApi,
+    sql: &str,
+    expanded: bool,
+    timing: bool,
+    pager_enabled: bool,
+    connection_name: &str,
+    analytics: &AnalyticsApi,
+    schema: &mut SchemaApi,
+    rl: &mut Reedline,
+    tx: &Arc<Mutex<TxState>>,
+    stdout: &mut impl Write,
+) {
+    if dml_requires_tx(*tx.lock().unwrap(), sql) {
+        writeln!(
+            stdout,
+            "error: INSERT/UPDATE/DELETE requires an explicit transaction. Run BEGIN (or \\begin) first."
+        ).ok();
+        return;
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    let ok = handler.handle_sql(
+        query,
+        sql,
+        &SqlOptions {
+            expanded,
+            timing,
+            connection_name,
+            analytics: Some(analytics),
+        },
+        schema,
+        &mut |s| rebuild_reedline(rl, analytics, connection_name, s),
+        &mut buf,
+    );
+    pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, stdout);
+    let prev = *tx.lock().unwrap();
+    let next = next_tx_state(prev, tx_effect(sql), ok);
+    *tx.lock().unwrap() = next;
+    if prev == TxState::InTransaction && next == TxState::Failed {
+        writeln!(
+            stdout,
+            "Transaction aborted. Run \\rollback (or ROLLBACK) to recover."
+        ).ok();
+    }
+}
+
 /// A single line of REPL input, classified. Keeping the (order-sensitive)
 /// backslash-command parsing here, separate from execution, makes the dispatch
 /// loop a flat match and lets the parser be unit-tested in isolation.
@@ -108,6 +162,10 @@ enum ReplCommand<'a> {
     TogglePager,     // \pager
     Refresh,         // \refresh
     History,         // \history
+    Saved,                       // \saved
+    Save(Option<&'a str>),       // \save <name> <id> / bare \save
+    Run(Option<&'a str>),        // \run <name> / bare \run
+    Unsave(Option<&'a str>),     // \unsave <name> / bare \unsave
     Stats(Option<&'a str>),
     Describe { table: &'a str, extended: bool }, // \d <t> / \d+ <t>
     DescribeUsage,                               // \d+ with no table
@@ -134,6 +192,10 @@ impl<'a> ReplCommand<'a> {
             "\\commit" => ReplCommand::Sql("COMMIT"),
             "\\rollback" => ReplCommand::Sql("ROLLBACK"),
             "\\history" => ReplCommand::History,
+            "\\saved" => ReplCommand::Saved,
+            "\\save" => ReplCommand::Save(None),
+            "\\run" => ReplCommand::Run(None),
+            "\\unsave" => ReplCommand::Unsave(None),
             "\\stats" => ReplCommand::Stats(None),
             "\\d+" => ReplCommand::DescribeUsage,
             "\\export" => ReplCommand::Export(None),
@@ -149,6 +211,12 @@ impl<'a> ReplCommand<'a> {
                     ReplCommand::Describe { table: t, extended: false }
                 } else if let Some(t) = trimmed.strip_prefix("\\stats ") {
                     ReplCommand::Stats(Some(t))
+                } else if let Some(rest) = trimmed.strip_prefix("\\save ") {
+                    ReplCommand::Save(Some(rest))
+                } else if let Some(rest) = trimmed.strip_prefix("\\run ") {
+                    ReplCommand::Run(Some(rest.trim()))
+                } else if let Some(rest) = trimmed.strip_prefix("\\unsave ") {
+                    ReplCommand::Unsave(Some(rest.trim()))
                 } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
                     ReplCommand::Export(Some(rest))
                 } else {
@@ -165,6 +233,7 @@ pub struct Repl {
     connection_name: String,
     environment: Option<String>,
     analytics: AnalyticsApi,
+    saved_query: SavedQueryApi,
     schema: SchemaApi,
     handler: CommandHandler,
 }
@@ -176,6 +245,7 @@ impl Repl {
         connection_name: &str,
         environment: Option<&str>,
         analytics: AnalyticsApi,
+        saved_query: SavedQueryApi,
         schema: SchemaApi,
     ) -> Self {
         Self {
@@ -184,6 +254,7 @@ impl Repl {
             connection_name: connection_name.to_string(),
             environment: environment.map(|s| s.to_string()),
             analytics,
+            saved_query,
             schema,
             handler: CommandHandler,
         }
@@ -196,6 +267,7 @@ impl Repl {
             connection_name,
             environment,
             analytics,
+            saved_query,
             mut schema,
             handler,
         } = self;
@@ -259,6 +331,41 @@ impl Repl {
                         ReplCommand::History => {
                             handler.handle_history(&connection_name, &analytics, &mut stdout)
                         }
+                        ReplCommand::Saved => {
+                            saved::handle_saved(&connection_name, &saved_query, &mut stdout)
+                        }
+                        ReplCommand::Save(None) => {
+                            writeln!(stdout, "Usage: \\save <name> <id>").ok();
+                        }
+                        ReplCommand::Save(Some(rest)) => match saved::parse_save_args(rest) {
+                            None => {
+                                writeln!(stdout, "Usage: \\save <name> <id>").ok();
+                            }
+                            Some((name, id)) => saved::handle_save(
+                                name, id, &connection_name, &analytics, &saved_query, &mut stdout,
+                            ),
+                        },
+                        ReplCommand::Unsave(None) => {
+                            writeln!(stdout, "Usage: \\unsave <name>").ok();
+                        }
+                        ReplCommand::Unsave(Some(name)) => {
+                            saved::handle_unsave(name, &connection_name, &saved_query, &mut stdout)
+                        }
+                        ReplCommand::Run(None) => {
+                            writeln!(stdout, "Usage: \\run <name>").ok();
+                        }
+                        ReplCommand::Run(Some(name)) => {
+                            match saved::resolve_saved_sql(name, &connection_name, &saved_query) {
+                                Err(msg) => {
+                                    writeln!(stdout, "error: {msg}").ok();
+                                }
+                                Ok(sql) => run_statement(
+                                    &handler, &query, &sql, expanded, timing, pager_enabled,
+                                    &connection_name, &analytics, &mut schema, &mut rl, &tx,
+                                    &mut stdout,
+                                ),
+                            }
+                        }
                         ReplCommand::Stats(table) => {
                             handler.handle_stats(&connection_name, table, &analytics, &mut stdout)
                         }
@@ -294,39 +401,10 @@ impl Repl {
                             explain::handle_explain(&query, sql, analyze, &mut buf);
                             pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, &mut stdout);
                         }
-                        ReplCommand::Sql(sql) => {
-                            if dml_requires_tx(*tx.lock().unwrap(), sql) {
-                                writeln!(
-                                    stdout,
-                                    "error: INSERT/UPDATE/DELETE requires an explicit transaction. Run BEGIN (or \\begin) first."
-                                ).ok();
-                                continue;
-                            }
-                            let mut buf: Vec<u8> = Vec::new();
-                            let ok = handler.handle_sql(
-                                &query,
-                                sql,
-                                &SqlOptions {
-                                    expanded,
-                                    timing,
-                                    connection_name: &connection_name,
-                                    analytics: Some(&analytics),
-                                },
-                                &mut schema,
-                                &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
-                                &mut buf,
-                            );
-                            pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, &mut stdout);
-                            let prev = *tx.lock().unwrap();
-                            let next = next_tx_state(prev, tx_effect(sql), ok);
-                            *tx.lock().unwrap() = next;
-                            if prev == TxState::InTransaction && next == TxState::Failed {
-                                writeln!(
-                                    stdout,
-                                    "Transaction aborted. Run \\rollback (or ROLLBACK) to recover."
-                                ).ok();
-                            }
-                        }
+                        ReplCommand::Sql(sql) => run_statement(
+                            &handler, &query, sql, expanded, timing, pager_enabled,
+                            &connection_name, &analytics, &mut schema, &mut rl, &tx, &mut stdout,
+                        ),
                     }
                 }
                 Ok(Signal::CtrlC) | Ok(Signal::CtrlD) | Ok(Signal::ExternalBreak(_)) => {
@@ -393,6 +471,26 @@ mod tests {
         assert!(matches!(
             ReplCommand::parse("\\export 1 /tmp/out.csv"),
             ReplCommand::Export(Some("1 /tmp/out.csv"))
+        ));
+    }
+
+    #[test]
+    fn saved_query_commands_parse() {
+        assert!(matches!(ReplCommand::parse("\\saved"), ReplCommand::Saved));
+        assert!(matches!(ReplCommand::parse("\\save"), ReplCommand::Save(None)));
+        assert!(matches!(
+            ReplCommand::parse("\\save myq 42"),
+            ReplCommand::Save(Some("myq 42"))
+        ));
+        assert!(matches!(ReplCommand::parse("\\run"), ReplCommand::Run(None)));
+        assert!(matches!(
+            ReplCommand::parse("\\run myq"),
+            ReplCommand::Run(Some("myq"))
+        ));
+        assert!(matches!(ReplCommand::parse("\\unsave"), ReplCommand::Unsave(None)));
+        assert!(matches!(
+            ReplCommand::parse("\\unsave myq"),
+            ReplCommand::Unsave(Some("myq"))
         ));
     }
 

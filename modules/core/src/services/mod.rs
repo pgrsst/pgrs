@@ -18,6 +18,7 @@ pub mod column_access;
 pub mod connection;
 pub mod query;
 pub mod query_history;
+pub mod saved_query;
 pub mod schema;
 pub mod schema_cache;
 pub mod schema_column;

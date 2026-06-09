@@ -111,6 +111,20 @@ CREATE TABLE schema_columns (
 );
 ";
 
+// Additive: saved_queries table only. No existing data is dropped (unlike v2),
+// so no warning is emitted.
+const SCHEMA_V3: &str = "
+CREATE TABLE saved_queries (
+    id            INTEGER PRIMARY KEY,
+    connection_id INTEGER NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    sql           TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    UNIQUE (connection_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_saved_queries_conn ON saved_queries(connection_id);
+";
+
 pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 1 {
@@ -121,6 +135,10 @@ pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         eprintln!("pgrs: migrating database schema (v1 → v2): query history will be cleared.");
         conn.execute_batch(SCHEMA_V2)?;
         conn.pragma_update(None, "user_version", 2)?;
+    }
+    if version < 3 {
+        conn.execute_batch(SCHEMA_V3)?;
+        conn.pragma_update(None, "user_version", 3)?;
     }
     Ok(())
 }

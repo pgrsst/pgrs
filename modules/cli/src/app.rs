@@ -45,6 +45,7 @@ fn run_shell(core: &Core, args: &[String]) -> Result<(), String> {
         &conn.name,
         conn.environment.as_deref(),
         core.analytics_api(),
+        core.saved_query_api(),
         core.schema_api(),
     )
     .run()
