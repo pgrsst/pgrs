@@ -3,6 +3,7 @@ pub mod catalog;
 pub mod column_access;
 pub mod connection;
 pub mod error;
+pub mod explain;
 pub mod query_history;
 pub mod query_result;
 pub mod schema_column;
