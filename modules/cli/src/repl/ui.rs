@@ -77,6 +77,8 @@ pub(super) const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\l",                  "list databases"),
     ("\\x",                  "toggle expanded display"),
     ("\\timing",             "toggle query execution time"),
+    ("\\explain <query>",    "show query plan as a tree (\\explain+ runs ANALYZE)"),
+    ("\\pager",              "toggle paging long output through $PAGER (default on)"),
     ("\\refresh",            "reload schema (after CREATE/DROP/ALTER TABLE)"),
     ("\\history",            "show recent query history"),
     ("\\export <id> <path>", "export query result from history to CSV file"),
@@ -300,6 +302,18 @@ mod tests {
         assert!(text.contains("\\begin"), "help should mention \\begin, got: {text}");
         assert!(text.contains("\\commit"), "help should mention \\commit, got: {text}");
         assert!(text.contains("\\rollback"), "help should mention \\rollback, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_explain_command() {
+        let text = repl_help_text();
+        assert!(text.contains("\\explain"), "help should mention \\explain, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_pager_command() {
+        let text = repl_help_text();
+        assert!(text.contains("\\pager"), "help should mention \\pager, got: {text}");
     }
 
     #[test]

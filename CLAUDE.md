@@ -55,14 +55,16 @@ api/                    — the ONLY surface pgrs-cli may use:
   connection.rs         — ConnectionApi: add/list/delete/edit/rename/find/get
   query.rs              — QueryApi: execute(&str) → QueryResult, describe_table/
                           list_databases (delegated to the CatalogPort on the live
-                          connection); impls SchemaPort by delegating to the live DB.
+                          connection), explain(&str, bool) → ExplainPlan; impls SchemaPort
+                          by delegating to the live DB.
                           Built by Core::connect via the DbConnector port (no driver ref)
   schema.rs             — SchemaApi: load/refresh(&QueryApi, conn), tables(), columns_for()
   completions.rs        — CompletionsApi: completions(query, cursor) → Vec<Completion>
   analytics.rs          — AnalyticsApi: record_query(conn, sql, &SchemaApi) [extracts
                           referenced tables/columns internally], history(), frequent_tables/columns()
 domain/                 — pure value types: Connection, DomainError, QueryResult,
-                          catalog (TableDescription/NamedDef), analytics/access/schema types
+                          catalog (TableDescription/NamedDef), analytics/access/schema types,
+                          explain (ExplainPlan/ExplainNode)
 enums/tls_mode.rs       — TlsMode (Disable | Require | VerifyFull)
 ports/                  — one trait per repository/capability boundary (live-connection
                           ports omit Send+Sync by design — REPL is single-threaded):
@@ -108,6 +110,8 @@ repl/                   — interactive SQL REPL (reedline-based)
   executor.rs           — formats and prints QueryResult (normal and expanded \x mode)
   csv.rs                — CSV export for \export
   describe.rs           — \d <table>: formats QueryApi::describe_table (TableDescription); no SQL
+  explain.rs            — \explain / \explain+: renders QueryApi::explain (ExplainPlan) as an ASCII tree; no SQL
+  pager.rs              — routes long REPL output through $PAGER (fallback less -SR); \pager toggles
   sql_utils.rs          — is_complete_statement (multi-line buffering; SQL classification is in core)
   ui.rs                 — builds reedline editor, PgrsPrompt, validator, help text
 completions.rs /
@@ -116,7 +120,7 @@ completions/            — shell completion scripts (bash, zsh, fish)
 
 **Composition root:** `Core::init(db_path)` opens (and migrates) the single `Arc<SqliteRepository>`, injects the `PostgresConnector` (as `Arc<dyn DbConnector>`), and exposes `core.connection` (ConnectionApi) plus `core.analytics_api()` / `core.schema_api()` / `core.connect(&conn)`. `app.rs` wires these into `Cli` or, for `shell`/`test`, into `core.connect(&conn)` + `Repl::new(...)`. The Postgres adapter is named only here — `QueryApi` opens connections through the `DbConnector` port. All analytics and schema-cache state is backed by the same SQLite file.
 
-**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, TableDescription, NamedDef, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, tx_effect, next_tx_state, TxState, TxEffect, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
+**API boundary (strict):** `pgrs-cli` imports only from `pgrs_core::{ConnectionApi, QueryApi, SchemaApi, CompletionsApi, AnalyticsApi, Completion, CompletionKind, Connection, QueryResult, DbConnection, SchemaPort, ReplPort, TlsMode, AddConnectionInput, EditConnectionInput, QueryHistory, TableDescription, NamedDef, ExplainPlan, ExplainNode, SqlToken, tokenize, is_ddl, is_dml, SQL_KEYWORDS, DEFAULT_PORT, tx_effect, next_tx_state, TxState, TxEffect, ...}`. Core's `ports`/`services`/`adapters`/`query` modules are `pub(crate)` — not reachable from the CLI.
 
 **CLI argument parsing:** No external arg-parsing library. Args are matched with `--key=value` prefix stripping via `optional_option` in `cli/args.rs`. Port defaults to 5432 (`DEFAULT_PORT`).
 
@@ -125,6 +129,10 @@ completions/            — shell completion scripts (bash, zsh, fish)
 **DML transaction guard:** In the `shell` REPL, `INSERT`/`UPDATE`/`DELETE` (and CTE-wrapped DML) are rejected unless a transaction is open — the user must run `BEGIN`/`\begin` first. Enforced in `repl/mod.rs` via `dml_requires_tx` (built on core's `is_dml` + the tracked `TxState`); `connect`/`psql` is unaffected.
 
 **Schema refresh:** After DDL queries the REPL auto-refreshes `SchemaApi` (cache invalidate + reload). Manual refresh via `\refresh`. `sql_utils::is_ddl` decides when.
+
+**EXPLAIN:** `\explain <query>` renders the plan tree — core runs `EXPLAIN (FORMAT JSON)` behind the `CatalogPort` and returns an `ExplainPlan`; the CLI (`repl/explain.rs`) renders it. `\explain+` adds `ANALYZE` and therefore executes the statement, so it is subject to the same DML transaction guard as INSERT/UPDATE/DELETE.
+
+**Pager:** REPL query/EXPLAIN output is buffered and routed through `repl/pager.rs`, which pages via `$PAGER` (fallback `less -SR`) only when output exceeds the terminal height and stdout is a TTY. `\pager` toggles it (default on); on any failure it falls back to a direct write so output is never lost.
 
 **Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers via `sql_utils::is_complete_statement`).
 

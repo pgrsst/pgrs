@@ -6,6 +6,7 @@
 
 use crate::domain::catalog::TableDescription;
 use crate::domain::error::DomainError;
+use crate::domain::explain::ExplainPlan;
 
 /// Capability for reading database metadata behind the REPL's catalog commands.
 ///
@@ -18,4 +19,8 @@ pub trait CatalogPort {
 
     /// List user-visible database names (the `\l` command).
     fn list_databases(&self) -> Result<Vec<String>, DomainError>;
+
+    /// Run `EXPLAIN` on `sql` and return the parsed plan tree. When `analyze`
+    /// is true the statement is actually executed (`EXPLAIN ANALYZE`).
+    fn explain(&self, sql: &str, analyze: bool) -> Result<ExplainPlan, DomainError>;
 }

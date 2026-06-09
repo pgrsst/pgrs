@@ -12,6 +12,7 @@ path = "src/main.rs"
 pgrs-core = { path = "../core" }
 dirs = "6"
 reedline = "0.47"
+crossterm = "0.29"
 nu-ansi-term = "0.50"
 unicode-width = "0.2"
 chrono = { version = "0.4", features = ["clock"] }

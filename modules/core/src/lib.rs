@@ -48,6 +48,7 @@ pub use domain::error::DomainError;
 pub use domain::query_history::QueryHistory;
 pub use enums::tls_mode::TlsMode;
 pub use domain::catalog::{NamedDef, TableDescription};
+pub use domain::explain::{ExplainNode, ExplainPlan};
 pub use domain::query_result::QueryResult;
 pub use ports::catalog_port::CatalogPort;
 pub use ports::db_connection::DbConnection;

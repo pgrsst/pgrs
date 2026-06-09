@@ -3,6 +3,8 @@ mod completer;
 mod csv;
 mod executor;
 mod describe;
+mod explain;
+mod pager;
 mod sql_utils;
 mod ui;
 
@@ -103,12 +105,15 @@ enum ReplCommand<'a> {
     ListDatabases,   // \l
     ToggleExpanded,  // \x
     ToggleTiming,    // \timing
+    TogglePager,     // \pager
     Refresh,         // \refresh
     History,         // \history
     Stats(Option<&'a str>),
     Describe { table: &'a str, extended: bool }, // \d <t> / \d+ <t>
     DescribeUsage,                               // \d+ with no table
     Export(Option<&'a str>),                     // None => bare \export
+    Explain { sql: &'a str, analyze: bool },     // \explain <sql> / \explain+ <sql>
+    ExplainUsage,                                // bare \explain / \explain+
     Sql(&'a str),
 }
 
@@ -123,6 +128,7 @@ impl<'a> ReplCommand<'a> {
             "\\l" => ReplCommand::ListDatabases,
             "\\x" => ReplCommand::ToggleExpanded,
             "\\timing" => ReplCommand::ToggleTiming,
+            "\\pager" => ReplCommand::TogglePager,
             "\\refresh" => ReplCommand::Refresh,
             "\\begin" => ReplCommand::Sql("BEGIN"),
             "\\commit" => ReplCommand::Sql("COMMIT"),
@@ -131,8 +137,13 @@ impl<'a> ReplCommand<'a> {
             "\\stats" => ReplCommand::Stats(None),
             "\\d+" => ReplCommand::DescribeUsage,
             "\\export" => ReplCommand::Export(None),
+            "\\explain" | "\\explain+" => ReplCommand::ExplainUsage,
             _ => {
-                if let Some(t) = trimmed.strip_prefix("\\d+ ") {
+                if let Some(sql) = trimmed.strip_prefix("\\explain+ ") {
+                    ReplCommand::Explain { sql, analyze: true }
+                } else if let Some(sql) = trimmed.strip_prefix("\\explain ") {
+                    ReplCommand::Explain { sql, analyze: false }
+                } else if let Some(t) = trimmed.strip_prefix("\\d+ ") {
                     ReplCommand::Describe { table: t, extended: true }
                 } else if let Some(t) = trimmed.strip_prefix("\\d ") {
                     ReplCommand::Describe { table: t, extended: false }
@@ -208,6 +219,7 @@ impl Repl {
 
         let mut expanded = false;
         let mut timing = false;
+        let mut pager_enabled = true;
 
         loop {
             match rl.read_line(&prompt) {
@@ -232,6 +244,10 @@ impl Repl {
                         ReplCommand::ToggleTiming => {
                             timing = !timing;
                             println!("Timing is {}.", if timing { "on" } else { "off" });
+                        }
+                        ReplCommand::TogglePager => {
+                            pager_enabled = !pager_enabled;
+                            println!("Pager is {}.", if pager_enabled { "on" } else { "off" });
                         }
                         ReplCommand::Refresh => handler.handle_refresh(
                             &query,
@@ -263,6 +279,21 @@ impl Repl {
                                 id, &path, &connection_name, &query, &analytics, &mut stdout,
                             ),
                         },
+                        ReplCommand::ExplainUsage => {
+                            writeln!(stdout, "Usage: \\explain <query>  (\\explain+ runs ANALYZE)").ok();
+                        }
+                        ReplCommand::Explain { sql, analyze } => {
+                            if analyze && dml_requires_tx(*tx.lock().unwrap(), sql) {
+                                writeln!(
+                                    stdout,
+                                    "error: \\explain+ runs ANALYZE which executes the statement; INSERT/UPDATE/DELETE requires an explicit transaction. Run BEGIN (or \\begin) first."
+                                ).ok();
+                                continue;
+                            }
+                            let mut buf: Vec<u8> = Vec::new();
+                            explain::handle_explain(&query, sql, analyze, &mut buf);
+                            pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, &mut stdout);
+                        }
                         ReplCommand::Sql(sql) => {
                             if dml_requires_tx(*tx.lock().unwrap(), sql) {
                                 writeln!(
@@ -271,6 +302,7 @@ impl Repl {
                                 ).ok();
                                 continue;
                             }
+                            let mut buf: Vec<u8> = Vec::new();
                             let ok = handler.handle_sql(
                                 &query,
                                 sql,
@@ -282,8 +314,9 @@ impl Repl {
                                 },
                                 &mut schema,
                                 &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
-                                &mut stdout,
+                                &mut buf,
                             );
+                            pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, &mut stdout);
                             let prev = *tx.lock().unwrap();
                             let next = next_tx_state(prev, tx_effect(sql), ok);
                             *tx.lock().unwrap() = next;
@@ -438,5 +471,24 @@ mod tests {
         assert!(!super::dml_requires_tx(TxState::Idle, "SELECT * FROM t"));
         assert!(!super::dml_requires_tx(TxState::Idle, "CREATE TABLE t (id int)"));
         assert!(!super::dml_requires_tx(TxState::Idle, "BEGIN"));
+    }
+
+    #[test]
+    fn pager_toggle_parses() {
+        assert!(matches!(ReplCommand::parse("\\pager"), ReplCommand::TogglePager));
+    }
+
+    #[test]
+    fn explain_variants_parse() {
+        assert!(matches!(ReplCommand::parse("\\explain"), ReplCommand::ExplainUsage));
+        assert!(matches!(ReplCommand::parse("\\explain+"), ReplCommand::ExplainUsage));
+        assert!(matches!(
+            ReplCommand::parse("\\explain SELECT 1"),
+            ReplCommand::Explain { sql: "SELECT 1", analyze: false }
+        ));
+        assert!(matches!(
+            ReplCommand::parse("\\explain+ SELECT 1"),
+            ReplCommand::Explain { sql: "SELECT 1", analyze: true }
+        ));
     }
 }
