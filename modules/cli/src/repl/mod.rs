@@ -3,6 +3,7 @@ mod completer;
 mod csv;
 mod executor;
 mod describe;
+mod explain;
 mod sql_utils;
 mod ui;
 
