@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.8.0] - 2026-06-09
+
+### Added
+- Saved queries: simpan SQL favorit per-koneksi di `~/.pgrs/pgrs.db` (`\save <nama> <id>`, `\saved`, `\run <nama>`, `\unsave <nama>`) — `\run` lewat jalur eksekusi yang sama sehingga DML guard, analytics, dan auto-refresh skema tetap berlaku
+- `\explain` / `\explain+` merender plan EXPLAIN sebagai pohon ASCII (core menjalankan `EXPLAIN (FORMAT JSON)`); `\explain+` menambah `ANALYZE` sehingga tunduk pada DML transaction guard
+- Auto pager: output panjang REPL dialirkan ke `$PAGER` (fallback `less -SR`) hanya saat melebihi tinggi terminal di TTY; `\pager` untuk toggle
+- REPL transaction-aware: alias `\begin`/`\commit`/`\rollback`, indikator status transaksi di prompt, dan konfirmasi-rollback saat keluar dengan transaksi terbuka
+
+### Changed
+- DML transaction guard: `INSERT`/`UPDATE`/`DELETE` (termasuk CTE-wrapped) ditolak di REPL kecuali ada transaksi terbuka — jalankan `BEGIN`/`\begin` dulu (`connect`/`psql` tidak terpengaruh)
+
 ## [0.7.0] - 2026-06-07
 
 ### Added
