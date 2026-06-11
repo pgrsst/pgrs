@@ -130,7 +130,9 @@ pub(super) fn build_editor_reedline(
     );
     // Alt+Enter submits the whole buffer (bypasses the always-Incomplete validator).
     keybindings.add_binding(KeyModifiers::ALT, KeyCode::Enter, ReedlineEvent::Submit);
-    // Esc cancels the edit (same outcome as Ctrl+C: a CtrlC signal).
+    // Esc cancels the edit (same outcome as Ctrl+C: a CtrlC signal). Trade-off:
+    // this shadows menu dismissal, so Esc with the completion menu open cancels
+    // the whole edit rather than just closing the menu.
     keybindings.add_binding(KeyModifiers::NONE, KeyCode::Esc, ReedlineEvent::CtrlC);
 
     Reedline::create()
