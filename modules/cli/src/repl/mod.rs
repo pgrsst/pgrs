@@ -323,7 +323,30 @@ impl Repl {
                             pager_enabled = !pager_enabled;
                             println!("Pager is {}.", if pager_enabled { "on" } else { "off" });
                         }
-                        ReplCommand::Edit => {}
+                        ReplCommand::Edit => {
+                            let (tf, cf) =
+                                freq_for_schema(&analytics, &connection_name, &schema);
+                            let mut editor =
+                                ui::build_editor_reedline(schema.clone(), tf, cf);
+                            match editor.read_line(&ui::EditorPrompt) {
+                                Ok(Signal::Success(buf)) => {
+                                    if !buf.trim().is_empty() {
+                                        run_statement(
+                                            &handler, &query, &buf, expanded, timing,
+                                            pager_enabled, &connection_name, &analytics,
+                                            &mut schema, &mut rl, &tx, &mut stdout,
+                                        );
+                                    }
+                                }
+                                Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => {
+                                    writeln!(stdout, "edit cancelled.").ok();
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    writeln!(stdout, "error: {e}").ok();
+                                }
+                            }
+                        }
                         ReplCommand::Refresh => handler.handle_refresh(
                             &query,
                             &connection_name,
