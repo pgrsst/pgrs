@@ -155,6 +155,7 @@ pub(super) const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\timing",             "toggle query execution time"),
     ("\\explain <query>",    "show query plan as a tree (\\explain+ runs ANALYZE)"),
     ("\\pager",              "toggle paging long output through $PAGER (default on)"),
+    ("\\edit, \\e",          "open a multiline editor (Alt+Enter runs, Esc cancels)"),
     ("\\refresh",            "reload schema (after CREATE/DROP/ALTER TABLE)"),
     ("\\history",            "show recent query history"),
     ("\\export <id> <path>", "export query result from history to CSV file"),
@@ -403,6 +404,12 @@ mod tests {
     fn help_text_mentions_pager_command() {
         let text = repl_help_text();
         assert!(text.contains("\\pager"), "help should mention \\pager, got: {text}");
+    }
+
+    #[test]
+    fn help_text_mentions_edit_command() {
+        let text = repl_help_text();
+        assert!(text.contains("\\edit"), "help should mention \\edit, got: {text}");
     }
 
     #[test]
