@@ -68,6 +68,84 @@ impl Validator for SqlValidator {
     }
 }
 
+/// Validator for the `\edit` multiline editor: always Incomplete so Enter
+/// inserts a newline instead of submitting. Submission is driven by an explicit
+/// `Alt+Enter -> Submit` keybinding (see `build_editor_reedline`).
+struct AlwaysIncomplete;
+
+impl Validator for AlwaysIncomplete {
+    fn validate(&self, _line: &str) -> ValidationResult {
+        ValidationResult::Incomplete
+    }
+}
+
+/// Prompt for the `\edit` editor — visually distinct from the main prompt so the
+/// user knows Enter inserts a newline and Alt+Enter submits.
+pub(super) struct EditorPrompt;
+
+impl Prompt for EditorPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed("edit> ")
+    }
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("   -> ")
+    }
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+}
+
+/// Build a reedline configured as a multiline SQL editor for `\edit`: Enter
+/// inserts a newline (always-Incomplete validator), `Alt+Enter` submits, `Esc`
+/// cancels. Reuses the same completion/highlighting/hinting as the main prompt.
+pub(super) fn build_editor_reedline(
+    schema: SchemaApi,
+    table_freq: HashMap<String, u64>,
+    column_freq: HashMap<String, u64>,
+) -> Reedline {
+    let highlighter = SqlHighlighter::new(schema.clone());
+    let hinter = SqlHinter::new(schema.clone(), table_freq.clone(), column_freq.clone());
+    let completer = SqlCompleter::new(schema, table_freq, column_freq);
+
+    let menu = ColumnarMenu::default().with_name("completion_menu");
+
+    let mut keybindings = default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::HistoryHintComplete,
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
+    );
+    // Alt+Enter submits the whole buffer (bypasses the always-Incomplete validator).
+    keybindings.add_binding(KeyModifiers::ALT, KeyCode::Enter, ReedlineEvent::Submit);
+    // Esc cancels the edit (same outcome as Ctrl+C: a CtrlC signal). Trade-off:
+    // this shadows menu dismissal, so Esc with the completion menu open cancels
+    // the whole edit rather than just closing the menu.
+    keybindings.add_binding(KeyModifiers::NONE, KeyCode::Esc, ReedlineEvent::CtrlC);
+
+    Reedline::create()
+        .with_completer(Box::new(completer))
+        .with_hinter(Box::new(hinter))
+        .with_highlighter(Box::new(highlighter))
+        .with_validator(Box::new(AlwaysIncomplete))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
+        .with_quick_completions(true)
+        .with_partial_completions(true)
+        .with_edit_mode(Box::new(Emacs::new(keybindings)))
+}
+
 // To add a new REPL command: append one (&str, &str) entry here.
 pub(super) const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\d",                  "list all tables"),
@@ -79,6 +157,7 @@ pub(super) const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\timing",             "toggle query execution time"),
     ("\\explain <query>",    "show query plan as a tree (\\explain+ runs ANALYZE)"),
     ("\\pager",              "toggle paging long output through $PAGER (default on)"),
+    ("\\edit, \\e",          "open a multiline editor (Alt+Enter runs, Esc cancels)"),
     ("\\refresh",            "reload schema (after CREATE/DROP/ALTER TABLE)"),
     ("\\history",            "show recent query history"),
     ("\\export <id> <path>", "export query result from history to CSV file"),
@@ -330,11 +409,33 @@ mod tests {
     }
 
     #[test]
+    fn help_text_mentions_edit_command() {
+        let text = repl_help_text();
+        assert!(text.contains("\\edit"), "help should mention \\edit, got: {text}");
+    }
+
+    #[test]
     fn help_mentions_transaction_requirement_for_dml() {
         let text = repl_help_text();
         assert!(
             text.contains("INSERT/UPDATE/DELETE"),
             "help should explain DML needs a transaction, got: {text}"
+        );
+    }
+
+    #[test]
+    fn always_incomplete_validator_never_completes() {
+        let v = AlwaysIncomplete;
+        assert!(matches!(v.validate("SELECT 1;"), ValidationResult::Incomplete));
+        assert!(matches!(v.validate(""), ValidationResult::Incomplete));
+    }
+
+    #[test]
+    fn editor_prompt_indicator_is_edit() {
+        let p = EditorPrompt;
+        assert_eq!(
+            p.render_prompt_indicator(reedline::PromptEditMode::Default).as_ref(),
+            "edit> "
         );
     }
 }
