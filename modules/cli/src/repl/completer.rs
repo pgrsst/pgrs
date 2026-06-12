@@ -91,13 +91,16 @@ impl SqlCompleter {
     }
 }
 
+/// Maximum number of suggestions shown in the completion menu at once.
+const MAX_COMPLETIONS: usize = 10;
+
 impl Completer for SqlCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         let start = word_start(line, pos);
         self.api
             .completions(line, pos)
             .into_iter()
-            .take(10)
+            .take(MAX_COMPLETIONS)
             .map(|Completion { value, kind }| Suggestion {
                 value,
                 display_override: None,

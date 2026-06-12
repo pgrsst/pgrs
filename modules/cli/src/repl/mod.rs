@@ -168,7 +168,7 @@ enum ReplCommand<'a> {
     TogglePager,     // \pager
     Refresh,         // \refresh
     Edit,            // \edit / \e
-    History,         // \history
+    History(Option<&'a str>), // \history / \history <n>
     Saved,                       // \saved
     Save(Option<&'a str>),       // \save <name> <id> / bare \save
     Run(Option<&'a str>),        // \run <name> / bare \run
@@ -200,7 +200,7 @@ impl<'a> ReplCommand<'a> {
             "\\begin" => ReplCommand::Sql("BEGIN"),
             "\\commit" => ReplCommand::Sql("COMMIT"),
             "\\rollback" => ReplCommand::Sql("ROLLBACK"),
-            "\\history" => ReplCommand::History,
+            "\\history" => ReplCommand::History(None),
             "\\saved" => ReplCommand::Saved,
             "\\save" => ReplCommand::Save(None),
             "\\run" => ReplCommand::Run(None),
@@ -218,6 +218,8 @@ impl<'a> ReplCommand<'a> {
                     ReplCommand::Describe { table: t, extended: true }
                 } else if let Some(t) = trimmed.strip_prefix("\\d ") {
                     ReplCommand::Describe { table: t, extended: false }
+                } else if let Some(t) = trimmed.strip_prefix("\\history ") {
+                    ReplCommand::History(Some(t.trim()))
                 } else if let Some(t) = trimmed.strip_prefix("\\stats ") {
                     ReplCommand::Stats(Some(t))
                 } else if let Some(rest) = trimmed.strip_prefix("\\save ") {
@@ -375,8 +377,8 @@ impl Repl {
                             },
                             &mut stdout,
                         ),
-                        ReplCommand::History => {
-                            handler.handle_history(&connection_name, &analytics, &mut stdout)
+                        ReplCommand::History(arg) => {
+                            handler.handle_history(&connection_name, arg, &analytics, &mut stdout)
                         }
                         ReplCommand::Saved => {
                             saved::handle_saved(&connection_name, &saved_query, &mut stdout)
@@ -562,7 +564,11 @@ mod tests {
         assert!(matches!(ReplCommand::parse("\\dt"), ReplCommand::ListTables));
         assert!(matches!(ReplCommand::parse("\\l"), ReplCommand::ListDatabases));
         assert!(matches!(ReplCommand::parse("\\refresh"), ReplCommand::Refresh));
-        assert!(matches!(ReplCommand::parse("\\history"), ReplCommand::History));
+        assert!(matches!(ReplCommand::parse("\\history"), ReplCommand::History(None)));
+        assert!(matches!(
+            ReplCommand::parse("\\history 10"),
+            ReplCommand::History(Some("10"))
+        ));
         assert!(matches!(ReplCommand::parse("\\help"), ReplCommand::Help));
         assert!(matches!(ReplCommand::parse("\\?"), ReplCommand::Help));
     }

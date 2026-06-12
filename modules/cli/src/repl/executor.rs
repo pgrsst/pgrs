@@ -13,6 +13,12 @@ fn normalize_val(val: &str) -> &str {
 
 const MAX_CELL_CHARS: usize = 40;
 
+/// Terminal width assumed when stdout isn't a TTY (e.g. piped output, tests).
+const FALLBACK_TERM_WIDTH: usize = 80;
+/// Floor on the wrapping width so a very narrow terminal still leaves room for
+/// values after the `label | ` prefix.
+const MIN_WRAP_WIDTH: usize = 20;
+
 fn truncate_middle(val: &str) -> String {
     let chars: Vec<char> = val.chars().collect();
     if chars.len() <= MAX_CELL_CHARS {
@@ -54,6 +60,42 @@ fn visible_len(s: &str) -> usize {
     len
 }
 
+/// Current terminal width in columns, or a fallback when stdout isn't a TTY.
+/// Mirrors the size probe in `pager.rs`.
+fn terminal_width() -> usize {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal()
+        && let Ok((cols, _)) = crossterm::terminal::size()
+    {
+        return (cols as usize).max(MIN_WRAP_WIDTH);
+    }
+    FALLBACK_TERM_WIDTH
+}
+
+/// Hard-wrap `value` into segments no wider than `width` display columns
+/// (Unicode-aware). `width == 0` or an empty value yields a single segment so
+/// the field still renders one line. Does not insert hyphens or ellipses —
+/// expanded mode exists to show full values, so this only folds them.
+fn wrap_value(value: &str, width: usize) -> Vec<String> {
+    if width == 0 || value.is_empty() {
+        return vec![value.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut cur_w = 0;
+    for c in value.chars() {
+        let cw = c.width().unwrap_or(0);
+        if cur_w + cw > width && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            cur_w = 0;
+        }
+        current.push(c);
+        cur_w += cw;
+    }
+    lines.push(current);
+    lines
+}
+
 pub fn format_result(result: &QueryResult, expanded: bool) -> String {
     if result.columns.is_empty() {
         let count = result.rows_affected.unwrap_or(result.rows.len() as u64);
@@ -65,27 +107,45 @@ pub fn format_result(result: &QueryResult, expanded: bool) -> String {
     }
 
     if expanded {
-        return format_expanded(result);
+        return format_expanded(result, terminal_width());
     }
 
     format_minimal(result)
 }
 
-fn format_expanded(result: &QueryResult) -> String {
+fn format_expanded(result: &QueryResult, term_width: usize) -> String {
     let label_width = result.columns.iter().map(|c| c.len()).max().unwrap_or(0);
+    // Prefix is "{label:<label_width} | " — label_width + 3 columns. Values wrap
+    // into whatever room the terminal leaves after it.
+    let prefix_width = label_width + 3;
+    let avail = term_width.saturating_sub(prefix_width).max(1);
     let mut out = String::new();
 
     for (idx, row) in result.rows.iter().enumerate() {
         let title = format!("-[ RECORD {} ]", idx + 1);
-        let pad = (label_width + 3).saturating_sub(visible_len(&title));
+        let pad = prefix_width.saturating_sub(visible_len(&title));
         out.push_str(&title);
         out.push_str(&"-".repeat(pad));
         out.push('\n');
 
         for (i, col) in result.columns.iter().enumerate() {
             let val = row.get(i).map(String::as_str).unwrap_or("NULL");
-            let colored = colorize_cell(val);
-            out.push_str(&format!("{:<width$} | {}\n", col, colored, width = label_width));
+            let segs = wrap_value(val, avail);
+            out.push_str(&format!(
+                "{:<width$} | {}\n",
+                col,
+                colorize_cell(&segs[0]),
+                width = label_width
+            ));
+            // Continuation lines are indented to align under the value column.
+            for seg in &segs[1..] {
+                out.push_str(&format!(
+                    "{:<width$}   {}\n",
+                    "",
+                    colorize_cell(seg),
+                    width = label_width
+                ));
+            }
         }
     }
 
@@ -407,6 +467,44 @@ mod tests {
         let out = format_result(&result, true);
         assert!(out.contains(&long), "expanded mode must show full value:\n{out}");
         assert!(!out.contains("..."), "expanded mode must not truncate:\n{out}");
+    }
+
+    #[test]
+    fn wrap_value_short_is_single_line() {
+        assert_eq!(wrap_value("hello", 20), vec!["hello"]);
+    }
+
+    #[test]
+    fn wrap_value_empty_or_zero_width_single_segment() {
+        assert_eq!(wrap_value("", 20), vec![""]);
+        assert_eq!(wrap_value("abc", 0), vec!["abc"]);
+    }
+
+    #[test]
+    fn wrap_value_folds_at_width() {
+        // 10 chars wrapped at width 4 -> 4 + 4 + 2.
+        assert_eq!(wrap_value("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+    }
+
+    #[test]
+    fn wrap_value_respects_display_width_for_cjk() {
+        // Each CJK char is width 2, so width 4 fits two per line.
+        assert_eq!(wrap_value("一二三四五", 4), vec!["一二", "三四", "五"]);
+    }
+
+    #[test]
+    fn expanded_wraps_long_value_with_aligned_continuation() {
+        let result = QueryResult {
+            columns: vec!["v".to_string()],
+            rows: vec![vec!["abcdefghij".to_string()]],
+            rows_affected: None,
+        };
+        // term width 8 -> prefix "v | " is 4, leaving 4 columns for the value.
+        let out = format_expanded(&result, 8);
+        assert!(out.contains("v | abcd"), "first line wrong:\n{out}");
+        // Continuation indented under the value column (label_width 1 + 3 spaces).
+        assert!(out.contains("\n    efgh"), "continuation alignment wrong:\n{out}");
+        assert!(out.contains("ij"), "tail segment missing:\n{out}");
     }
 
     #[test]

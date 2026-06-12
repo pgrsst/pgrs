@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use pgrs_core::{AnalyticsApi, SavedQueryApi};
+use pgrs_core::{AnalyticsApi, DEFAULT_HISTORY_LIMIT, SavedQueryApi};
 
 /// Max SQL width shown in the `\saved` listing before truncating with `…`.
 const PREVIEW_WIDTH: usize = 60;
@@ -38,7 +38,7 @@ pub(super) fn handle_save(
     saved_query: &SavedQueryApi,
     writer: &mut impl Write,
 ) {
-    let history = analytics.history(connection_name);
+    let history = analytics.history(connection_name, DEFAULT_HISTORY_LIMIT);
     let entry = match history.iter().find(|e| e.id == id) {
         Some(e) => e,
         None => {
@@ -134,7 +134,7 @@ mod tests {
         for q in queries {
             analytics.record_query(connection_name, q, &schema).unwrap();
         }
-        let history = analytics.history(connection_name);
+        let history = analytics.history(connection_name, DEFAULT_HISTORY_LIMIT);
         let ids = queries
             .iter()
             .map(|q| history.iter().find(|e| &e.query == q).map(|e| e.id).unwrap())

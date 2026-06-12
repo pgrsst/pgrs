@@ -111,7 +111,9 @@ repl/                   — interactive SQL REPL (reedline-based)
                           run_statement (shared SQL exec path: DML guard + handle_sql + tx state)
   command_handler.rs    — \d / \dt / \l / \history / \stats / SQL exec / \refresh
   completer.rs          — SqlCompleter, SqlHighlighter, SqlHinter backed by CompletionsApi/SchemaApi
-  executor.rs           — formats and prints QueryResult (normal and expanded \x mode)
+  executor.rs           — formats and prints QueryResult (normal and expanded \x
+                          mode; \x wraps long values to the terminal width via
+                          wrap_value/terminal_width)
   csv.rs                — CSV export for \export
   saved.rs              — \save / \saved / \run / \unsave: parse_save_args + handlers
                           over SavedQueryApi; \run resolves SQL, the loop executes it via run_statement
@@ -144,6 +146,8 @@ completions/            — shell completion scripts (bash, zsh, fish)
 
 **Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers via `sql_utils::is_complete_statement`).
 
+**Query history (`\history`):** `\history` lists the most recent queries for the active connection (default `DEFAULT_HISTORY_LIMIT` = 50); `\history <n>` overrides the count (invalid `<n>` prints an error). The limit threads `AnalyticsApi::history(conn, limit)` → `AnalyticsSvc::get_history` → `QueryHistorySvc::list_recent` → the repository's `list_recent(conn, limit)` (most-recent-first). `\save`/`\export` look up an id within the same default window.
+
 **REPL line history:** reedline line-editing history (up-arrow recall, Ctrl+R reverse-search) is persisted **per connection** to `~/.pgrs/history-<connection>` via `FileBackedHistory` (cap 1000). The path is threaded from `app.rs` → `Repl::new` → `build_reedline`/`rebuild_reedline`; on a schema refresh the reedline is rebuilt against the **same** file so history survives. This is separate from the analytics `query_history` table. The `\edit` editor deliberately gets no history. Unsafe chars in the connection name are sanitized via `app::sanitize_filename`.
 
 **Backslash-command args:** `repl/args.rs::tokenize_args` is the shared quote-aware tokenizer (single/double quotes group a token, no escapes, unterminated quote taken literally); `single_name_token` enforces exactly-one-token. `\save`/`\run`/`\unsave` route through it, so a quoted name with spaces (`\save "my query" 7`) works. `\export` keeps its own specialized parser (`csv::parse_export_args`) for `~` expansion + id/path split. An unrecognized `\`-prefixed line parses to `ReplCommand::Unknown` and prints `unknown command '…'` rather than being forwarded to Postgres.
@@ -154,4 +158,4 @@ completions/            — shell completion scripts (bash, zsh, fish)
 
 ## Known Limitations
 
-- **Tab-completion schema-qualified names.** Schema-qualified names (`public.users`) partially disrupt alias extraction — the dot emits `Other('.')` which breaks the state machine for that table.
+- **Highlighting of schema-qualified names.** Tab-*completion* for schema-qualified names (`public.users`, `public.users.`) works correctly — alias extraction uses sqlparser and the completion services split on the dot with `rsplit('.')` (see tests in `query/alias.rs` and `repl/completer.rs`). The only rough edge is cosmetic: the REPL `SqlHighlighter` tokenizes via `query/tokenizer.rs`, which emits the dot as `Other('.')`, so each segment of a dotted name is highlighted independently rather than as one identifier. This does not affect the suggestions offered.

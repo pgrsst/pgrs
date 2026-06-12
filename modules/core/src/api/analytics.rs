@@ -7,6 +7,10 @@ use crate::services::analytics::service::AnalyticsSvc;
 
 use super::schema::SchemaApi;
 
+/// Default number of history entries returned when the caller doesn't specify a
+/// limit (e.g. bare `\history` in the REPL).
+pub const DEFAULT_HISTORY_LIMIT: usize = 50;
+
 /// Public facade for usage analytics: records executed queries and exposes
 /// access-frequency stats used to rank completions.
 pub struct AnalyticsApi {
@@ -36,9 +40,10 @@ impl AnalyticsApi {
         self.svc.record_query(connection_name, sql, &tables, &columns)
     }
 
-    /// Recent query history for a connection (most recent first).
-    pub fn history(&self, connection_name: &str) -> Vec<QueryHistory> {
-        self.svc.get_history(connection_name)
+    /// Recent query history for a connection (most recent first), capped at
+    /// `limit` entries (see `DEFAULT_HISTORY_LIMIT`).
+    pub fn history(&self, connection_name: &str, limit: usize) -> Vec<QueryHistory> {
+        self.svc.get_history(connection_name, limit)
     }
 
     pub fn frequent_tables(&self, connection_name: &str) -> Vec<(String, u64)> {

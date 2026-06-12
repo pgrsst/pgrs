@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use pgrs_core::{AnalyticsApi, QueryApi, SchemaApi, is_ddl};
+use pgrs_core::{AnalyticsApi, DEFAULT_HISTORY_LIMIT, QueryApi, SchemaApi, is_ddl};
 use super::executor::format_result;
 
 /// Print a `name -> count` frequency table, left-aligned to the widest name.
@@ -53,10 +53,26 @@ impl CommandHandler {
         }
     }
 
-    pub(super) fn handle_history(&self, connection_name: &str, analytics: &AnalyticsApi, writer: &mut impl Write) {
+    pub(super) fn handle_history(
+        &self,
+        connection_name: &str,
+        limit: Option<&str>,
+        analytics: &AnalyticsApi,
+        writer: &mut impl Write,
+    ) {
         use chrono::{DateTime, Local, TimeZone};
 
-        let history = analytics.history(connection_name);
+        let limit = match limit {
+            None => DEFAULT_HISTORY_LIMIT,
+            Some(s) => match s.trim().parse::<usize>() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    writeln!(writer, "error: invalid count '{}'", s.trim()).ok();
+                    return;
+                }
+            },
+        };
+        let history = analytics.history(connection_name, limit);
         if history.is_empty() {
             writeln!(writer, "No query history.").ok();
             return;
@@ -446,7 +462,7 @@ mod tests {
             &mut out,
         );
 
-        let history = analytics.history("my-conn");
+        let history = analytics.history("my-conn", DEFAULT_HISTORY_LIMIT);
         assert_eq!(history.len(), 1, "query should be recorded for the connection");
         assert_eq!(history[0].query, "SELECT 1");
     }
@@ -459,10 +475,35 @@ mod tests {
         analytics.record_query("mydb", "SELECT 1", &schema).unwrap();
         analytics.record_query("mydb", "SELECT 2", &schema).unwrap();
         let mut out = Vec::new();
-        handler().handle_history("mydb", &analytics, &mut out);
+        handler().handle_history("mydb", None, &analytics, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("SELECT 1"), "expected query in history, got: {text}");
         assert!(text.contains("SELECT 2"), "expected query in history, got: {text}");
+    }
+
+    #[test]
+    fn handle_history_limit_caps_rows() {
+        let core = core_with_connection("mydb");
+        let analytics = core.analytics_api();
+        let schema = schema_from(&[]);
+        analytics.record_query("mydb", "SELECT 1", &schema).unwrap();
+        analytics.record_query("mydb", "SELECT 2", &schema).unwrap();
+        let mut out = Vec::new();
+        handler().handle_history("mydb", Some("1"), &analytics, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        // Most-recent-first, so only the latest query survives the limit of 1.
+        assert!(text.contains("SELECT 2"), "expected newest query, got: {text}");
+        assert!(!text.contains("SELECT 1"), "older query should be capped out, got: {text}");
+    }
+
+    #[test]
+    fn handle_history_invalid_count_errors() {
+        let core = core_with_connection("mydb");
+        let analytics = core.analytics_api();
+        let mut out = Vec::new();
+        handler().handle_history("mydb", Some("abc"), &analytics, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("invalid count"), "expected error, got: {text}");
     }
 
     #[test]

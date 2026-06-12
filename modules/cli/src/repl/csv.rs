@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use pgrs_core::{AnalyticsApi, QueryApi, QueryResult, is_ddl, is_dml};
+use pgrs_core::{AnalyticsApi, DEFAULT_HISTORY_LIMIT, QueryApi, QueryResult, is_ddl, is_dml};
 
 fn csv_quote(val: &str) -> String {
     if val.contains(',') || val.contains('"') || val.contains('\n') || val.contains('\r') {
@@ -64,7 +64,7 @@ pub(super) fn handle_export(
         writeln!(writer, "error: file already exists: {}", path).ok();
         return;
     }
-    let history = analytics.history(connection_name);
+    let history = analytics.history(connection_name, DEFAULT_HISTORY_LIMIT);
     let entry = match history.iter().find(|e| e.id == id) {
         Some(e) => e,
         None => {
@@ -150,7 +150,7 @@ mod tests {
         for q in queries {
             analytics.record_query(connection_name, q, &schema).unwrap();
         }
-        let history = analytics.history(connection_name);
+        let history = analytics.history(connection_name, DEFAULT_HISTORY_LIMIT);
         let ids = queries
             .iter()
             .map(|q| history.iter().find(|e| &e.query == q).map(|e| e.id).unwrap())

@@ -38,7 +38,7 @@ use crate::services::schema_table::service::{SchemaTableService, SchemaTableSvc}
 use crate::services::table_access::service::{TableAccessService, TableAccessSvc};
 
 // --- Public API surface ---
-pub use api::analytics::AnalyticsApi;
+pub use api::analytics::{AnalyticsApi, DEFAULT_HISTORY_LIMIT};
 pub use api::completions::CompletionsApi;
 pub use api::connection::ConnectionApi;
 pub use api::query::QueryApi;

@@ -13,7 +13,7 @@ pub struct QueryHistoryCreateInput {
 
 pub trait QueryHistorySvc: Send + Sync {
     fn record(&self, input: QueryHistoryCreateInput) -> Result<i64, DomainError>;
-    fn list_recent(&self, connection_name: &str) -> Vec<QueryHistory>;
+    fn list_recent(&self, connection_name: &str, limit: usize) -> Vec<QueryHistory>;
 }
 
 pub struct QueryHistoryService {
@@ -44,7 +44,7 @@ impl QueryHistorySvc for QueryHistoryService {
         self.repository.save(&entity)
     }
 
-    fn list_recent(&self, connection_name: &str) -> Vec<QueryHistory> {
-        self.repository.list_recent(connection_name, 50)
+    fn list_recent(&self, connection_name: &str, limit: usize) -> Vec<QueryHistory> {
+        self.repository.list_recent(connection_name, limit)
     }
 }

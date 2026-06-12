@@ -12,7 +12,7 @@ pub trait AnalyticsSvc: Send + Sync {
     /// every write is attempted; the first error (if any) is returned so the
     /// caller — not core — decides whether to surface it.
     fn record_query(&self, connection_name: &str, query: &str, tables: &[String], columns: &[(String, String)]) -> Result<(), DomainError>;
-    fn get_history(&self, connection_name: &str) -> Vec<QueryHistory>;
+    fn get_history(&self, connection_name: &str, limit: usize) -> Vec<QueryHistory>;
     fn get_frequent_tables(&self, connection_name: &str) -> Vec<FreqEntry>;
     fn get_frequent_columns(&self, connection_name: &str, table: &str) -> Vec<FreqEntry>;
 }
@@ -87,8 +87,8 @@ impl AnalyticsSvc for AnalyticsService {
         }
     }
 
-    fn get_history(&self, connection_name: &str) -> Vec<QueryHistory> {
-        self.history.list_recent(connection_name)
+    fn get_history(&self, connection_name: &str, limit: usize) -> Vec<QueryHistory> {
+        self.history.list_recent(connection_name, limit)
     }
 
     fn get_frequent_tables(&self, connection_name: &str) -> Vec<FreqEntry> {
@@ -125,7 +125,7 @@ mod tests {
             self.recorded.lock().unwrap().push(input.query);
             Ok(1)
         }
-        fn list_recent(&self, _: &str) -> Vec<QueryHistory> {
+        fn list_recent(&self, _: &str, _: usize) -> Vec<QueryHistory> {
             self.entries.clone()
         }
     }
@@ -207,7 +207,7 @@ mod tests {
             executed_at: 0,
         };
         let (_, _, svc) = make_svc(vec![entry], vec![], vec![]);
-        let history = svc.get_history("mydb");
+        let history = svc.get_history("mydb", 50);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].query, "SELECT 1");
     }

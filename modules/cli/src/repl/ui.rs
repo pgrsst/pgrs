@@ -160,7 +160,7 @@ pub(super) const REPL_COMMANDS: &[(&str, &str)] = &[
     ("\\pager",              "toggle paging long output through $PAGER (default on)"),
     ("\\edit, \\e",          "open a multiline editor (Alt+Enter runs, Esc cancels)"),
     ("\\refresh",            "reload schema (after CREATE/DROP/ALTER TABLE)"),
-    ("\\history",            "show recent query history"),
+    ("\\history [n]",        "show recent query history (default 50, or last n)"),
     ("\\export <id> <path>", "export query result from history to CSV file"),
     ("\\save <name> <id>",   "save a query from history (by id) under a name"),
     ("\\saved",              "list saved queries for this connection"),
