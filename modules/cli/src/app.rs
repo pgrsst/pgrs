@@ -25,7 +25,7 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
     let core = Core::init(db_path).map_err(|e| format!("pgrs: {e}"))?;
 
     match args.first().map(String::as_str) {
-        Some("shell") => run_shell(&core, &args[1..]),
+        Some("shell") => run_shell(&core, &args[1..], &data_dir),
         Some("test") => run_test(&core, &args[1..]),
         _ => {
             let cli = Cli::new(core.connection);
@@ -34,10 +34,14 @@ fn run_with_dir(data_dir: PathBuf, args: Vec<String>) -> Result<(), String> {
     }
 }
 
-fn run_shell(core: &Core, args: &[String]) -> Result<(), String> {
+fn run_shell(core: &Core, args: &[String], data_dir: &std::path::Path) -> Result<(), String> {
     let name = args.first().ok_or("usage: pgrs shell <connection-name>")?;
     let conn = core.connection.find(name).map_err(|e| e.to_string())?;
     let query = core.connect(&conn)?;
+
+    // Per-connection reedline line-history file (separate from the analytics
+    // query_history table). Sanitized so the connection name is filesystem-safe.
+    let history_path = data_dir.join(format!("history-{}", sanitize_filename(&conn.name)));
 
     Repl::new(
         query,
@@ -47,8 +51,17 @@ fn run_shell(core: &Core, args: &[String]) -> Result<(), String> {
         core.analytics_api(),
         core.saved_query_api(),
         core.schema_api(),
+        history_path,
     )
     .run()
+}
+
+/// Map a connection name to a filesystem-safe filename fragment: anything that
+/// isn't an ASCII alphanumeric, `.`, `-`, or `_` becomes `_`.
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect()
 }
 
 fn run_test(core: &Core, args: &[String]) -> Result<(), String> {
@@ -68,6 +81,13 @@ fn run_test(core: &Core, args: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_filename_replaces_unsafe_chars() {
+        assert_eq!(sanitize_filename("prod"), "prod");
+        assert_eq!(sanitize_filename("my-db_1.2"), "my-db_1.2");
+        assert_eq!(sanitize_filename("a/b c:d"), "a_b_c_d");
+    }
 
     #[test]
     fn run_with_dir_no_args_returns_ok() {

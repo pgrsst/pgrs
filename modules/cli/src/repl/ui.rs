@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use reedline::{
-    ColumnarMenu, Emacs, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
-    PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent, ReedlineMenu,
-    ValidationResult, Validator, default_emacs_keybindings,
+    ColumnarMenu, Emacs, FileBackedHistory, History, KeyCode, KeyModifiers, MenuBuilder, Prompt,
+    PromptEditMode, PromptHistorySearch, PromptHistorySearchStatus, Reedline, ReedlineEvent,
+    ReedlineMenu, ValidationResult, Validator, default_emacs_keybindings,
 };
 
 use pgrs_core::{SchemaApi, TxState};
@@ -193,6 +194,7 @@ pub(super) fn build_reedline(
     schema: SchemaApi,
     table_freq: HashMap<String, u64>,
     column_freq: HashMap<String, u64>,
+    history_path: &Path,
 ) -> Reedline {
     let highlighter = SqlHighlighter::new(schema.clone());
     let hinter = SqlHinter::new(schema.clone(), table_freq.clone(), column_freq.clone());
@@ -214,11 +216,23 @@ pub(super) fn build_reedline(
         ]),
     );
 
+    // Persist line history to disk so up-arrow recall and Ctrl+R reverse-search
+    // survive across sessions. `with_file` reads any existing file and flushes
+    // on drop/sync; on a rebuild (schema refresh) re-opening the same path
+    // reloads the entries. Fall back to in-memory history if the file can't be
+    // opened so the REPL never fails to start over a history-file issue.
+    let history: Box<dyn History> =
+        match FileBackedHistory::with_file(1000, history_path.to_path_buf()) {
+            Ok(h) => Box::new(h),
+            Err(_) => Box::new(FileBackedHistory::new(1000).expect("in-memory history")),
+        };
+
     Reedline::create()
         .with_completer(Box::new(completer))
         .with_hinter(Box::new(hinter))
         .with_highlighter(Box::new(highlighter))
         .with_validator(Box::new(SqlValidator))
+        .with_history(history)
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
         .with_quick_completions(true)
         .with_partial_completions(true)

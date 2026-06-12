@@ -6,16 +6,16 @@ use pgrs_core::{AnalyticsApi, SavedQueryApi};
 const PREVIEW_WIDTH: usize = 60;
 
 /// Parse the rest of `\save <name> <id>` (everything after `\save `): a name
-/// followed by an integer history id. Mirrors `parse_export_args` in shape
-/// (token + integer), rejecting anything that isn't exactly two tokens.
-pub(super) fn parse_save_args(rest: &str) -> Option<(&str, i64)> {
-    let mut parts = rest.split_whitespace();
-    let name = parts.next()?;
-    let id: i64 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
+/// followed by an integer history id. Uses the shared quote-aware tokenizer so a
+/// quoted name with spaces (`"my query" 42`) is one token; rejects anything that
+/// isn't exactly two tokens.
+pub(super) fn parse_save_args(rest: &str) -> Option<(String, i64)> {
+    let toks = crate::repl::args::tokenize_args(rest);
+    if toks.len() != 2 {
         return None;
     }
-    Some((name, id))
+    let id: i64 = toks[1].parse().ok()?;
+    Some((toks[0].clone(), id))
 }
 
 fn preview(sql: &str) -> String {
@@ -144,12 +144,17 @@ mod tests {
 
     #[test]
     fn parse_save_args_valid() {
-        assert_eq!(parse_save_args("myquery 42"), Some(("myquery", 42)));
+        assert_eq!(parse_save_args("myquery 42"), Some(("myquery".to_string(), 42)));
     }
 
     #[test]
     fn parse_save_args_extra_whitespace() {
-        assert_eq!(parse_save_args("  myquery   42  "), Some(("myquery", 42)));
+        assert_eq!(parse_save_args("  myquery   42  "), Some(("myquery".to_string(), 42)));
+    }
+
+    #[test]
+    fn parse_save_args_quoted_name_with_space() {
+        assert_eq!(parse_save_args("\"my query\" 42"), Some(("my query".to_string(), 42)));
     }
 
     #[test]

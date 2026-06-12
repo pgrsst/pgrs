@@ -58,7 +58,7 @@ mod tests {
     fn unknown_command_returns_error() {
         assert!(
             cli_with(&[])
-                .run(["unknown".to_string()].into_iter())
+                .run(["unknown".to_string()])
                 .is_err()
         );
     }
@@ -66,7 +66,7 @@ mod tests {
     #[test]
     fn unknown_command_error_mentions_command_name() {
         let err = cli_with(&[])
-            .run(["foobar".to_string()].into_iter())
+            .run(["foobar".to_string()])
             .unwrap_err();
         assert!(
             err.contains("foobar"),
@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn unknown_command_error_does_not_show_add_usage() {
         let err = cli_with(&[])
-            .run(["foobar".to_string()].into_iter())
+            .run(["foobar".to_string()])
             .unwrap_err();
         assert!(
             !err.contains("--host"),
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn shell_command_via_cli_run_returns_error_with_usage() {
         let err = cli_with(&[])
-            .run(["shell".to_string(), "prod".to_string()].into_iter())
+            .run(["shell".to_string(), "prod".to_string()])
             .unwrap_err();
         assert!(err.contains("shell"), "got: {err}");
     }
@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn shell_command_does_not_say_unknown_command() {
         let err = cli_with(&[])
-            .run(["shell".to_string(), "prod".to_string()].into_iter())
+            .run(["shell".to_string(), "prod".to_string()])
             .unwrap_err();
         assert!(
             !err.contains("unknown command"),
@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn test_command_does_not_say_unknown_command() {
         let err = cli_with(&[])
-            .run(["test".to_string(), "prod".to_string()].into_iter())
+            .run(["test".to_string(), "prod".to_string()])
             .unwrap_err();
         assert!(
             !err.contains("unknown command"),

@@ -144,6 +144,10 @@ completions/            — shell completion scripts (bash, zsh, fish)
 
 **Multi-line statements:** The REPL buffers input until a `;` terminates the statement (respecting open string literals and quoted identifiers via `sql_utils::is_complete_statement`).
 
+**REPL line history:** reedline line-editing history (up-arrow recall, Ctrl+R reverse-search) is persisted **per connection** to `~/.pgrs/history-<connection>` via `FileBackedHistory` (cap 1000). The path is threaded from `app.rs` → `Repl::new` → `build_reedline`/`rebuild_reedline`; on a schema refresh the reedline is rebuilt against the **same** file so history survives. This is separate from the analytics `query_history` table. The `\edit` editor deliberately gets no history. Unsafe chars in the connection name are sanitized via `app::sanitize_filename`.
+
+**Backslash-command args:** `repl/args.rs::tokenize_args` is the shared quote-aware tokenizer (single/double quotes group a token, no escapes, unterminated quote taken literally); `single_name_token` enforces exactly-one-token. `\save`/`\run`/`\unsave` route through it, so a quoted name with spaces (`\save "my query" 7`) works. `\export` keeps its own specialized parser (`csv::parse_export_args`) for `~` expansion + id/path split. An unrecognized `\`-prefixed line parses to `ReplCommand::Unknown` and prints `unknown command '…'` rather than being forwarded to Postgres.
+
 **Tab-completion pipeline:** `tokenizer` (core) tokenizes the line → `alias` (core) builds an `AliasMap` and join context → `CompletionsApi` suggests keywords, tables, or columns based on the preceding SQL keyword (`FROM`/`JOIN` → tables; `SELECT`/`WHERE`/`ON` → columns). The CLI's `completer.rs` only adapts these into reedline `Suggestion`s and styling.
 
 **Testing patterns:** Core unit tests use `StubConnectionRepository` and `SqliteRepository::open_in_memory()`. Downstream (pgrs-cli) tests rely on the `test-support` feature of `pgrs-core` (a dev-dependency), which exposes in-memory constructors: `Core::in_memory()`, `ConnectionApi::in_memory()/in_memory_with(&[..])`, `QueryApi::from_repl(Box<dyn ReplPort>)`, and `SchemaApi::for_test(HashMap<table, Vec<col>>)`.

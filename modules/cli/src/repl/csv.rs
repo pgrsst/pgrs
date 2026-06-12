@@ -23,6 +23,11 @@ fn write_csv(result: &QueryResult, file: &mut impl Write) -> io::Result<()> {
 /// Parses `\export <id> <path>` rest string (everything after `\export `).
 /// Path may be unquoted, single-quoted, or double-quoted (to support spaces).
 /// Returns `None` if the rest string cannot be parsed into (id, path).
+///
+/// This is a specialized variant of `args::tokenize_args` (the general
+/// backslash-arg tokenizer): it additionally splits off the leading integer id
+/// and performs `~` expansion on the path, so it intentionally keeps its own
+/// quote handling rather than routing through the shared helper.
 pub(super) fn parse_export_args(rest: &str) -> Option<(i64, String)> {
     let rest = rest.trim();
     let (id_str, after_id) = rest.split_once(' ')?;

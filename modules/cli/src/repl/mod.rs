@@ -1,3 +1,4 @@
+mod args;
 mod command_handler;
 mod completer;
 mod csv;
@@ -11,6 +12,7 @@ mod ui;
 
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use reedline::{Reedline, Signal};
@@ -44,10 +46,13 @@ fn rebuild_reedline(
     rl: &mut Reedline,
     analytics: &AnalyticsApi,
     connection_name: &str,
+    history_path: &Path,
     schema: SchemaApi,
 ) {
     let (tf, cf) = freq_for_schema(analytics, connection_name, &schema);
-    *rl = ui::build_reedline(schema, tf, cf);
+    // The old Reedline (and its FileBackedHistory) is dropped here, flushing to
+    // disk; the new one re-opens the SAME file, so history survives the rebuild.
+    *rl = ui::build_reedline(schema, tf, cf, history_path);
 }
 
 /// True if `sql` is a row-mutating statement (INSERT/UPDATE/DELETE, including
@@ -111,6 +116,7 @@ fn run_statement(
     analytics: &AnalyticsApi,
     schema: &mut SchemaApi,
     rl: &mut Reedline,
+    history_path: &Path,
     tx: &Arc<Mutex<TxState>>,
     stdout: &mut impl Write,
 ) {
@@ -132,7 +138,7 @@ fn run_statement(
             analytics: Some(analytics),
         },
         schema,
-        &mut |s| rebuild_reedline(rl, analytics, connection_name, s),
+        &mut |s| rebuild_reedline(rl, analytics, connection_name, history_path, s),
         &mut buf,
     );
     pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, stdout);
@@ -173,6 +179,7 @@ enum ReplCommand<'a> {
     Export(Option<&'a str>),                     // None => bare \export
     Explain { sql: &'a str, analyze: bool },     // \explain <sql> / \explain+ <sql>
     ExplainUsage,                                // bare \explain / \explain+
+    Unknown(&'a str),                            // \foo that matched nothing
     Sql(&'a str),
 }
 
@@ -216,11 +223,18 @@ impl<'a> ReplCommand<'a> {
                 } else if let Some(rest) = trimmed.strip_prefix("\\save ") {
                     ReplCommand::Save(Some(rest))
                 } else if let Some(rest) = trimmed.strip_prefix("\\run ") {
-                    ReplCommand::Run(Some(rest.trim()))
+                    // Raw rest; the dispatch tokenizes it (quote-aware) so a
+                    // quoted name with spaces survives as one token.
+                    ReplCommand::Run(Some(rest))
                 } else if let Some(rest) = trimmed.strip_prefix("\\unsave ") {
-                    ReplCommand::Unsave(Some(rest.trim()))
+                    ReplCommand::Unsave(Some(rest))
                 } else if let Some(rest) = trimmed.strip_prefix("\\export ") {
                     ReplCommand::Export(Some(rest))
+                } else if trimmed.starts_with('\\') {
+                    // Starts with backslash but matched no command: report it
+                    // rather than forwarding to Postgres (which yields a
+                    // confusing parser error). SQL never starts with `\`.
+                    ReplCommand::Unknown(trimmed)
                 } else {
                     ReplCommand::Sql(trimmed)
                 }
@@ -237,10 +251,12 @@ pub struct Repl {
     analytics: AnalyticsApi,
     saved_query: SavedQueryApi,
     schema: SchemaApi,
+    history_path: PathBuf,
     handler: CommandHandler,
 }
 
 impl Repl {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         query: QueryApi,
         db_name: &str,
@@ -249,6 +265,7 @@ impl Repl {
         analytics: AnalyticsApi,
         saved_query: SavedQueryApi,
         schema: SchemaApi,
+        history_path: PathBuf,
     ) -> Self {
         Self {
             query,
@@ -258,6 +275,7 @@ impl Repl {
             analytics,
             saved_query,
             schema,
+            history_path,
             handler: CommandHandler,
         }
     }
@@ -271,12 +289,13 @@ impl Repl {
             analytics,
             saved_query,
             mut schema,
+            history_path,
             handler,
         } = self;
 
         schema.load(&query, &connection_name)?;
         let (table_freq, column_freq) = freq_for_schema(&analytics, &connection_name, &schema);
-        let mut rl = ui::build_reedline(schema.clone(), table_freq, column_freq);
+        let mut rl = ui::build_reedline(schema.clone(), table_freq, column_freq, &history_path);
 
         let tx = Arc::new(Mutex::new(TxState::Idle));
 
@@ -334,7 +353,7 @@ impl Repl {
                                         run_statement(
                                             &handler, &query, &buf, expanded, timing,
                                             pager_enabled, &connection_name, &analytics,
-                                            &mut schema, &mut rl, &tx, &mut stdout,
+                                            &mut schema, &mut rl, &history_path, &tx, &mut stdout,
                                         );
                                     }
                                 }
@@ -351,7 +370,9 @@ impl Repl {
                             &query,
                             &connection_name,
                             &mut schema,
-                            &mut |s| rebuild_reedline(&mut rl, &analytics, &connection_name, s),
+                            &mut |s| {
+                                rebuild_reedline(&mut rl, &analytics, &connection_name, &history_path, s)
+                            },
                             &mut stdout,
                         ),
                         ReplCommand::History => {
@@ -368,30 +389,41 @@ impl Repl {
                                 writeln!(stdout, "Usage: \\save <name> <id>").ok();
                             }
                             Some((name, id)) => saved::handle_save(
-                                name, id, &connection_name, &analytics, &saved_query, &mut stdout,
+                                &name, id, &connection_name, &analytics, &saved_query, &mut stdout,
                             ),
                         },
                         ReplCommand::Unsave(None) => {
                             writeln!(stdout, "Usage: \\unsave <name>").ok();
                         }
-                        ReplCommand::Unsave(Some(name)) => {
-                            saved::handle_unsave(name, &connection_name, &saved_query, &mut stdout)
-                        }
+                        ReplCommand::Unsave(Some(rest)) => match args::single_name_token(rest) {
+                            None => {
+                                writeln!(stdout, "Usage: \\unsave <name>").ok();
+                            }
+                            Some(name) => saved::handle_unsave(
+                                &name, &connection_name, &saved_query, &mut stdout,
+                            ),
+                        },
                         ReplCommand::Run(None) => {
                             writeln!(stdout, "Usage: \\run <name>").ok();
                         }
-                        ReplCommand::Run(Some(name)) => {
-                            match saved::resolve_saved_sql(name, &connection_name, &saved_query) {
-                                Err(msg) => {
-                                    writeln!(stdout, "error: {msg}").ok();
-                                }
-                                Ok(sql) => run_statement(
-                                    &handler, &query, &sql, expanded, timing, pager_enabled,
-                                    &connection_name, &analytics, &mut schema, &mut rl, &tx,
-                                    &mut stdout,
-                                ),
+                        ReplCommand::Run(Some(rest)) => match args::single_name_token(rest) {
+                            None => {
+                                writeln!(stdout, "Usage: \\run <name>").ok();
                             }
-                        }
+                            Some(name) => {
+                                match saved::resolve_saved_sql(&name, &connection_name, &saved_query)
+                                {
+                                    Err(msg) => {
+                                        writeln!(stdout, "error: {msg}").ok();
+                                    }
+                                    Ok(sql) => run_statement(
+                                        &handler, &query, &sql, expanded, timing, pager_enabled,
+                                        &connection_name, &analytics, &mut schema, &mut rl, &history_path, &tx,
+                                        &mut stdout,
+                                    ),
+                                }
+                            }
+                        },
                         ReplCommand::Stats(table) => {
                             handler.handle_stats(&connection_name, table, &analytics, &mut stdout)
                         }
@@ -427,9 +459,12 @@ impl Repl {
                             explain::handle_explain(&query, sql, analyze, &mut buf);
                             pager::emit(&String::from_utf8_lossy(&buf), pager_enabled, &mut stdout);
                         }
+                        ReplCommand::Unknown(cmd) => {
+                            writeln!(stdout, "error: unknown command '{cmd}'. Type \\help for a list.").ok();
+                        }
                         ReplCommand::Sql(sql) => run_statement(
                             &handler, &query, sql, expanded, timing, pager_enabled,
-                            &connection_name, &analytics, &mut schema, &mut rl, &tx, &mut stdout,
+                            &connection_name, &analytics, &mut schema, &mut rl, &history_path, &tx, &mut stdout,
                         ),
                     }
                 }
@@ -541,10 +576,22 @@ mod tests {
     }
 
     #[test]
-    fn unknown_backslash_is_treated_as_sql() {
-        // Not a recognised command -> handed to the SQL executor, which surfaces
-        // the error. Parser stays dumb; it does not guess.
-        assert!(matches!(ReplCommand::parse("\\nope"), ReplCommand::Sql("\\nope")));
+    fn unknown_backslash_is_unknown() {
+        // A backslash line that matches no command is reported as Unknown rather
+        // than forwarded to the SQL executor (which would yield a confusing
+        // Postgres parser error).
+        assert!(matches!(ReplCommand::parse("\\nope"), ReplCommand::Unknown("\\nope")));
+        assert!(matches!(ReplCommand::parse("\\foo bar"), ReplCommand::Unknown("\\foo bar")));
+    }
+
+    #[test]
+    fn known_prefix_commands_not_unknown() {
+        // Known prefixes still match ahead of the Unknown fallback.
+        assert!(matches!(
+            ReplCommand::parse("\\d users"),
+            ReplCommand::Describe { table: "users", extended: false }
+        ));
+        assert!(matches!(ReplCommand::parse("\\begin"), ReplCommand::Sql("BEGIN")));
     }
 
     #[test]
