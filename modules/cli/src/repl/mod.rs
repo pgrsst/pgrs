@@ -22,6 +22,15 @@ use pgrs_core::{AnalyticsApi, QueryApi, SavedQueryApi, SchemaApi, TxState, is_dm
 use command_handler::{CommandHandler, SqlOptions};
 use describe::describe_table;
 
+// Single source for backslash-command usage hints, printed when a command is
+// invoked with missing or unparseable arguments.
+const USAGE_SAVE: &str = "Usage: \\save <name> <id>";
+const USAGE_UNSAVE: &str = "Usage: \\unsave <name>";
+const USAGE_RUN: &str = "Usage: \\run <name>";
+const USAGE_EXPORT: &str = "Usage: \\export <id> <path>";
+const USAGE_DESCRIBE: &str = "Usage: \\d+ <table>";
+const USAGE_EXPLAIN: &str = "Usage: \\explain <query>  (\\explain+ runs ANALYZE)";
+
 fn freq_for_schema(
     analytics: &AnalyticsApi,
     conn_name: &str,
@@ -81,10 +90,18 @@ fn handle_quit_request(
     writeln!(writer, "A transaction is in progress. Roll back and quit? [y/N]").ok();
     writer.flush().ok();
 
-    let mut input = String::new();
-    let confirmed = match io::stdin().read_line(&mut input) {
-        Ok(0) | Err(_) => true, // EOF or read error: cannot keep asking — roll back and quit.
-        Ok(_) => is_yes(&input),
+    // Read the confirmation through a throwaway reedline (default validator, so
+    // Enter submits) rather than raw stdin: that way Ctrl-C/Ctrl-D arrive as
+    // signals and we exit cleanly with a ROLLBACK instead of SIGINT killing the
+    // process mid-prompt (which would leave no explicit rollback or "Bye.").
+    let mut confirm_rl = Reedline::create();
+    let confirmed = match confirm_rl.read_line(&ui::ConfirmPrompt) {
+        Ok(Signal::Success(line)) => is_yes(&line),
+        // The user already asked to quit; insisting via Ctrl-C/Ctrl-D (or a read
+        // error — we cannot keep asking) means roll back and quit cleanly.
+        Ok(Signal::CtrlC) | Ok(Signal::CtrlD) => true,
+        Ok(_) => false,
+        Err(_) => true,
     };
 
     if confirmed {
@@ -383,34 +400,25 @@ impl Repl {
                         ReplCommand::Saved => {
                             saved::handle_saved(&connection_name, &saved_query, &mut stdout)
                         }
-                        ReplCommand::Save(None) => {
-                            writeln!(stdout, "Usage: \\save <name> <id>").ok();
-                        }
-                        ReplCommand::Save(Some(rest)) => match saved::parse_save_args(rest) {
+                        ReplCommand::Save(rest) => match rest.and_then(saved::parse_save_args) {
                             None => {
-                                writeln!(stdout, "Usage: \\save <name> <id>").ok();
+                                writeln!(stdout, "{USAGE_SAVE}").ok();
                             }
                             Some((name, id)) => saved::handle_save(
                                 &name, id, &connection_name, &analytics, &saved_query, &mut stdout,
                             ),
                         },
-                        ReplCommand::Unsave(None) => {
-                            writeln!(stdout, "Usage: \\unsave <name>").ok();
-                        }
-                        ReplCommand::Unsave(Some(rest)) => match args::single_name_token(rest) {
+                        ReplCommand::Unsave(rest) => match rest.and_then(args::single_name_token) {
                             None => {
-                                writeln!(stdout, "Usage: \\unsave <name>").ok();
+                                writeln!(stdout, "{USAGE_UNSAVE}").ok();
                             }
                             Some(name) => saved::handle_unsave(
                                 &name, &connection_name, &saved_query, &mut stdout,
                             ),
                         },
-                        ReplCommand::Run(None) => {
-                            writeln!(stdout, "Usage: \\run <name>").ok();
-                        }
-                        ReplCommand::Run(Some(rest)) => match args::single_name_token(rest) {
+                        ReplCommand::Run(rest) => match rest.and_then(args::single_name_token) {
                             None => {
-                                writeln!(stdout, "Usage: \\run <name>").ok();
+                                writeln!(stdout, "{USAGE_RUN}").ok();
                             }
                             Some(name) => {
                                 match saved::resolve_saved_sql(&name, &connection_name, &saved_query)
@@ -434,20 +442,19 @@ impl Repl {
                                 writeln!(stdout, "error: {}", e).ok();
                             }
                         }
-                        ReplCommand::DescribeUsage => println!("Usage: \\d+ <table>"),
-                        ReplCommand::Export(None) => {
-                            writeln!(stdout, "Usage: \\export <id> <path>").ok();
+                        ReplCommand::DescribeUsage => {
+                            writeln!(stdout, "{USAGE_DESCRIBE}").ok();
                         }
-                        ReplCommand::Export(Some(rest)) => match csv::parse_export_args(rest) {
+                        ReplCommand::Export(rest) => match rest.and_then(csv::parse_export_args) {
                             None => {
-                                writeln!(stdout, "Usage: \\export <id> <path>").ok();
+                                writeln!(stdout, "{USAGE_EXPORT}").ok();
                             }
                             Some((id, path)) => csv::handle_export(
                                 id, &path, &connection_name, &query, &analytics, &mut stdout,
                             ),
                         },
                         ReplCommand::ExplainUsage => {
-                            writeln!(stdout, "Usage: \\explain <query>  (\\explain+ runs ANALYZE)").ok();
+                            writeln!(stdout, "{USAGE_EXPLAIN}").ok();
                         }
                         ReplCommand::Explain { sql, analyze } => {
                             if analyze && dml_requires_tx(*tx.lock().unwrap(), sql) {

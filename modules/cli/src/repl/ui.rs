@@ -105,6 +105,33 @@ impl Prompt for EditorPrompt {
     }
 }
 
+/// Minimal prompt for the quit confirmation read. All parts render empty: the
+/// `Roll back and quit? [y/N]` question is printed separately, and this prompt
+/// only exists so the confirmation is read through reedline (which surfaces
+/// Ctrl-C/Ctrl-D as signals instead of letting SIGINT kill the process).
+pub(super) struct ConfirmPrompt;
+
+impl Prompt for ConfirmPrompt {
+    fn render_prompt_left(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_right(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_indicator(&self, _mode: PromptEditMode) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_multiline_indicator(&self) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: PromptHistorySearch,
+    ) -> Cow<'_, str> {
+        Cow::Borrowed("")
+    }
+}
+
 /// Build a reedline configured as a multiline SQL editor for `\edit`: Enter
 /// inserts a newline (always-Incomplete validator), `Alt+Enter` submits, `Esc`
 /// cancels. Reuses the same completion/highlighting/hinting as the main prompt.
